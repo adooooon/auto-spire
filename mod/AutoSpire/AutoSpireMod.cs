@@ -2,13 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
-using System.Reflection;
-using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
+using System.Threading.Tasks;
 using Godot;
-using HarmonyLib;
+using MegaCrit.Sts2.Core.Assets;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Context;
@@ -17,97 +16,15 @@ using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Models;
-using MegaCrit.Sts2.Core.DevConsole;
-using MegaCrit.Sts2.Core.Entities.Cards;
-using MegaCrit.Sts2.Core.GameActions;
-using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.DevConsole;
+using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
+using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
 
 namespace AutoSpire;
-
-/// <summary>
-/// [ModuleInitializer] runs when the assembly is first loaded by the CLR,
-/// before ModManager tries to read our PCK. We use this to Harmony-patch
-/// ModManager.TryLoadModFromPck so it handles AutoSpire without needing
-/// a valid Godot PCK file.
-/// </summary>
-public static class ModBootstrap
-{
-    [ModuleInitializer]
-    public static void Bootstrap()
-    {
-        try
-        {
-            var harmony = new Harmony("auto-spire.bootstrap");
-
-            var target = typeof(ModManager).GetMethod("TryLoadModFromPck",
-                BindingFlags.Static | BindingFlags.NonPublic);
-            var prefix = typeof(ModBootstrap).GetMethod(nameof(TryLoadModPrefix),
-                BindingFlags.Static | BindingFlags.NonPublic);
-
-            if (target != null && prefix != null)
-            {
-                harmony.Patch(target, prefix: new HarmonyMethod(prefix));
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[AutoSpire] Bootstrap error: {ex}");
-        }
-    }
-
-    /// <summary>
-    /// Intercepts ModManager.TryLoadModFromPck for AutoSpire.pck.
-    /// Skips the PCK manifest check and directly registers the mod + calls our initializer.
-    /// Returns true (skip original) only for our mod; lets all other mods load normally.
-    /// </summary>
-    private static bool TryLoadModPrefix(string pckFilename, DirAccess dirAccess, ModSource source)
-    {
-        if (System.IO.Path.GetFileNameWithoutExtension(pckFilename) != "AutoSpire")
-            return true; // not our mod, run original
-
-        try
-        {
-            Log.Info("[AutoSpire] Bootstrap: intercepting mod load for AutoSpire");
-
-            // Register the mod manually (same as ModManager would)
-            var modsField = typeof(ModManager).GetField("_mods",
-                BindingFlags.Static | BindingFlags.NonPublic);
-            var mods = modsField?.GetValue(null) as List<Mod>;
-
-            var mod = new Mod
-            {
-                pckName = "AutoSpire",
-                modSource = source,
-                wasLoaded = true,
-                assembly = typeof(ModBootstrap).Assembly,
-                assemblyLoadedSuccessfully = true,
-                manifest = new ModManifest
-                {
-                    pckName = "AutoSpire",
-                    name = "AutoSpire",
-                    author = "auto-spire",
-                    description = "Automation bridge for Slay the Spire 2",
-                    version = "0.1.0"
-                }
-            };
-            mods?.Add(mod);
-
-            // Call our initializer
-            AutoSpireMod.Initialize();
-
-            Log.Info("[AutoSpire] Bootstrap: mod registered and initialized successfully");
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"[AutoSpire] Bootstrap error: {ex}");
-        }
-
-        return false; // skip original TryLoadModFromPck for our mod
-    }
-}
 
 [ModInitializer("Initialize")]
 public static class AutoSpireMod
@@ -126,7 +43,9 @@ public static class AutoSpireMod
         try
         {
             Log.Info("[AutoSpire] Initializing HTTP server...");
-            _console = new DevConsole(shouldAllowDebugCommands: true);
+            // DevConsole's ctor calls ReflectionHelper.GetSubtypesInMods(), which throws if
+            // ModManager hasn't finished Initialize() yet — and we're called synchronously
+            // from inside that. Create it lazily on first actual use instead (see GetConsole()).
             _cts = new CancellationTokenSource();
             var thread = new Thread(RunServerSync)
             {
@@ -179,8 +98,8 @@ public static class AutoSpireMod
 
             object? result = (path, method) switch
             {
-                ("/state", "GET") => GetGameState(),
-                ("/combat", "GET") => GetCombatState(),
+                ("/state", "GET") => OnMainThread(GetGameState),
+                ("/combat", "GET") => OnMainThread(GetCombatState),
                 ("/act", "POST") => HandleAction(context),
                 ("/exec", "POST") => HandleExec(context),
                 ("/ping", "GET") => new { status = "ok", mod = "AutoSpire" },
@@ -200,6 +119,27 @@ public static class AutoSpireMod
             Log.Error($"[AutoSpire] Request error: {ex}");
             try { Respond(context, 500, new { error = ex.Message }); } catch { }
         }
+    }
+
+    // State reads touch non-thread-safe game objects (e.g. card.Title runs SmartFormat,
+    // whose shared parser state corrupts under concurrent use and kills the combat turn
+    // loop), so run them on the Godot main thread like every command already is.
+    private static T? OnMainThread<T>(Func<T?> read)
+    {
+        var done = new ManualResetEventSlim(false);
+        T? result = default;
+        Exception? error = null;
+        Godot.Callable.From(() =>
+        {
+            try { result = read(); }
+            catch (Exception ex) { error = ex; }
+            finally { done.Set(); }
+        }).CallDeferred();
+        if (!done.Wait(TimeSpan.FromSeconds(5)))
+            throw new TimeoutException("main thread did not service state read within 5s");
+        if (error != null)
+            throw error;
+        return result;
     }
 
     private static void Respond(HttpListenerContext context, int status, object body)
@@ -250,12 +190,21 @@ public static class AutoSpireMod
         return new
         {
             inCombat = true,
-            isPlayPhase = combatMgr.IsPlayPhase,
+            isPlayPhase = IsPlayPhase(player),
+            // False while a queued play/end-turn is still resolving: /exec only enqueues, so
+            // without this an agent can read the pre-action state and repeat its action.
+            actionsIdle = RunManager.Instance.ActionQueueSet.IsEmpty && !RunManager.Instance.ActionExecutor.IsRunning,
             round = state.RoundNumber,
             currentSide = state.CurrentSide.ToString(),
             player = player != null ? SerializePlayerCombat(player) : null,
             enemies = state.Enemies.Select(SerializeCreature).ToList()
         };
+    }
+
+    // CombatManager.IsPlayPhase was removed upstream; phase is now tracked per-player.
+    private static bool IsPlayPhase(Player? player)
+    {
+        return player?.PlayerCombatState?.Phase == PlayerTurnPhase.Play;
     }
 
     private static object SerializePlayer(Player player)
@@ -422,6 +371,10 @@ public static class AutoSpireMod
                 "play" => ExecPlay(parts),
                 "end" => ExecEndTurn(),
                 "potion" => ExecPotion(parts),
+                // Starts a fresh singleplayer run without touching the main menu UI —
+                // lets a training loop fully automate "launch game -> in a run" with no
+                // human clicking, e.g. after a periodic restart to clear engine resource buildup.
+                "newrun" => ExecNewRun(parts),
                 // Pass through to game's dev console (kill, godmode, draw, energy, gold, etc.)
                 _ => ExecConsole(cmd)
             };
@@ -442,10 +395,10 @@ public static class AutoSpireMod
 
         var combatState = CombatManager.Instance.DebugOnlyGetState();
         if (combatState == null) return new { error = "not_in_combat" };
-        if (!CombatManager.Instance.IsPlayPhase) return new { error = "not_play_phase" };
 
         var player = LocalContext.GetMe(combatState);
         if (player?.PlayerCombatState == null) return new { error = "no_player" };
+        if (!IsPlayPhase(player)) return new { error = "not_play_phase" };
 
         var hand = player.PlayerCombatState.Hand.Cards;
         if (cardIndex < 0 || cardIndex >= hand.Count)
@@ -482,10 +435,10 @@ public static class AutoSpireMod
     {
         var combatState = CombatManager.Instance.DebugOnlyGetState();
         if (combatState == null) return new { error = "not_in_combat" };
-        if (!CombatManager.Instance.IsPlayPhase) return new { error = "not_play_phase" };
 
         var player = LocalContext.GetMe(combatState);
         if (player == null) return new { error = "no_player" };
+        if (!IsPlayPhase(player)) return new { error = "not_play_phase" };
 
         Godot.Callable.From(() => PlayerCmd.EndTurn(player, canBackOut: false))
             .CallDeferred();
@@ -524,16 +477,100 @@ public static class AutoSpireMod
         return new { ok = true, used = potion.Id.Entry };
     }
 
+    // newrun [CHARACTER] — mirrors what NSceneBootstrapper.StartNewRun() does in dev builds,
+    // reimplemented here since that class needs an editor-only settings file we don't have
+    // in a shipped build. Errors (e.g. a run is already active) surface via the "error" field.
+    private static object ExecNewRun(string[] parts)
+    {
+        var characterArg = parts.Length >= 2 ? parts[1].ToUpperInvariant() : "IRONCLAD";
+        var done = new ManualResetEventSlim(false);
+        Exception? error = null;
+
+        Godot.Callable.From(() =>
+        {
+            _ = StartNewRunAsync(characterArg, done, ex => error = ex);
+        }).CallDeferred();
+
+        if (!done.Wait(TimeSpan.FromSeconds(40)))
+            return new { error = "timeout_starting_run" };
+        if (error != null)
+            return new { error = error.ToString() };
+        return new { ok = true, character = characterArg };
+    }
+
+    private static async Task StartNewRunAsync(string characterArg, ManualResetEventSlim done, Action<Exception> onError)
+    {
+        try
+        {
+            CharacterModel character = characterArg switch
+            {
+                "IRONCLAD" => ModelDb.Character<MegaCrit.Sts2.Core.Models.Characters.Ironclad>(),
+                "SILENT" => ModelDb.Character<MegaCrit.Sts2.Core.Models.Characters.Silent>(),
+                "REGENT" => ModelDb.Character<MegaCrit.Sts2.Core.Models.Characters.Regent>(),
+                "NECROBINDER" => ModelDb.Character<MegaCrit.Sts2.Core.Models.Characters.Necrobinder>(),
+                "DEFECT" => ModelDb.Character<MegaCrit.Sts2.Core.Models.Characters.Defect>(),
+                _ => ModelDb.Character<MegaCrit.Sts2.Core.Models.Characters.Ironclad>(),
+            };
+
+            var player = Player.CreateForNewRun(character, SaveManager.Instance.GenerateUnlockStateFromProgress(), 1uL);
+            var runState = RunState.CreateForTest(
+                new List<Player> { player },
+                gameMode: GameMode.Standard,
+                ascensionLevel: 0);
+
+            // shouldSave: false — this is a training run, not a real save-file playthrough.
+            RunManager.Instance.SetUpNewSingleplayer(runState, shouldSave: false);
+            await PreloadManager.LoadRunAssets(new List<CharacterModel> { character });
+            RunManager.Instance.Launch();
+
+            var game = NGame.Instance ?? throw new InvalidOperationException("NGame.Instance is null");
+            game.RootSceneContainer.SetCurrentScene(NRun.Create(runState));
+            await RunManager.Instance.EnterAct(0);
+            // Belt-and-suspenders: AssetSets.Act (set inside LoadActAssets, which
+            // EnterAct's SetActInternal should already call) has been observed null
+            // when entering the first combat right after this bootstrap path, causing
+            // a NullReferenceException in PreloadManager.LoadRoomCombatAssets. Cheap
+            // and idempotent to just ensure it directly.
+            await PreloadManager.LoadActAssets(runState.Act);
+        }
+        catch (Exception ex)
+        {
+            onError(ex);
+        }
+        finally
+        {
+            done.Set();
+        }
+    }
+
     // Pass to game's dev console: kill, godmode, draw, energy, gold, damage, etc.
     private static object ExecConsole(string cmd)
     {
-        if (_console == null)
-            return new { error = "console_not_initialized" };
-
         CmdResult result = default;
+        Exception? initError = null;
         var done = new ManualResetEventSlim(false);
-        Godot.Callable.From(() => { result = _console.ProcessCommand(cmd); done.Set(); }).CallDeferred();
+        Godot.Callable.From(() =>
+        {
+            try
+            {
+                // Constructed lazily (and on the main thread) since DevConsole's ctor calls
+                // ReflectionHelper.GetSubtypesInMods(), which requires ModManager to have
+                // finished initializing — true by the time any /exec call can arrive.
+                _console ??= new DevConsole(shouldAllowDebugCommands: true);
+                result = _console.ProcessCommand(cmd);
+            }
+            catch (Exception ex)
+            {
+                initError = ex;
+            }
+            finally
+            {
+                done.Set();
+            }
+        }).CallDeferred();
         done.Wait(TimeSpan.FromSeconds(5));
+        if (initError != null)
+            return new { error = initError.Message };
         return new { ok = result.success, message = result.msg };
     }
 
@@ -563,12 +600,12 @@ public static class AutoSpireMod
         if (combatState == null)
             return new { error = "not_in_combat" };
 
-        if (!CombatManager.Instance.IsPlayPhase)
-            return new { error = "not_play_phase" };
-
         var player = LocalContext.GetMe(combatState);
         if (player?.PlayerCombatState == null)
             return new { error = "no_player" };
+
+        if (!IsPlayPhase(player))
+            return new { error = "not_play_phase" };
 
         var hand = player.PlayerCombatState.Hand.Cards;
         if (action.CardIndex < 0 || action.CardIndex >= hand.Count)
@@ -600,12 +637,12 @@ public static class AutoSpireMod
         if (combatState == null)
             return new { error = "not_in_combat" };
 
-        if (!CombatManager.Instance.IsPlayPhase)
-            return new { error = "not_play_phase" };
-
         var player = LocalContext.GetMe(combatState);
         if (player == null)
             return new { error = "no_player" };
+
+        if (!IsPlayPhase(player))
+            return new { error = "not_play_phase" };
 
         Godot.Callable.From(() => PlayerCmd.EndTurn(player, canBackOut: false))
             .CallDeferred();

@@ -7,3 +7,6 @@ mod/out/
 mod/AutoSpire/bin/
 mod/AutoSpire/obj/
 mod/pack/.godot/
+agent/models/
+agent/tb_logs/
+.DS_Store

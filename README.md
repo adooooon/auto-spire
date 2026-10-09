@@ -79,66 +79,91 @@ curl -X POST http://localhost:31452/act -d '{"type":"use_potion","potionIndex":0
 
 ## Setup
 
-### Prerequisites
+`mise` turned out to be impractical here: this Mac is on macOS 14, which Homebrew no longer bottles ("Tier 3"), so `brew install mise` tries to compile LLVM + Rust from source (1hr+). We install runtimes directly instead — same versions, no from-source builds, nothing global.
 
-Install [mise](https://mise.jdx.dev/) (manages project-scoped runtimes):
+### Install .NET 9 SDK + .NET 8 runtime (user-local, no sudo)
 
-```bash
-brew install mise
-```
-
-Add to your `~/.zshrc` (one-time):
+`ilspycmd` (the decompiler) targets net8.0, so we need both:
 
 ```bash
-eval "$(mise activate zsh)"
+curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && chmod +x /tmp/dotnet-install.sh
+/tmp/dotnet-install.sh --channel 9.0 --install-dir "$HOME/.dotnet"
+/tmp/dotnet-install.sh --channel 8.0 --runtime dotnet --install-dir "$HOME/.dotnet"
+export PATH="$HOME/.dotnet:$PATH"
+export DOTNET_ROOT="$HOME/.dotnet"
 ```
 
-Restart your shell or `source ~/.zshrc`.
-
-### Install project runtimes
-
-```bash
-cd auto-spire
-mise install          # installs dotnet 9, dotnet 8, python 3.12, godot 4.5.1
-```
+(The Homebrew cask `dotnet-sdk@9` also exists but its `.pkg` installer requires an interactive `sudo` prompt — the script above avoids that.)
 
 ### Install project tools
 
 ```bash
-# Python venv
-python -m venv .venv
-source .venv/bin/activate
-pip install frida-tools
-
-# ILSpy decompiler (project-local)
-dotnet tool install ilspycmd --tool-path .dotnet-tools
+cd auto-spire
+dotnet tool install ilspycmd --version 9.1.0.7988 --tool-path .dotnet-tools
 ```
+
+If this errors with "Settings file 'DotnetToolSettings.xml' was not found", clear the NuGet cache first: `dotnet nuget locals all --clear`.
+
+Python venv, as needed for the AI client:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt   # once it exists
+```
+
+**Godot is not needed.** The mod no longer ships a PCK (see below), so there's nothing to export.
 
 ### Day-to-day usage
 
 ```bash
 cd auto-spire
-source .venv/bin/activate   # activate python venv
+export PATH="$HOME/.dotnet:$PATH"
+export DOTNET_ROOT="$HOME/.dotnet"
+source .venv/bin/activate   # if using the python venv
 ```
-
-Mise activates dotnet/python/godot automatically when you `cd` into the project.
 
 ## Building the mod
 
 ```bash
-./mod/build.sh    # builds DLL, creates PCK via Godot, deploys to game
+./mod/build.sh    # builds DLL, writes a manifest.json, deploys to game
 ```
 
 This:
 1. Compiles `mod/AutoSpire/` → `AutoSpire.dll`
-2. Uses Godot 4.5.1 (via mise) to create `AutoSpire.pck` from `mod/pack/`
-3. Copies both to `SlayTheSpire2.app/Contents/MacOS/mods/`
+2. Writes `manifest.json` with `has_pck: false` (mods are now discovered by manifest, not by scanning for `.pck` files — see `docs/modding-approach.md`)
+3. Copies both to `SlayTheSpire2.app/Contents/MacOS/mods/AutoSpire/`
 
-After deploying, restart STS2. Enable mods in game settings if prompted. Verify:
+After deploying, restart STS2. **First time only:** a "Player chose to load mods" confirmation appears in-game — clicking through it requires one more restart before mods actually activate (check the bottom-right corner of the main menu for "Running Modded. Loaded 1 mod."). Verify:
 
 ```bash
 grep AutoSpire ~/Library/Application\ Support/SlayTheSpire2/logs/godot.log
 curl http://localhost:31452/ping
+```
+
+Launch the game by running the binary directly with `SteamAppId=2868840` set (Steam must be running) — see `GAME_BIN` in `agent/client.py`. Plain `open -a` on the `.app` skips Steam and Steamworks fails to init; `open "steam://rungameid/2868840"` works but silently does nothing if Steam is showing a dialog.
+
+### `/exec` — text command interface (in addition to `/act`)
+
+```bash
+curl -X POST http://localhost:31452/exec -d "play 0 1"    # play hand[0] targeting combatId 1
+curl -X POST http://localhost:31452/exec -d "end"          # end turn
+curl -X POST http://localhost:31452/exec -d "instant"      # toggle FastModeType.Instant (animation skip — use this for training)
+curl -X POST http://localhost:31452/exec -d "room Monster" # dev-console passthrough: jump straight into a fight
+curl -X POST http://localhost:31452/exec -d "newrun IRONCLAD"  # start a fresh run from the main menu, no UI clicking (see docs/modding-approach.md)
+```
+
+## Python RL agent (`agent/`)
+
+A Gymnasium environment (`agent/env.py`, `STS2CombatEnv`) for Ironclad combat against a fixed encounter, plus a thin HTTP client (`agent/client.py`) and a random-action smoke test (`agent/random_agent.py`). Setup:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install gymnasium requests numpy stable-baselines3 torch
+cd agent && python random_agent.py
+```
+
+The env periodically calls `AutoSpireClient.full_restart()` (kill + relaunch + `newrun`, no clicking) instead of the lighter in-combat `fight` reset, since the live game's CPU/animation backlog only clears on a full process restart — see the "Open problem" / "Resolved" entries in `docs/modding-approach.md`.
 ```
 
 ## Key paths
