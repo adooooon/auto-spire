@@ -159,7 +159,7 @@ A Gymnasium environment (`agent/env.py`, `STS2CombatEnv`) for Ironclad combat ag
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install gymnasium requests numpy stable-baselines3 torch
+pip install gymnasium requests numpy stable-baselines3 sb3-contrib torch
 cd agent && python random_agent.py
 ```
 

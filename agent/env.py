@@ -7,7 +7,8 @@ Action space: Discrete(MAX_HAND + 1)
 
 Observation space: Box(79,) float32 — see _encode() for the layout.
 
-Episode = one combat against a fixed encounter (NIBBITS_WEAK by default).
+Episode = one combat against an encounter sampled uniformly from `encounters`
+(NIBBITS_WEAK only by default; WEAK_ENCOUNTERS = all Act 1 weak fights).
 Reset forces a clean fight via the game's own dev-console `fight` command,
 which clears any pending screens (see docs/modding-approach.md), so this
 works whether the previous episode ended in a win, a loss, or mid-turn.
@@ -26,6 +27,7 @@ from client import AutoSpireClient
 MAX_HAND = 10
 MAX_ENEMIES = 3
 ENCOUNTER = "NIBBITS_WEAK"
+WEAK_ENCOUNTERS = ("NIBBITS_WEAK", "SLIMES_WEAK", "SHRINKER_BEETLE_WEAK", "FUZZY_WURM_CRAWLER_WEAK")
 MAX_STEPS = 60
 
 CARD_FEATURES = 6  # cost, can_play, is_attack, is_skill, is_power, upgraded
@@ -99,16 +101,17 @@ class STS2CombatEnv(gym.Env):
 
     def __init__(
         self,
-        encounter: str = ENCOUNTER,
+        encounter: str | tuple[str, ...] | list[str] = ENCOUNTER,
         client: AutoSpireClient | None = None,
         episodes_per_restart: int = 40,
     ):
         super().__init__()
-        self.encounter = encounter
+        self.encounters = [encounter] if isinstance(encounter, str) else list(encounter)
         self.client = client or AutoSpireClient()
         self.action_space = spaces.Discrete(MAX_HAND + 1)
         self.observation_space = spaces.Box(low=-1.0, high=10.0, shape=(OBS_DIM,), dtype=np.float32)
         self._steps = 0
+        self._combat: dict = {}  # last observed state, for action_masks()
         # The live game's CPU/animation backlog only clears on a full process
         # restart (see docs/modding-approach.md) — periodically pay that cost
         # instead of letting every episode's `fight` reset degrade further.
@@ -129,11 +132,12 @@ class STS2CombatEnv(gym.Env):
                     self.client.full_restart()  # lands inRun=true on the Act 1 map, not yet in combat
                     self._needs_restart = False
                 self.client.exec("heal 999")
-                self.client.exec(f"fight {self.encounter}", settle=0.5)
+                self.client.exec(f"fight {self.np_random.choice(self.encounters)}", settle=0.5)
                 self.client.exec("heal 999")
                 combat = self.client.wait_for(_ready, timeout=15.0)
                 self._episode_count += 1
                 self._steps = 0
+                self._combat = combat
                 return _encode(combat), {}
             except (requests.RequestException, TimeoutError) as exc:
                 print(f"[env] reset() attempt {attempt} failed: {exc!r} — forcing full_restart and retrying")
@@ -159,7 +163,9 @@ class STS2CombatEnv(gym.Env):
             # win vs. loss.
             last_full = prev
             combat = prev
-            deadline = time.monotonic() + 8.0
+            # Enemy turns that add status cards (Slimed) play a preview animation and
+            # have been seen to take >8s with the window in the background.
+            deadline = time.monotonic() + 20.0
             while time.monotonic() < deadline:
                 combat = self.client.combat()
                 if not combat.get("inCombat"):
@@ -198,6 +204,18 @@ class STS2CombatEnv(gym.Env):
         if truncated:
             reward -= 1.0
 
+        self._combat = combat
         obs = _encode(combat) if not terminated else np.zeros(OBS_DIM, dtype=np.float32)
         info = {"invalid_action": invalid, "won": won}
         return obs, reward, terminated, truncated, info
+
+    def action_masks(self) -> np.ndarray:
+        """For sb3-contrib MaskablePPO: playable hand cards + end turn (always legal).
+
+        Without this a deterministic policy that picks an unplayable card gets
+        the same observation back and repeats it until truncation."""
+        hand = (self._combat.get("player") or {}).get("hand") or []
+        mask = np.zeros(MAX_HAND + 1, dtype=bool)
+        mask[:min(len(hand), MAX_HAND)] = [c["canPlay"] for c in hand[:MAX_HAND]]
+        mask[MAX_HAND] = True
+        return mask

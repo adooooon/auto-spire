@@ -1,75 +1,137 @@
-"""Compare sim vs. live game turn-by-turn under the same scripted policy.
+"""One-step sim-vs-live check: for every live step, load the live "before"
+state into the sim, apply the same action, and diff against the live "after".
 
-Nibbit's starting HP is randomized in both backends and there's no shared
-seed control via the mod, so this doesn't diff exact HP numbers — instead it
-diffs the *mechanics*: per-card damage dealt, enemy move order, block/energy
-arithmetic, turn count shape. See docs/modding-approach.md Phase A.
+Hand contents after a draw (end turn, Slimed) are random, so those aren't
+compared; everything else is — player HP/block/energy/Shrink, each enemy's
+HP/block/Strength/Vulnerable, Slimed cards added, combat end, and the enemy's
+next move (exact for fixed follow-ups, must-be-legal for random branches).
+
+Usage (from agent/, game running or launchable):
+    python -m sim.validate --fights 3
 """
 from __future__ import annotations
 
+import argparse
+import random
+import time
+
 from client import AutoSpireClient
-from sim.engine import SimClient
+from env import WEAK_ENCOUNTERS, STS2CombatEnv, _ready
+
+from .engine import MONSTERS, SimCombat, _Enemy
+
+PRIORITY = ("BASH", "STRIKE_IRONCLAD", "SLIMED", "DEFEND_IRONCLAD")
 
 
-def scripted_trajectory(client, label: str) -> list[dict]:
-    client.exec("heal 999")
-    client.exec("fight NIBBITS_WEAK", settle=0.5 if isinstance(client, AutoSpireClient) else 0.0)
-    client.exec("heal 999")
-    log = []
-    combat = client.wait_for(lambda c: c.get("inCombat") and c.get("isPlayPhase"), timeout=15.0)
-    turn = 0
-    while combat.get("inCombat"):
-        turn += 1
-        player = combat["player"]
-        enemy = combat["enemies"][0]
-        log.append({
-            "turn": turn,
-            "player_hp": player["hp"], "player_block": player["block"], "energy": player["energy"],
-            "enemy_hp": enemy["hp"], "enemy_block": enemy["block"],
-            "intent": enemy["intent"]["moveId"],
-            "hand_titles": [c["title"] for c in player["hand"]],
-        })
-        # scripted policy: play Bash if playable, else Strike, else Defend, else end turn
-        hand = player["hand"]
-        action = None
-        for want in ("Bash", "Strike", "Defend"):
-            for i, c in enumerate(hand):
-                if c["title"] == want and c["canPlay"]:
-                    action = i
-                    break
-            if action is not None:
-                break
-        if action is not None:
-            result = client.play(action)
-        else:
-            result = client.end_turn()
-        log.append({"turn": turn, "action_result": result})
+def _power(entity: dict, name: str) -> int:
+    return next((p["amount"] for p in entity.get("powers") or [] if p["name"] == name), 0)
 
-        if isinstance(client, AutoSpireClient):
-            import time
-            deadline = time.monotonic() + 8.0
-            while time.monotonic() < deadline:
-                combat = client.combat()
-                if not combat.get("inCombat") or combat.get("isPlayPhase"):
-                    break
-                time.sleep(0.05)
-        else:
-            combat = client.combat()
-    print(f"[{label}] combat ended after {turn} turns")
-    return log
+
+def load(c: dict, logs: dict[int, list[str]]) -> SimCombat:
+    p = c["player"]
+    sim = SimCombat(
+        player_hp=p["hp"], player_max_hp=p["maxHp"], player_block=p["block"], energy=p["energy"],
+        shrunk=_power(p, "ShrinkPower") != 0, round=c["round"], in_combat=True, is_play_phase=True,
+        hand=[x["id"] for x in p["hand"]], draw_pile=[x["id"] for x in p["drawPile"]],
+        discard_pile=[x["id"] for x in p["discardPile"]], exhaust_pile=[x["id"] for x in p["exhaustPile"]],
+        rng=random.Random(0),
+    )
+    for e in c["enemies"]:
+        if e["isAlive"]:
+            sim.enemies.append(_Enemy(MONSTERS[e["modelId"]], e["hp"], e["maxHp"], e["intent"]["moveId"],
+                                      block=e["block"], strength=_power(e, "StrengthPower"),
+                                      vulnerable=_power(e, "VulnerablePower"), log=list(logs[e["combatId"]])))
+    return sim
+
+
+def diff(before: dict, action: str, after: dict, sim: SimCombat, logs) -> list[str]:
+    out = []
+    if not after.get("inCombat"):
+        return [] if not sim.in_combat else ["live combat ended, sim did not"]
+    if not sim.in_combat:
+        return ["sim combat ended, live did not"]
+    s, p = sim.combat_dict(), after["player"]
+    for k in ("hp", "block", "energy"):
+        if s["player"][k] != p[k]:
+            out.append(f"player.{k}: sim={s['player'][k]} live={p[k]}")
+    if sim.shrunk != (_power(p, "ShrinkPower") != 0):
+        out.append(f"player shrink: sim={sim.shrunk} live={_power(p, 'ShrinkPower')}")
+    slimed = lambda pl: sum(x["id"] == "SLIMED" for k in ("hand", "drawPile", "discardPile") for x in pl[k])  # noqa: E731
+    if slimed(s["player"]) != slimed(p):
+        out.append(f"live Slimed in deck: sim={slimed(s['player'])} live={slimed(p)}")
+    live_by_id = {e["combatId"]: e for e in after["enemies"]}
+    alive_ids = [e["combatId"] for e in before["enemies"] if e["isAlive"]]
+    for cid, se in zip(alive_ids, sim.enemies):
+        le = live_by_id.get(cid)
+        live_hp = le["hp"] if le and le["isAlive"] else 0
+        if se.hp != live_hp:
+            out.append(f"{se.defn.model_id}#{cid}.hp: sim={se.hp} live={live_hp}")
+        if not le or not le["isAlive"]:
+            continue
+        for name, sv, lv in (("block", se.block, le["block"]), ("strength", se.strength, _power(le, "StrengthPower")),
+                             ("vulnerable", se.vulnerable, _power(le, "VulnerablePower"))):
+            if sv != lv:
+                out.append(f"{se.defn.model_id}#{cid}.{name}: sim={sv} live={lv}")
+        if action == "end":
+            prev = logs[cid][-1]  # move just performed
+            spec = se.defn.follow[prev]
+            legal = {spec} if isinstance(spec, str) else {
+                m for m, n in spec if not (len(logs[cid]) >= n and all(x == m for x in logs[cid][-n:]))}
+            if le["intent"]["moveId"] not in legal:
+                out.append(f"{se.defn.model_id}#{cid} next move: live={le['intent']['moveId']} legal={legal}")
+    return out
+
+
+def wait_ready(client) -> dict:
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        c = client.combat()
+        if not c.get("inCombat") or _ready(c):
+            return c
+        time.sleep(0.05)
+    raise TimeoutError("turn never returned to the player")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--fights", type=int, default=3, help="live fights per encounter")
+    ap.add_argument("--encounters", default="weak")
+    args = ap.parse_args()
+    encounters = WEAK_ENCOUNTERS if args.encounters == "weak" else args.encounters.split(",")
+
+    env = STS2CombatEnv(client=AutoSpireClient())
+    client = env.client
+    steps = mismatched = 0
+    for enc in encounters:
+        env.encounters = [enc]
+        for fight in range(args.fights):
+            env.reset()
+            c = client.combat()
+            logs = {e["combatId"]: [] for e in c["enemies"]}
+            print(f"[{enc} #{fight}] " + ", ".join(f"{e['modelId']}({e['hp']})" for e in c["enemies"]))
+            while c.get("inCombat"):
+                hand = c["player"]["hand"]
+                idx = next((i for want in PRIORITY for i, x in enumerate(hand) if x["id"] == want and x["canPlay"]), None)
+                action = "end" if idx is None else f"play {idx}"
+                sim = load(c, logs)
+                if idx is None:
+                    sim.end_turn()
+                    client.end_turn()
+                    for e in c["enemies"]:
+                        if e["isAlive"]:
+                            logs[e["combatId"]].append(e["intent"]["moveId"])
+                else:
+                    sim.play_card(idx)
+                    client.play(idx)
+                after = wait_ready(client)
+                problems = diff(c, action, after, sim, logs)
+                steps += 1
+                if problems:
+                    mismatched += 1
+                    print(f"  round {c['round']} {action} ({hand[idx]['id'] if idx is not None else ''}): " + "; ".join(problems))
+                c = after
+    print(f"\n{steps} steps compared, {mismatched} with mismatches")
 
 
 if __name__ == "__main__":
-    live = AutoSpireClient()
-    if not live.ping():
-        raise SystemExit("live game not reachable — launch it first")
-
-    print("=== LIVE ===")
-    live_log = scripted_trajectory(live, "live")
-    for entry in live_log:
-        print(entry)
-
-    print("\n=== SIM ===")
-    sim_log = scripted_trajectory(SimClient(seed=123), "sim")
-    for entry in sim_log:
-        print(entry)
+    main()

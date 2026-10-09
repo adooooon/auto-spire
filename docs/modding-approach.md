@@ -309,6 +309,20 @@ During a live eval, a fight froze mid-combat (`inCombat=true`, `isPlayPhase=fals
 
 Second bug found the same day: `/exec play|end` only *enqueues* the action (via `ActionQueueSynchronizer.RequestEnqueue` on the main thread) and returns, so `env.step()`'s first `/combat` poll often saw the pre-action state with `isPlayPhase=true` and handed the policy a stale observation — it then repeated the action, which the game silently dropped. Symptom: every `exec:` line doubled in `godot.log`, live episodes ~2x longer than sim (23.6 vs 12.5 steps), and two wins misreported as non-wins. Fix: `/combat` now includes `actionsIdle` (`ActionQueueSet.IsEmpty && !ActionExecutor.IsRunning`), and `env.py`'s `_ready()` waits for it. After the fix, live matched sim: 20/20 wins, 12.9 steps/ep, 196 play commands = 196 cards played, 62 end-turns = 62 enemy moves, 0 errors.
 
+### 2026-10-09: Sim extended to all Act 1 weak encounters
+
+`agent/sim/engine.py` now models NIBBITS_WEAK, SLIMES_WEAK, SHRINKER_BEETLE_WEAK and FUZZY_WURM_CRAWLER_WEAK (all seven monsters, ascension 0), with monsters as data (`MONSTERS`) and move selection ported from `RandomBranchState.GetStateWeight` (CannotRepeat / CanRepeatXTimes). New mechanics: multiple enemies, Shrink (player attacks ×0.7), the Slimed status card (1 energy, draw 1, Exhaust). Live-game facts learned while validating:
+- **Dead enemies are removed from `/combat`'s `enemies` list** (combatIds of the survivors stay stable) — the sim matches this so observation slots line up.
+- **Power `id`s are not the bare names** — match powers by `name` (`VulnerablePower`, `StrengthPower`, `ShrinkPower`).
+- **Damage rounding**: modifiers multiply as decimals (`Hook.ModifyDamage`), HP loss is truncated (`Creature.LoseHpInternal`) — equivalent to flooring before block for integer block.
+- **Enemy turns with a Slimed card preview can take >8s** with the window backgrounded — `env.step()` now waits up to 20s.
+
+`agent/sim/validate.py` is now a one-step check: load each live "before" state into the sim, apply the same action, diff against the live "after" (everything except post-draw hand contents; random enemy moves checked for legality). Result: 127 steps over 12 live fights (3 per encounter, all 4 slime variants seen), 0 mismatches. `python -m sim.test_engine` covers the rules that are easy to get subtly wrong (rounding, repeat limits, Slimed).
+
+Known limitation: enemy-targeted cards always hit the first living enemy (the mod's auto-target), so the agent can't focus a specific slime. Adding target selection to the action space is the obvious next step for multi-enemy fights.
+
+Training switched to sb3-contrib `MaskablePPO` with `env.action_masks()` (playable hand cards + end turn): the unmasked policy won 19/20 live fights, and the miss was a SLIMES_WEAK fight where it chose the same unplayable card 58 times until truncation. The masked model (`ppo_sts2_sim_weak_final`, 500k sim steps over all four weak encounters) went 100% in sim on each encounter (1,000 episodes each) and **20/20 live** (mean 12.1 steps, 0 invalid actions, 0 errors in `godot.log`). The direct binary launch in `full_restart` needs the Steam client running — otherwise Steamworks init fails with "Could not determine Steam client install directory" and the game shows an error popup instead of the menu.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.
