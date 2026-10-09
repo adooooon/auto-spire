@@ -112,7 +112,10 @@ def main():
             while c.get("inCombat"):
                 hand = c["player"]["hand"]
                 idx = next((i for want in PRIORITY for i, x in enumerate(hand) if x["id"] == want and x["canPlay"]), None)
-                action = "end" if idx is None else f"play {idx}"
+                living = [e for e in c["enemies"] if e["isAlive"]]
+                # Random target exercises targeting; sim enemies are the living ones in order.
+                pos = random.randrange(len(living)) if idx is not None and hand[idx]["targetType"] == "AnyEnemy" else None
+                action = "end" if idx is None else f"play {idx}" + ("" if pos is None else f" @{living[pos]['modelId']}")
                 sim = load(c, logs)
                 if idx is None:
                     sim.end_turn()
@@ -121,8 +124,8 @@ def main():
                         if e["isAlive"]:
                             logs[e["combatId"]].append(e["intent"]["moveId"])
                 else:
-                    sim.play_card(idx)
-                    client.play(idx)
+                    sim.play_card(idx, None if pos is None else pos + 1)
+                    client.play(idx, None if pos is None else living[pos]["combatId"])
                 after = wait_ready(client)
                 problems = diff(c, action, after, sim, logs)
                 steps += 1

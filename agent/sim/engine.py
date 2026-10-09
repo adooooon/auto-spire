@@ -18,8 +18,9 @@ integer math, so 0.7 * 1.5 products don't hit float error).
 Known simplifications (acceptable for this scope — starter deck only, no card
 rewards mid-episode, Act 1 weak fights only):
   - No relics, potions, or player powers other than Shrink.
-  - Enemy-targeted cards hit the first living enemy, matching the mod's
-    auto-target (combatState.HittableEnemies.FirstOrDefault()).
+  - Enemy-targeted cards hit the enemy with the given combatId, or the first
+    living enemy if none is given (the mod's auto-target,
+    combatState.HittableEnemies.FirstOrDefault()).
 """
 from __future__ import annotations
 
@@ -196,7 +197,7 @@ class SimCombat:
         self._draw(HAND_DRAW_COUNT)
         self.is_play_phase = True
 
-    def play_card(self, hand_index: int) -> dict:
+    def play_card(self, hand_index: int, target_id: int | None = None) -> dict:
         if not self.in_combat or not self.is_play_phase:
             return {"error": "not_play_phase"}
         if hand_index < 0 or hand_index >= len(self.hand):
@@ -205,11 +206,16 @@ class SimCombat:
         card = STARTER_CARDS[card_id]
         if card.cost > self.energy:
             return {"error": "card_not_playable", "card": card_id}
+        if target_id is None:
+            target = next((e for e in self.enemies if e.is_alive), None)
+        else:  # combatId = index + 1, see _enemy_dict
+            target = self.enemies[target_id - 1] if 0 < target_id <= len(self.enemies) else None
+            if target is None or not target.is_alive:
+                return {"error": "invalid_target", "targetId": target_id}
 
         self.energy -= card.cost
         self.hand.pop(hand_index)
 
-        target = next((e for e in self.enemies if e.is_alive), None)
         if card.damage and target:
             dmg = player_attack_damage(card.damage, target.vulnerable > 0, self.shrunk)
             absorbed = min(target.block, dmg)
@@ -356,13 +362,13 @@ class SimClient:
             self._combat = SimCombat(rng=self._combat.rng)
             return {"ok": True}
         if verb == "play":
-            return self._combat.play_card(int(parts[1]))
+            return self._combat.play_card(int(parts[1]), int(parts[2]) if len(parts) > 2 else None)
         if verb == "end":
             return self._combat.end_turn()
         return {"error": "unknown_command", "cmd": cmd}
 
-    def play(self, hand_index: int) -> dict:
-        return self._combat.play_card(hand_index)
+    def play(self, hand_index: int, target_id: int | None = None) -> dict:
+        return self._combat.play_card(hand_index, target_id)
 
     def end_turn(self) -> dict:
         return self._combat.end_turn()

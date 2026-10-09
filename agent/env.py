@@ -1,11 +1,12 @@
 """Gymnasium environment for STS2 combat, scoped to a single fixed encounter.
 
-Action space: Discrete(MAX_HAND + 1)
-  0..MAX_HAND-1 -> play the card at that hand index (mod auto-targets the
-                   first hittable enemy for enemy-targeted cards)
-  MAX_HAND      -> end turn
+Action space: Discrete(MAX_HAND * MAX_ENEMIES + 1)
+  a < END_TURN -> play hand card a // MAX_ENEMIES at enemy slot a % MAX_ENEMIES
+                  (slot = index into the living-enemy list, sent as its combatId;
+                  only AnyEnemy cards use the slot — others are masked to slot 0)
+  END_TURN     -> end turn
 
-Observation space: Box(79,) float32 — see _encode() for the layout.
+Observation space: Box(OBS_DIM,) float32 — see _encode() for the layout.
 
 Episode = one combat against an encounter sampled uniformly from `encounters`
 (NIBBITS_WEAK only by default; WEAK_ENCOUNTERS = all Act 1 weak fights).
@@ -29,10 +30,11 @@ MAX_ENEMIES = 3
 ENCOUNTER = "NIBBITS_WEAK"
 WEAK_ENCOUNTERS = ("NIBBITS_WEAK", "SLIMES_WEAK", "SHRINKER_BEETLE_WEAK", "FUZZY_WURM_CRAWLER_WEAK")
 MAX_STEPS = 60
+END_TURN = MAX_HAND * MAX_ENEMIES
 
 CARD_FEATURES = 6  # cost, can_play, is_attack, is_skill, is_power, upgraded
 PLAYER_FEATURES = 4  # hp, block, energy, maxEnergy
-ENEMY_FEATURES = 5  # hp, block, intent_damage, is_attack_intent, is_alive
+ENEMY_FEATURES = 7  # hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, is_alive
 OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + MAX_ENEMIES * ENEMY_FEATURES
 
 
@@ -70,11 +72,14 @@ def _encode(combat: dict) -> np.ndarray:
             intent = e.get("intent") or {}
             intents = intent.get("intents") or []
             atk = next((it for it in intents if it["type"] == "Attack"), None)
+            vuln = next((p["amount"] for p in e.get("powers") or [] if p["name"] == "VulnerablePower"), 0)
             enemy_feats += [
                 e["hp"] / max(e["maxHp"], 1),
+                e["hp"] / 50.0,
                 e.get("block", 0) / 30.0,
                 (atk["totalDamage"] if atk else 0) / 30.0,
                 float(atk is not None),
+                vuln / 5.0,
                 1.0,
             ]
         else:
@@ -108,7 +113,7 @@ class STS2CombatEnv(gym.Env):
         super().__init__()
         self.encounters = [encounter] if isinstance(encounter, str) else list(encounter)
         self.client = client or AutoSpireClient()
-        self.action_space = spaces.Discrete(MAX_HAND + 1)
+        self.action_space = spaces.Discrete(END_TURN + 1)
         self.observation_space = spaces.Box(low=-1.0, high=10.0, shape=(OBS_DIM,), dtype=np.float32)
         self._steps = 0
         self._combat: dict = {}  # last observed state, for action_masks()
@@ -151,8 +156,16 @@ class STS2CombatEnv(gym.Env):
             prev_enemy_hp = _total_enemy_hp(prev)
             prev_player_hp = _player_hp(prev)
 
-            if action < MAX_HAND:
-                result = self.client.play(action)
+            if action < END_TURN:
+                card, slot = divmod(int(action), MAX_ENEMIES)
+                hand = (prev.get("player") or {}).get("hand") or []
+                enemies = prev.get("enemies") or []
+                if card < len(hand) and hand[card]["targetType"] == "AnyEnemy" and slot < len(enemies):
+                    result = self.client.play(card, enemies[slot]["combatId"])
+                elif slot == 0:
+                    result = self.client.play(card)
+                else:  # slot on a non-targeted card, or no enemy in that slot
+                    result = {"error": "invalid_target"}
             else:
                 result = self.client.end_turn()
             invalid = "error" in result
@@ -210,12 +223,17 @@ class STS2CombatEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def action_masks(self) -> np.ndarray:
-        """For sb3-contrib MaskablePPO: playable hand cards + end turn (always legal).
+        """For sb3-contrib MaskablePPO: playable hand cards x living enemy slots
+        (slot 0 only for cards that don't pick a target) + end turn (always legal).
 
         Without this a deterministic policy that picks an unplayable card gets
         the same observation back and repeats it until truncation."""
         hand = (self._combat.get("player") or {}).get("hand") or []
-        mask = np.zeros(MAX_HAND + 1, dtype=bool)
-        mask[:min(len(hand), MAX_HAND)] = [c["canPlay"] for c in hand[:MAX_HAND]]
-        mask[MAX_HAND] = True
+        n_enemies = min(len(self._combat.get("enemies") or []), MAX_ENEMIES)
+        mask = np.zeros(END_TURN + 1, dtype=bool)
+        for i, c in enumerate(hand[:MAX_HAND]):
+            if c["canPlay"]:
+                slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
+                mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True
+        mask[END_TURN] = True
         return mask

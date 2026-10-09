@@ -319,9 +319,13 @@ Second bug found the same day: `/exec play|end` only *enqueues* the action (via 
 
 `agent/sim/validate.py` is now a one-step check: load each live "before" state into the sim, apply the same action, diff against the live "after" (everything except post-draw hand contents; random enemy moves checked for legality). Result: 127 steps over 12 live fights (3 per encounter, all 4 slime variants seen), 0 mismatches. `python -m sim.test_engine` covers the rules that are easy to get subtly wrong (rounding, repeat limits, Slimed).
 
-Known limitation: enemy-targeted cards always hit the first living enemy (the mod's auto-target), so the agent can't focus a specific slime. Adding target selection to the action space is the obvious next step for multi-enemy fights.
+Initially enemy-targeted cards always hit the first living enemy (the mod's auto-target), so the agent couldn't focus a specific slime — fixed by target selection, below.
 
 Training switched to sb3-contrib `MaskablePPO` with `env.action_masks()` (playable hand cards + end turn): the unmasked policy won 19/20 live fights, and the miss was a SLIMES_WEAK fight where it chose the same unplayable card 58 times until truncation. The masked model (`ppo_sts2_sim_weak_final`, 500k sim steps over all four weak encounters) went 100% in sim on each encounter (1,000 episodes each) and **20/20 live** (mean 12.1 steps, 0 invalid actions, 0 errors in `godot.log`). The direct binary launch in `full_restart` needs the Steam client running — otherwise Steamworks init fails with "Could not determine Steam client install directory" and the game shows an error popup instead of the menu.
+
+### 2026-10-09: Target selection
+
+The mod's `play <idx> <targetId>` already took an optional target; the env now uses it. Action space is `Discrete(MAX_HAND * MAX_ENEMIES + 1)` = 31: card `a // 3` at enemy slot `a % 3`, where the slot indexes the living-enemy list (stable within a step, since dead enemies are dropped) and is sent as that enemy's `combatId`. `action_masks()` opens every living slot for `AnyEnemy` cards and only slot 0 for the rest, so there are no duplicate actions. Enemy features gained absolute HP and Vulnerable (7 per enemy), since "which one dies first" is not visible from the HP fraction alone. `sim.validate` now plays random targets: 41 live slime steps hitting combatIds 1/2/3, 0 mismatches. Retrained 1M sim steps: 100% sim win rate on every weak encounter, **20/20 live** (mean 10.0 steps vs 12.1 untargeted, 0 invalid, 0 errors). In SLIMES_WEAK it learned to ignore the medium slime and kill both smalls first, usually the Twig Slime S (attacks every turn) — the old auto-target hit the medium second.
 
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 

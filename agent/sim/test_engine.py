@@ -33,6 +33,17 @@ n = len(c.hand)
 c.play_card(0)
 assert c.energy == 2 and len(c.hand) == n and c.exhaust_pile == ["SLIMED"]
 
+# Targeting: hits the chosen combatId; dead/out-of-range targets are rejected.
+c = SimCombat(rng=random.Random(3))
+c.fight("SLIMES_WEAK")
+c.hand[0] = "STRIKE_IRONCLAD"
+hp = [e.hp for e in c.enemies]
+c.play_card(0, 3)
+assert [e.hp for e in c.enemies] == hp[:2] + [max(0, hp[2] - 6)], (hp, [e.hp for e in c.enemies])
+c.enemies[1].hp = 0
+c.hand[0] = "STRIKE_IRONCLAD"
+assert c.play_card(0, 2)["error"] == "invalid_target" and c.play_card(0, 9)["error"] == "invalid_target"
+
 # Every encounter runs to completion under a random policy.
 for enc in ENCOUNTERS:
     sim = SimClient(seed=2)
@@ -42,4 +53,16 @@ for enc in ENCOUNTERS:
             hand = sim.combat()["player"]["hand"]
             playable = [i for i, h in enumerate(hand) if h["canPlay"]]
             (sim.play(rng.choice(playable)) if playable and rng.random() < 0.8 else sim.end_turn())
+
+# Env: every masked-legal action is accepted by the sim (no invalid actions).
+from env import STS2CombatEnv  # noqa: E402
+
+env = STS2CombatEnv(encounter=list(ENCOUNTERS), client=SimClient(seed=4))
+for _ in range(100):
+    env.reset()
+    done = False
+    while not done:
+        _, _, term, trunc, info = env.step(int(rng.choice(env.action_masks().nonzero()[0])))
+        assert not info.get("invalid_action"), info
+        done = term or trunc
 print("sim self-check ok")

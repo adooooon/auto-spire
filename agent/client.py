@@ -75,8 +75,8 @@ class AutoSpireClient:
             time.sleep(settle)
         return result
 
-    def play(self, hand_index: int) -> dict[str, Any]:
-        return self.exec(f"play {hand_index}")
+    def play(self, hand_index: int, target_id: int | None = None) -> dict[str, Any]:
+        return self.exec(f"play {hand_index}" + ("" if target_id is None else f" {target_id}"))
 
     def end_turn(self) -> dict[str, Any]:
         return self.exec("end")
