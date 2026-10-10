@@ -1,6 +1,5 @@
 """Pure-Python combat simulator: Ironclad's starter deck vs. Act 1 (Overgrowth)
-weak encounters — NIBBITS_WEAK, SLIMES_WEAK, SHRINKER_BEETLE_WEAK,
-FUZZY_WURM_CRAWLER_WEAK.
+weak and normal encounters — see ENCOUNTERS.
 
 Ported directly from decompiled game source rather than guessed at (ascension
 0 values): monsters from decompiled/MegaCrit.Sts2.Core.Models.Monsters/, encounter
@@ -16,8 +15,8 @@ integer block that equals flooring first, which is what we do (in exact
 integer math, so 0.7 * 1.5 products don't hit float error).
 
 Known simplifications (acceptable for this scope — starter deck only, no card
-rewards mid-episode, Act 1 weak fights only):
-  - No relics, potions, or player powers other than Shrink.
+rewards mid-episode, Act 1 fights only):
+  - No relics, potions, or player powers other than Shrink, Vulnerable, Frail.
   - Enemy-targeted cards hit the enemy with the given combatId, or the first
     living enemy if none is given (the mod's auto-target,
     combatState.HittableEnemies.FirstOrDefault()).
@@ -42,12 +41,19 @@ class Move:
     strength: int = 0  # gained by the monster
     shrink: bool = False  # applies infinite Shrink to the player (ShrinkPower.cs: -30% attack damage)
     slimed: int = 0  # Slimed status cards added to the player's discard pile
+    hits: int = 1  # MultiAttackIntent hit count (each hit is reduced by block separately)
+    vulnerable: int = 0  # Vulnerable applied to the player
+    frail: int = 0  # Frail applied to the player
 
 
-# A RandomBranchState: equal-weight choice among (move, max consecutive uses).
+# A RandomBranchState: equal-weight choice among (move, max consecutive uses[, cooldown]).
 # Weight is 0 if the last `max` logged moves were all this move — that's the
-# CannotRepeat (max=1) / CanRepeatXTimes rule in RandomBranchState.GetStateWeight.
-Branch = tuple[tuple[str, int], ...]
+# CannotRepeat (max=1) / CanRepeatXTimes rule in RandomBranchState.GetStateWeight —
+# or, for max=ONCE (UseOnlyOnce), if it was ever used; and also 0 if it is among the
+# last `cooldown` moves. Careful: AddBranch(state, int, MoveRepeatType) takes a
+# *cooldown*, not a weight.
+Branch = tuple[tuple, ...]
+ONCE = 0
 
 
 @dataclass(frozen=True)
@@ -62,9 +68,11 @@ class MonsterDef:
 
 _LEAF_S_RAND: Branch = (("TACKLE_MOVE", 1), ("GOOP_MOVE", 1))
 _TWIG_M_RAND: Branch = (("POKEY_POUNCE_MOVE", 2), ("STICKY_SHOT_MOVE", 1))
+_MAWLER_RAND: Branch = (("RIP_AND_TEAR_MOVE", 1), ("ROAR_MOVE", ONCE), ("CLAW_MOVE", 1))
+_FLYCONID_RAND: Branch = (("VULNERABLE_SPORES_MOVE", 1, 3), ("FRAIL_SPORES_MOVE", 1, 2), ("SMASH_MOVE", 1))
 
 MONSTERS: dict[str, MonsterDef] = {m.model_id: m for m in [
-    # Nibbit.cs — always alone in NibbitsWeak, so the fixed (not-alone-branch) cycle.
+    # Nibbit.cs — alone (NibbitsWeak) it opens with BUTT; NibbitsNormal overrides the opener per slot.
     MonsterDef("NIBBIT", "Nibbit", (42, 46), {
         "BUTT_MOVE": Move("Attack", damage=12),
         "SLICE_MOVE": Move("Attack", damage=6, block=5),
@@ -95,32 +103,87 @@ MONSTERS: dict[str, MonsterDef] = {m.model_id: m for m in [
         "POKEY_POUNCE_MOVE": Move("Attack", damage=11),
         "STICKY_SHOT_MOVE": Move("Status", slimed=1),
     }, "STICKY_SHOT_MOVE", {"POKEY_POUNCE_MOVE": _TWIG_M_RAND, "STICKY_SHOT_MOVE": _TWIG_M_RAND}),
+    MonsterDef("MAWLER", "Mawler", (72, 72), {
+        "RIP_AND_TEAR_MOVE": Move("Attack", damage=14),
+        "ROAR_MOVE": Move("Debuff", vulnerable=3),
+        "CLAW_MOVE": Move("Attack", damage=4, hits=2),
+    }, "CLAW_MOVE", dict.fromkeys(("RIP_AND_TEAR_MOVE", "ROAR_MOVE", "CLAW_MOVE"), _MAWLER_RAND)),
+    MonsterDef("FLYCONID", "Flyconid", (47, 49), {
+        "VULNERABLE_SPORES_MOVE": Move("Debuff", vulnerable=2),
+        "FRAIL_SPORES_MOVE": Move("Attack", damage=8, frail=2),
+        "SMASH_MOVE": Move("Attack", damage=11),
+    }, (("FRAIL_SPORES_MOVE", 1, 2), ("SMASH_MOVE", 1)),
+        dict.fromkeys(("VULNERABLE_SPORES_MOVE", "FRAIL_SPORES_MOVE", "SMASH_MOVE"), _FLYCONID_RAND)),
+    # Ruby Raiders (RubyRaidersNormal.cs picks 3 distinct of these 5).
+    MonsterDef("ASSASSIN_RUBY_RAIDER", "Assassin Raider", (18, 23), {
+        "KILLSHOT_MOVE": Move("Attack", damage=10),
+    }, "KILLSHOT_MOVE", {"KILLSHOT_MOVE": "KILLSHOT_MOVE"}),
+    MonsterDef("AXE_RUBY_RAIDER", "Axe Raider", (20, 22), {
+        "SWING_1": Move("Attack", damage=5, block=5),
+        "SWING_2": Move("Attack", damage=5, block=5),
+        "BIG_SWING": Move("Attack", damage=12),
+    }, "SWING_1", {"SWING_1": "SWING_2", "SWING_2": "BIG_SWING", "BIG_SWING": "SWING_1"}),
+    MonsterDef("BRUTE_RUBY_RAIDER", "Brute Raider", (30, 33), {
+        "BEAT_MOVE": Move("Attack", damage=7),
+        "ROAR_MOVE": Move("Buff", strength=3),
+    }, "BEAT_MOVE", {"BEAT_MOVE": "ROAR_MOVE", "ROAR_MOVE": "BEAT_MOVE"}),
+    MonsterDef("CROSSBOW_RUBY_RAIDER", "Crossbow Raider", (18, 21), {
+        "FIRE_MOVE": Move("Attack", damage=14),
+        "RELOAD_MOVE": Move("Defend", block=3),
+    }, "RELOAD_MOVE", {"RELOAD_MOVE": "FIRE_MOVE", "FIRE_MOVE": "RELOAD_MOVE"}),
+    MonsterDef("TRACKER_RUBY_RAIDER", "Tracker Raider", (21, 25), {
+        "TRACK_MOVE": Move("Debuff", frail=2),
+        "HOUNDS_MOVE": Move("Attack", damage=1, hits=8),
+    }, "TRACK_MOVE", {"TRACK_MOVE": "HOUNDS_MOVE", "HOUNDS_MOVE": "HOUNDS_MOVE"}),
 ]}
+RUBY_RAIDERS = ("AXE_RUBY_RAIDER", "ASSASSIN_RUBY_RAIDER", "BRUTE_RUBY_RAIDER", "CROSSBOW_RUBY_RAIDER", "TRACKER_RUBY_RAIDER")
 
 
 def encounter_roster(encounter: str, rng: random.Random) -> list[str]:
+    """Monster ids in slot order; "ID:MOVE" overrides the opening move."""
+    small = rng.sample(["LEAF_SLIME_S", "TWIG_SLIME_S"], 2)
     if encounter == "SLIMES_WEAK":  # SlimesWeak.cs: small, medium, the *other* small
-        small = rng.sample(["LEAF_SLIME_S", "TWIG_SLIME_S"], 2)
         return [small[0], rng.choice(["LEAF_SLIME_M", "TWIG_SLIME_M"]), small[1]]
     rosters = {
         "NIBBITS_WEAK": ["NIBBIT"],
         "SHRINKER_BEETLE_WEAK": ["SHRINKER_BEETLE"],
         "FUZZY_WURM_CRAWLER_WEAK": ["FUZZY_WURM_CRAWLER"],
+        # NibbitsNormal.cs: front opens SLICE, back opens HISS (Nibbit's not-alone branch).
+        "NIBBITS_NORMAL": ["NIBBIT:SLICE_MOVE", "NIBBIT:HISS_MOVE"],
+        "SLIMES_NORMAL": ["TWIG_SLIME_M", "LEAF_SLIME_M", *small],
+        "OVERGROWTH_CRAWLERS": ["SHRINKER_BEETLE", "FUZZY_WURM_CRAWLER"],
+        "MAWLER_NORMAL": ["MAWLER"],
+        "FLYCONID_NORMAL": [rng.choice(["LEAF_SLIME_M", "TWIG_SLIME_M"]), "FLYCONID"],
+        "RUBY_RAIDERS_NORMAL": rng.sample(RUBY_RAIDERS, 3),
     }
     if encounter not in rosters:
         raise ValueError(f"sim does not model encounter {encounter!r} (only {ENCOUNTERS})")
     return rosters[encounter]
 
 
-ENCOUNTERS = ("NIBBITS_WEAK", "SLIMES_WEAK", "SHRINKER_BEETLE_WEAK", "FUZZY_WURM_CRAWLER_WEAK")
+ENCOUNTERS = ("NIBBITS_WEAK", "SLIMES_WEAK", "SHRINKER_BEETLE_WEAK", "FUZZY_WURM_CRAWLER_WEAK",
+              "NIBBITS_NORMAL", "SLIMES_NORMAL", "OVERGROWTH_CRAWLERS",
+              "MAWLER_NORMAL", "FLYCONID_NORMAL", "RUBY_RAIDERS_NORMAL")
+
+
+def legal_moves(spec: str | Branch, log: list[str]) -> list[str]:
+    """Moves a branch can pick next, in branch order (RandomBranchState.GetStateWeight)."""
+    if isinstance(spec, str):
+        return [spec]
+
+    def ok(m: str, n: int, cooldown: int = 0) -> bool:
+        if cooldown and m in log[-cooldown:]:
+            return False
+        if n == ONCE:
+            return m not in log
+        return not (len(log) >= n and all(x == m for x in log[-n:]))
+
+    # GetNextState: with total weight 0, NextFloat(0) = 0 and the loop returns the first branch.
+    return [b[0] for b in spec if ok(*b)] or [spec[0][0]]
 
 
 def pick_move(spec: str | Branch, log: list[str], rng: random.Random) -> str:
-    if isinstance(spec, str):
-        return spec
-    moves = [m for m, _ in spec]
-    weights = [0 if len(log) >= n and all(x == m for x in log[-n:]) else 1 for m, n in spec]
-    return rng.choices(moves, weights)[0]
+    return rng.choice(legal_moves(spec, log))
 
 
 def player_attack_damage(base: int, target_vulnerable: bool, shrunk: bool) -> int:
@@ -150,6 +213,8 @@ class SimCombat:
     player_max_hp: int = PLAYER_MAX_HP
     player_block: int = 0
     shrunk: bool = False
+    vulnerable: int = 0  # player's: monster attacks x1.5
+    frail: int = 0  # player's: card block x0.75
     energy: int = 0
     round: int = 1
     in_combat: bool = False
@@ -167,15 +232,17 @@ class SimCombat:
 
     def fight(self, encounter: str) -> None:
         self.enemies = []
-        for model_id in encounter_roster(encounter, self.rng):
+        for entry in encounter_roster(encounter, self.rng):
+            model_id, _, first = entry.partition(":")
             d = MONSTERS[model_id]
             hp = self.rng.randint(*d.hp)
-            self.enemies.append(_Enemy(d, hp, hp, pick_move(d.first, [], self.rng)))
+            self.enemies.append(_Enemy(d, hp, hp, first or pick_move(d.first, [], self.rng)))
         self.draw_pile = starter_deck()
         self.rng.shuffle(self.draw_pile)
         self.hand, self.discard_pile, self.exhaust_pile = [], [], []
         self.player_block = 0
         self.shrunk = False
+        self.vulnerable = self.frail = 0
         self.round = 1
         self.in_combat = True
         self.won = None
@@ -221,10 +288,14 @@ class SimCombat:
             absorbed = min(target.block, dmg)
             target.block -= absorbed
             target.hp = max(0, target.hp - (dmg - absorbed))
+            # ShrinkPower.AfterDeath: Shrink goes away when its applier dies.
+            # ponytail: assumes one Shrink source per fight (true for all Act 1 rosters).
+            if not target.is_alive and any(m.shrink for m in target.defn.moves.values()):
+                self.shrunk = False
         if card.vulnerable and target and target.is_alive:
             target.vulnerable += card.vulnerable
         if card.block:
-            self.player_block += card.block
+            self.player_block += card.block * 3 // 4 if self.frail else card.block
         if card.draw:
             self._draw(card.draw)
         (self.exhaust_pile if card.exhaust else self.discard_pile).append(card_id)
@@ -246,23 +317,37 @@ class SimCombat:
         alive = [e for e in self.enemies if e.is_alive]
         for e in alive:
             e.block = 0  # block clears at the start of the enemy's own turn
+        # PowerCmd.Apply: a debuff newly applied to the player skips its next tick-down,
+        # so it survives the end of the enemy turn that applied it.
+        fresh = set()
         for e in alive:
             mv = e.defn.moves[e.move]
-            if mv.damage:
-                self._damage_player(mv.damage + e.strength)
+            for _ in range(mv.hits if mv.damage else 0):
+                self._damage_player(self.monster_hit_damage(mv.damage + e.strength))
                 if not self.in_combat:
                     return
             e.block += mv.block
             e.strength += mv.strength
             self.shrunk |= mv.shrink
             self.discard_pile += ["SLIMED"] * mv.slimed
+            for name in ("vulnerable", "frail"):
+                if getattr(mv, name):
+                    if not getattr(self, name):
+                        fresh.add(name)
+                    setattr(self, name, getattr(self, name) + getattr(mv, name))
             e.log.append(e.move)
             e.move = pick_move(e.defn.follow[e.move], e.log, self.rng)
 
         for e in alive:
             e.vulnerable = max(0, e.vulnerable - 1)  # ticks down after the enemy's turn ends
+        for name in ("vulnerable", "frail"):  # the player's tick at the same point
+            if name not in fresh:
+                setattr(self, name, max(0, getattr(self, name) - 1))
         self.round += 1
         self._start_player_turn()
+
+    def monster_hit_damage(self, base: int) -> int:
+        return base * 3 // 2 if self.vulnerable else base
 
     def _damage_player(self, dmg: int) -> None:
         absorbed = min(self.player_block, dmg)
@@ -279,9 +364,10 @@ class SimCombat:
 
     def _enemy_dict(self, i: int, e: _Enemy) -> dict:
         mv = e.defn.moves[e.move]
+        hit = self.monster_hit_damage(mv.damage + e.strength)
         intents = (
-            [{"type": "Attack", "className": "SingleAttackIntent", "damage": mv.damage + e.strength,
-              "hits": 1, "totalDamage": mv.damage + e.strength}]
+            [{"type": "Attack", "className": "MultiAttackIntent" if mv.hits > 1 else "SingleAttackIntent",
+              "damage": hit, "hits": mv.hits, "totalDamage": hit * mv.hits}]
             if mv.damage else [{"type": mv.intent, "className": f"{mv.intent}Intent"}]
         )
         powers = []
@@ -323,7 +409,9 @@ class SimCombat:
                 "drawPile": cards(self.draw_pile),
                 "discardPile": cards(self.discard_pile),
                 "exhaustPile": cards(self.exhaust_pile),
-                "powers": [{"id": "SHRINK", "name": "ShrinkPower", "type": "Debuff", "amount": -1}] if self.shrunk else [],
+                "powers": [{"id": n.upper(), "name": n, "type": "Debuff", "amount": a} for n, a in (
+                    ("ShrinkPower", -1 if self.shrunk else 0), ("VulnerablePower", self.vulnerable),
+                    ("FrailPower", self.frail)) if a],
                 "relics": [],
                 "potions": [],
                 "deck": cards(starter_deck()),
@@ -344,7 +432,8 @@ class SimClient:
         return True
 
     def state(self) -> dict:
-        return {"phase": "combat" if self._combat.in_combat else "map", "inRun": True}
+        return {"phase": "combat" if self._combat.in_combat else "map", "inRun": True,
+                "player": {"hp": self._combat.player_hp}}
 
     def combat(self) -> dict:
         return self._combat.combat_dict()

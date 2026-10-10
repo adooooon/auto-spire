@@ -25,6 +25,16 @@ for _ in range(500):
 s = "".join("P" if m == "POKEY_POUNCE_MOVE" else "S" for m in log)
 assert "PPP" not in s and "SS" not in s and "PP" in s, s[:40]
 
+# Flyconid: cooldowns can zero every branch; the game then falls back to the first one.
+fly = MONSTERS["FLYCONID"]
+assert pick_move(fly.follow["SMASH_MOVE"], ["VULNERABLE_SPORES_MOVE", "FRAIL_SPORES_MOVE", "SMASH_MOVE"], rng) \
+    == "VULNERABLE_SPORES_MOVE"
+# Mawler: Roar at most once per fight.
+log = ["CLAW_MOVE"]
+for _ in range(200):
+    log.append(pick_move(MONSTERS["MAWLER"].follow[log[-1]], log, rng))
+assert log.count("ROAR_MOVE") <= 1, log
+
 # Slimed: costs 1, draws 1, exhausts.
 c = SimCombat(rng=random.Random(1))
 c.fight("NIBBITS_WEAK")
@@ -44,6 +54,13 @@ c.enemies[1].hp = 0
 c.hand[0] = "STRIKE_IRONCLAD"
 assert c.play_card(0, 2)["error"] == "invalid_target" and c.play_card(0, 9)["error"] == "invalid_target"
 
+# Killing the Shrinker Beetle removes the player's Shrink (ShrinkPower.AfterDeath).
+c = SimCombat(rng=random.Random(5))
+c.fight("OVERGROWTH_CRAWLERS")
+c.shrunk, c.enemies[0].hp, c.hand[0] = True, 1, "STRIKE_IRONCLAD"
+c.play_card(0, 1)
+assert not c.shrunk and c.in_combat
+
 # Every encounter runs to completion under a random policy.
 for enc in ENCOUNTERS:
     sim = SimClient(seed=2)
@@ -53,6 +70,10 @@ for enc in ENCOUNTERS:
             hand = sim.combat()["player"]["hand"]
             playable = [i for i, h in enumerate(hand) if h["canPlay"]]
             (sim.play(rng.choice(playable)) if playable and rng.random() < 0.8 else sim.end_turn())
+
+from env import ENCOUNTER_GROUPS  # noqa: E402
+
+assert set(ENCOUNTER_GROUPS["act1"]) == set(ENCOUNTERS), "env encounter groups out of sync with the sim"
 
 # Env: every masked-legal action is accepted by the sim (no invalid actions).
 from env import STS2CombatEnv  # noqa: E402
@@ -65,4 +86,12 @@ for _ in range(100):
         _, _, term, trunc, info = env.step(int(rng.choice(env.action_masks().nonzero()[0])))
         assert not info.get("invalid_action"), info
         done = term or trunc
+# Env: dying is a loss (the last in-combat snapshot still shows HP > 0).
+env = STS2CombatEnv(encounter="OVERGROWTH_CRAWLERS", client=SimClient(seed=1))
+env.reset()
+done = False
+while not done:
+    _, r, term, trunc, info = env.step(env.action_space.n - 1)  # only ever end turn
+    done = term or trunc
+assert term and info["won"] is False and info["player_hp"] == 0 and r < 0, (info, r)
 print("sim self-check ok")

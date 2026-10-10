@@ -9,7 +9,7 @@ Action space: Discrete(MAX_HAND * MAX_ENEMIES + 1)
 Observation space: Box(OBS_DIM,) float32 — see _encode() for the layout.
 
 Episode = one combat against an encounter sampled uniformly from `encounters`
-(NIBBITS_WEAK only by default; WEAK_ENCOUNTERS = all Act 1 weak fights).
+(NIBBITS_WEAK only by default; see ENCOUNTER_GROUPS for the Act 1 sets).
 Reset forces a clean fight via the game's own dev-console `fight` command,
 which clears any pending screens (see docs/modding-approach.md), so this
 works whether the previous episode ended in a win, a loss, or mid-turn.
@@ -26,14 +26,22 @@ from gymnasium import spaces
 from client import AutoSpireClient
 
 MAX_HAND = 10
-MAX_ENEMIES = 3
+MAX_ENEMIES = 4  # SLIMES_NORMAL
 ENCOUNTER = "NIBBITS_WEAK"
 WEAK_ENCOUNTERS = ("NIBBITS_WEAK", "SLIMES_WEAK", "SHRINKER_BEETLE_WEAK", "FUZZY_WURM_CRAWLER_WEAK")
+NORMAL_ENCOUNTERS = ("NIBBITS_NORMAL", "SLIMES_NORMAL", "OVERGROWTH_CRAWLERS",
+                     "MAWLER_NORMAL", "FLYCONID_NORMAL", "RUBY_RAIDERS_NORMAL")
+ENCOUNTER_GROUPS = {"weak": WEAK_ENCOUNTERS, "normal": NORMAL_ENCOUNTERS, "act1": WEAK_ENCOUNTERS + NORMAL_ENCOUNTERS}
+
+
+def parse_encounters(arg: str) -> list[str]:
+    """CLI --encounters: a group name (weak/normal/act1) or comma-separated encounter ids."""
+    return list(ENCOUNTER_GROUPS.get(arg) or arg.split(","))
 MAX_STEPS = 60
 END_TURN = MAX_HAND * MAX_ENEMIES
 
 CARD_FEATURES = 6  # cost, can_play, is_attack, is_skill, is_power, upgraded
-PLAYER_FEATURES = 4  # hp, block, energy, maxEnergy
+PLAYER_FEATURES = 7  # hp, block, energy, maxEnergy, shrunk, vulnerable, frail
 ENEMY_FEATURES = 7  # hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, is_alive
 OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + MAX_ENEMIES * ENEMY_FEATURES
 
@@ -47,6 +55,10 @@ def _encode_card(card: dict) -> list[float]:
         float(card["type"] == "Power"),
         float(card["upgraded"]),
     ]
+
+
+def _power(entity: dict, name: str) -> int:
+    return next((p["amount"] for p in entity.get("powers") or [] if p["name"] == name), 0)
 
 
 def _encode(combat: dict) -> np.ndarray:
@@ -63,6 +75,9 @@ def _encode(combat: dict) -> np.ndarray:
         player.get("block", 0) / 30.0,
         player.get("energy", 0) / 10.0,
         player.get("maxEnergy", 0) / 10.0,
+        float(_power(player, "ShrinkPower") != 0),
+        _power(player, "VulnerablePower") / 5.0,
+        _power(player, "FrailPower") / 5.0,
     ]
 
     enemy_feats: list[float] = []
@@ -72,14 +87,13 @@ def _encode(combat: dict) -> np.ndarray:
             intent = e.get("intent") or {}
             intents = intent.get("intents") or []
             atk = next((it for it in intents if it["type"] == "Attack"), None)
-            vuln = next((p["amount"] for p in e.get("powers") or [] if p["name"] == "VulnerablePower"), 0)
             enemy_feats += [
                 e["hp"] / max(e["maxHp"], 1),
                 e["hp"] / 50.0,
                 e.get("block", 0) / 30.0,
                 (atk["totalDamage"] if atk else 0) / 30.0,
                 float(atk is not None),
-                vuln / 5.0,
+                _power(e, "VulnerablePower") / 5.0,
                 1.0,
             ]
         else:
@@ -201,9 +215,15 @@ class STS2CombatEnv(gym.Env):
         truncated = (not terminated) and self._steps >= MAX_STEPS
 
         if terminated:
-            enemy_hp = _total_enemy_hp(last_full)
-            player_hp = _player_hp(last_full)
+            # last_full predates the final blow, so it can't tell a death from a win —
+            # /state still carries the player after combat ends.
+            try:
+                player_hp = (self.client.state().get("player") or {})["hp"]
+            except (requests.RequestException, KeyError):
+                self._needs_restart = True
+                return np.zeros(OBS_DIM, dtype=np.float32), -1.0, True, False, {"aborted": True}
             won = player_hp > 0
+            enemy_hp = 0 if won else _total_enemy_hp(last_full)
         else:
             enemy_hp = _total_enemy_hp(combat)
             player_hp = _player_hp(combat)
@@ -219,7 +239,7 @@ class STS2CombatEnv(gym.Env):
 
         self._combat = combat
         obs = _encode(combat) if not terminated else np.zeros(OBS_DIM, dtype=np.float32)
-        info = {"invalid_action": invalid, "won": won}
+        info = {"invalid_action": invalid, "won": won, "player_hp": player_hp}
         return obs, reward, terminated, truncated, info
 
     def action_masks(self) -> np.ndarray:

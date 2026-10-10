@@ -21,7 +21,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 
 from client import AutoSpireClient
-from env import WEAK_ENCOUNTERS, STS2CombatEnv
+from env import STS2CombatEnv, parse_encounters
 from sim.engine import SimClient
 
 MODEL_DIR = Path(__file__).parent / "models"
@@ -33,11 +33,11 @@ def main():
     parser.add_argument("--timesteps", type=int, default=8000)
     parser.add_argument("--episodes-per-restart", type=int, default=40)
     parser.add_argument("--encounters", default="NIBBITS_WEAK",
-                        help='comma-separated encounter ids, or "weak" for all Act 1 weak fights')
+                        help='comma-separated encounter ids, or a group: weak, normal, act1')
     parser.add_argument("--backend", choices=["live", "sim"], default="live")
     parser.add_argument("--resume", type=str, default=None, help="path to a .zip checkpoint to continue training from")
     args = parser.parse_args()
-    encounters = WEAK_ENCOUNTERS if args.encounters == "weak" else args.encounters.split(",")
+    encounters = parse_encounters(args.encounters)
 
     MODEL_DIR.mkdir(exist_ok=True)
     LOG_DIR.mkdir(exist_ok=True)

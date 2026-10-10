@@ -327,6 +327,32 @@ Training switched to sb3-contrib `MaskablePPO` with `env.action_masks()` (playab
 
 The mod's `play <idx> <targetId>` already took an optional target; the env now uses it. Action space is `Discrete(MAX_HAND * MAX_ENEMIES + 1)` = 31: card `a // 3` at enemy slot `a % 3`, where the slot indexes the living-enemy list (stable within a step, since dead enemies are dropped) and is sent as that enemy's `combatId`. `action_masks()` opens every living slot for `AnyEnemy` cards and only slot 0 for the rest, so there are no duplicate actions. Enemy features gained absolute HP and Vulnerable (7 per enemy), since "which one dies first" is not visible from the HP fraction alone. `sim.validate` now plays random targets: 41 live slime steps hitting combatIds 1/2/3, 0 mismatches. Retrained 1M sim steps: 100% sim win rate on every weak encounter, **20/20 live** (mean 10.0 steps vs 12.1 untargeted, 0 invalid, 0 errors). In SLIMES_WEAK it learned to ignore the medium slime and kill both smalls first, usually the Twig Slime S (attacks every turn) — the old auto-target hit the medium second.
 
+### 2026-10-09: Sim extended to Act 1 normal encounters
+
+Added NIBBITS_NORMAL, SLIMES_NORMAL (4 slimes, so `MAX_ENEMIES` = 4), OVERGROWTH_CRAWLERS, MAWLER_NORMAL, FLYCONID_NORMAL and RUBY_RAIDERS_NORMAL (3 distinct of 5 raiders) — 10 Act 1 encounters total; `--encounters weak|normal|act1` selects groups. Not yet modeled: Inklets, Cubex Construct, Vine Shambler, Fogmog, Snapping Jaxfruit, Slithering Strangler (they need Slippery, Artifact, Tangled, Constrict, summons, Dazed), plus elites and bosses. Game rules learned from source and confirmed live:
+- **Shrink is removed when its applier dies** (`ShrinkPower.AfterDeath`) — killing the Shrinker Beetle first in OVERGROWTH_CRAWLERS restores full attack damage.
+- **A debuff newly applied to the player skips its next tick** (`PowerCmd.Apply` sets `SkipNextDurationTick` for player-side debuffs; stacking onto an existing one doesn't). Vulnerable and Frail both tick at the end of the *enemy* turn, so a fresh Vulnerable 3 lasts 3 full player turns.
+- **`AddBranch(state, int, MoveRepeatType)` takes a cooldown, not a weight** (Flyconid's 3 and 2), and `UseOnlyOnce` zeroes a move once it's in the log (Mawler's Roar).
+- **When every branch weight is 0, `GetNextState` returns the first branch** (`NextFloat(0)` = 0 satisfies `num <= 0` immediately). Flyconid hits this after Vulnerable → Frail → Smash.
+- Nibbit's opener depends on its slot: alone → BUTT, NibbitsNormal front → SLICE, back → HISS.
+- Live intent damage includes the player's Vulnerable (×1.5 per hit, floored).
+
+The observation gained player Shrink/Vulnerable/Frail. `sim.validate` now also checks player debuffs and intent damage (when sim and live picked the same move): 356 live steps over all 10 encounters, 0 mismatches.
+
+**Bug found: deaths were scored as wins** (in `env.py` since the first version). Once combat ends `/combat` returns only `{"inCombat": false}`, and the env decided the outcome from the last in-combat snapshot — which predates the killing blow, so the player always still had HP. Deaths got +5 instead of −5, in training and in sim evals (live evals were unaffected in practice: they were cross-checked against `godot.log`'s "has won against" lines). Fix: on termination the env reads the player's final HP from `/state`, which still carries the player after combat (confirmed live: HP 0, `won=False`). Re-scored, the model trained under the bug was really 91.6% on OVERGROWTH_CRAWLERS and 99.8% on RUBY_RAIDERS_NORMAL, not 100%.
+
+Act 1 model (`ppo_sts2_sim_act1_final`, 3M sim steps over all 10 encounters), sim, 500 fights each — win rate / HP lost per fight (of 80):
+
+| Encounter | Win | HP lost | | Encounter | Win | HP lost |
+|---|---|---|---|---|---|---|
+| NIBBITS_WEAK | 100% | 12.3 | | SLIMES_NORMAL | 100% | 44.1 |
+| SLIMES_WEAK | 100% | 12.1 | | OVERGROWTH_CRAWLERS | 94.6% | 69.0 |
+| SHRINKER_BEETLE_WEAK | 100% | 8.0 | | MAWLER_NORMAL | 100% | 27.2 |
+| FUZZY_WURM_CRAWLER_WEAK | 100% | 7.4 | | FLYCONID_NORMAL | 100% | 32.7 |
+| NIBBITS_NORMAL | 100% | 34.3 | | RUBY_RAIDERS_NORMAL | 100% | 46.6 |
+
+Win rate is saturated except OVERGROWTH_CRAWLERS; HP lost is the number to push down, since in a real run HP carries between fights (`evaluate.py` now reports it).
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.

@@ -116,6 +116,9 @@ class AutoSpireClient:
             except OSError:
                 return 0
 
+        # Without the Steam client, Steamworks init fails and the game sits on an error popup.
+        if subprocess.run(["pgrep", "-x", "steam_osx"], capture_output=True).returncode != 0:
+            raise RuntimeError("Steam client isn't running — start Steam, then retry")
         subprocess.run(["pkill", "-f", "SlayTheSpire2.app/Contents/MacOS"], check=False)
         time.sleep(2.0)
         subprocess.Popen(

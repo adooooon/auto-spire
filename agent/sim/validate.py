@@ -16,22 +16,19 @@ import random
 import time
 
 from client import AutoSpireClient
-from env import WEAK_ENCOUNTERS, STS2CombatEnv, _ready
+from env import STS2CombatEnv, _power, _ready, parse_encounters
 
-from .engine import MONSTERS, SimCombat, _Enemy
+from .engine import MONSTERS, SimCombat, _Enemy, legal_moves
 
 PRIORITY = ("BASH", "STRIKE_IRONCLAD", "SLIMED", "DEFEND_IRONCLAD")
-
-
-def _power(entity: dict, name: str) -> int:
-    return next((p["amount"] for p in entity.get("powers") or [] if p["name"] == name), 0)
 
 
 def load(c: dict, logs: dict[int, list[str]]) -> SimCombat:
     p = c["player"]
     sim = SimCombat(
         player_hp=p["hp"], player_max_hp=p["maxHp"], player_block=p["block"], energy=p["energy"],
-        shrunk=_power(p, "ShrinkPower") != 0, round=c["round"], in_combat=True, is_play_phase=True,
+        shrunk=_power(p, "ShrinkPower") != 0, vulnerable=_power(p, "VulnerablePower"), frail=_power(p, "FrailPower"),
+        round=c["round"], in_combat=True, is_play_phase=True,
         hand=[x["id"] for x in p["hand"]], draw_pile=[x["id"] for x in p["drawPile"]],
         discard_pile=[x["id"] for x in p["discardPile"]], exhaust_pile=[x["id"] for x in p["exhaustPile"]],
         rng=random.Random(0),
@@ -56,6 +53,10 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs) -> list[s
             out.append(f"player.{k}: sim={s['player'][k]} live={p[k]}")
     if sim.shrunk != (_power(p, "ShrinkPower") != 0):
         out.append(f"player shrink: sim={sim.shrunk} live={_power(p, 'ShrinkPower')}")
+    for name in ("vulnerable", "frail"):
+        live = _power(p, f"{name.capitalize()}Power")
+        if getattr(sim, name) != live:
+            out.append(f"player {name}: sim={getattr(sim, name)} live={live}")
     slimed = lambda pl: sum(x["id"] == "SLIMED" for k in ("hand", "drawPile", "discardPile") for x in pl[k])  # noqa: E731
     if slimed(s["player"]) != slimed(p):
         out.append(f"live Slimed in deck: sim={slimed(s['player'])} live={slimed(p)}")
@@ -72,11 +73,12 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs) -> list[s
                              ("vulnerable", se.vulnerable, _power(le, "VulnerablePower"))):
             if sv != lv:
                 out.append(f"{se.defn.model_id}#{cid}.{name}: sim={sv} live={lv}")
+        atk = lambda e: next((i["totalDamage"] for i in e["intent"]["intents"] if i["type"] == "Attack"), 0)  # noqa: E731
+        if se.move == le["intent"]["moveId"] and atk(sim._enemy_dict(0, se)) != atk(le):  # random picks may differ
+            out.append(f"{se.defn.model_id}#{cid} intent damage: sim={atk(sim._enemy_dict(0, se))} live={atk(le)}")
         if action == "end":
             prev = logs[cid][-1]  # move just performed
-            spec = se.defn.follow[prev]
-            legal = {spec} if isinstance(spec, str) else {
-                m for m, n in spec if not (len(logs[cid]) >= n and all(x == m for x in logs[cid][-n:]))}
+            legal = legal_moves(se.defn.follow[prev], logs[cid])
             if le["intent"]["moveId"] not in legal:
                 out.append(f"{se.defn.model_id}#{cid} next move: live={le['intent']['moveId']} legal={legal}")
     return out
@@ -97,7 +99,7 @@ def main():
     ap.add_argument("--fights", type=int, default=3, help="live fights per encounter")
     ap.add_argument("--encounters", default="weak")
     args = ap.parse_args()
-    encounters = WEAK_ENCOUNTERS if args.encounters == "weak" else args.encounters.split(",")
+    encounters = parse_encounters(args.encounters)
 
     env = STS2CombatEnv(client=AutoSpireClient())
     client = env.client
