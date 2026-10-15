@@ -353,6 +353,8 @@ Act 1 model (`ppo_sts2_sim_act1_final`, 3M sim steps over all 10 encounters), si
 
 Win rate is saturated except OVERGROWTH_CRAWLERS; HP lost is the number to push down, since in a real run HP carries between fights (`evaluate.py` now reports it).
 
+Live, 24 fights over the 6 normal encounters (2–8 of each, sampled): **24/24 wins**, mean 34.2 HP lost (the sim predicts ~38 for that mix), 19.8 steps/fight, 0 invalid actions, 0 errors in `godot.log`.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.
