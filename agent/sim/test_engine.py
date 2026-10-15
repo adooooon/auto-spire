@@ -61,6 +61,67 @@ c.shrunk, c.enemies[0].hp, c.hand[0] = True, 1, "STRIKE_IRONCLAD"
 c.play_card(0, 1)
 assert not c.shrunk and c.in_combat
 
+# Slippery: first HP loss capped at 1. Artifact: eats Bash's Vulnerable.
+c = SimCombat(rng=random.Random(6))
+c.fight("INKLETS_NORMAL")
+hp = c.enemies[0].hp
+c.hand[0] = "STRIKE_IRONCLAD"
+c.play_card(0, 1)
+assert c.enemies[0].hp == hp - 1 and c.enemies[0].slippery == 0
+c = SimCombat(rng=random.Random(6))
+c.fight("CUBEX_CONSTRUCT_NORMAL")
+assert c.enemies[0].block == 13 and c.enemies[0].artifact == 1
+c.hand[0] = "BASH"
+c.play_card(0, 1)
+assert c.enemies[0].vulnerable == 0 and c.enemies[0].artifact == 0 and c.enemies[0].block == 5
+
+# Tangled: Attacks cost +1 for one player turn.
+c = SimCombat(rng=random.Random(7))
+c.fight("VINE_SHAMBLER_NORMAL")
+c.enemies[0].move = "GRASPING_VINES_MOVE"
+c.end_turn()
+assert c.tangled == 1 and c.combat_dict()["player"]["hand"][0]["cost"] in (1, 2, 3)
+assert all(h["cost"] == 2 for h in c.combat_dict()["player"]["hand"] if h["id"] == "STRIKE_IRONCLAD")
+c.end_turn()
+assert c.tangled == 0
+
+# Constrict: blockable damage at the end of the player's turn; gone when the Strangler dies.
+c = SimCombat(rng=random.Random(8))
+c.fight("SLITHERING_STRANGLER_NORMAL")
+c.constrict, c.player_block, hp = 3, 1, c.player_hp
+c.enemies[-1].move = "CONSTRICT"
+for e in c.enemies[:-1]:
+    e.hp = 0
+c.end_turn()
+assert c.player_hp == hp - 2 and c.constrict == 6, (c.player_hp, hp, c.constrict)
+c.enemies[-1].hp, c.hand[0] = 1, "STRIKE_IRONCLAD"
+c.play_card(0, len(c.enemies))
+assert not c.in_combat and c.won and c.constrict == 0
+
+# Fogmog: summons an Eye (acts next turn); the Eye revives, Dazed is Ethereal, and killing
+# Fogmog wins with the Eye alive.
+c = SimCombat(rng=random.Random(9))
+c.fight("FOGMOG_NORMAL")
+c.end_turn()
+eye = c.enemies[0]  # summons go in front (FogmogNormal.Slots)
+assert eye.defn.model_id == "EYE_WITH_TEETH" and eye.move == "DISTRACT_MOVE" and "DAZED" not in c.discard_pile
+c.end_turn()
+assert sum(pile.count("DAZED") for pile in (c.draw_pile, c.hand, c.discard_pile, c.exhaust_pile)) == 3
+eye.hp = 1
+c.hand[0] = "STRIKE_IRONCLAD"
+c.play_card(0, 1)
+assert not eye.is_alive and eye.in_combat and c.in_combat and eye.move == "REVIVE_MOVE"
+assert [e["isAlive"] for e in c.combat_dict()["enemies"]] == [False, True]
+c.hand.append("DAZED")
+c.end_turn()
+assert eye.hp == eye.max_hp and eye.move == "DISTRACT_MOVE" and "DAZED" in c.exhaust_pile
+c.enemies[1].hp, c.hand[0] = 1, "STRIKE_IRONCLAD"
+c.play_card(0, 2)
+assert c.won and eye.is_alive
+w = __import__("collections").Counter(pick_move(MONSTERS["FOGMOG"].follow["SWIPE_MOVE"], ["SWIPE_MOVE"], rng)
+                                       for _ in range(5000))
+assert 0.36 < w["SWIPE_RANDOM_MOVE"] / 5000 < 0.44, w
+
 # Every encounter runs to completion under a random policy.
 for enc in ENCOUNTERS:
     sim = SimClient(seed=2)

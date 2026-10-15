@@ -32,7 +32,9 @@ MAX_ENEMIES = 4  # SLIMES_NORMAL
 ENCOUNTER = "NIBBITS_WEAK"
 WEAK_ENCOUNTERS = ("NIBBITS_WEAK", "SLIMES_WEAK", "SHRINKER_BEETLE_WEAK", "FUZZY_WURM_CRAWLER_WEAK")
 NORMAL_ENCOUNTERS = ("NIBBITS_NORMAL", "SLIMES_NORMAL", "OVERGROWTH_CRAWLERS",
-                     "MAWLER_NORMAL", "FLYCONID_NORMAL", "RUBY_RAIDERS_NORMAL")
+                     "MAWLER_NORMAL", "FLYCONID_NORMAL", "RUBY_RAIDERS_NORMAL",
+                     "INKLETS_NORMAL", "CUBEX_CONSTRUCT_NORMAL", "VINE_SHAMBLER_NORMAL", "FOGMOG_NORMAL",
+                     "SNAPPING_JAXFRUIT_NORMAL", "SLITHERING_STRANGLER_NORMAL")
 ENCOUNTER_GROUPS = {"weak": WEAK_ENCOUNTERS, "normal": NORMAL_ENCOUNTERS, "act1": WEAK_ENCOUNTERS + NORMAL_ENCOUNTERS}
 
 
@@ -43,14 +45,15 @@ MAX_STEPS = 60
 END_TURN = MAX_HAND * MAX_ENEMIES
 
 CARD_FEATURES = 6  # cost, can_play, is_attack, is_skill, is_power, upgraded
-PLAYER_FEATURES = 8  # hp, block, energy, maxEnergy, shrunk, vulnerable, frail, round
+PLAYER_FEATURES = 10  # hp, block, energy, maxEnergy, shrunk, vulnerable, frail, tangled, constrict, round
 # Monster identity matters (which one applies Shrink, whose Strength stacks) and HP alone
 # only hints at it; the one-hot covers every monster the sim models.
 MONSTER_IDS = sorted(MONSTERS)
 CARD_IDS = sorted(STARTER_CARDS)
 PILE_FEATURES = 2 * len(CARD_IDS)  # per-card counts in draw and discard piles
-# hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, strength, is_alive + identity
-ENEMY_FEATURES = 8 + len(MONSTER_IDS)
+# hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, strength, artifact, slippery,
+# is_alive + identity
+ENEMY_FEATURES = 10 + len(MONSTER_IDS)
 OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES
 
 
@@ -69,10 +72,16 @@ def _power(entity: dict, name: str) -> int:
     return next((p["amount"] for p in entity.get("powers") or [] if p["name"] == name), 0)
 
 
+def _living(combat: dict) -> list[dict]:
+    """Living enemies in list order — the slots actions target. A dead illusion stays in
+    /combat's list (isAlive=false) until it revives, but can't be hit."""
+    return [e for e in combat.get("enemies") or [] if e.get("isAlive")]
+
+
 def _encode(combat: dict) -> np.ndarray:
     player = combat.get("player") or {}
     hand = player.get("hand") or []
-    enemies = combat.get("enemies") or []
+    enemies = _living(combat)
 
     hand_feats: list[float] = []
     for i in range(MAX_HAND):
@@ -86,6 +95,8 @@ def _encode(combat: dict) -> np.ndarray:
         float(_power(player, "ShrinkPower") != 0),
         _power(player, "VulnerablePower") / 5.0,
         _power(player, "FrailPower") / 5.0,
+        _power(player, "TangledPower") / 2.0,
+        _power(player, "ConstrictPower") / 10.0,
         combat.get("round", 0) / 20.0,
     ]
     pile_feats = [sum(c["id"] == cid for c in player.get(pile) or []) / 5.0
@@ -93,7 +104,7 @@ def _encode(combat: dict) -> np.ndarray:
 
     enemy_feats: list[float] = []
     for i in range(MAX_ENEMIES):
-        if i < len(enemies) and enemies[i].get("isAlive"):
+        if i < len(enemies):
             e = enemies[i]
             intent = e.get("intent") or {}
             intents = intent.get("intents") or []
@@ -106,6 +117,8 @@ def _encode(combat: dict) -> np.ndarray:
                 float(atk is not None),
                 _power(e, "VulnerablePower") / 5.0,
                 _power(e, "StrengthPower") / 10.0,
+                float(_power(e, "ArtifactPower")),
+                float(_power(e, "SlipperyPower")),
                 1.0,
             ] + [float(e.get("modelId") == mid) for mid in MONSTER_IDS]
         else:
@@ -185,7 +198,7 @@ class STS2CombatEnv(gym.Env):
             if action < END_TURN:
                 card, slot = divmod(int(action), MAX_ENEMIES)
                 hand = (prev.get("player") or {}).get("hand") or []
-                enemies = prev.get("enemies") or []
+                enemies = _living(prev)
                 if card < len(hand) and hand[card]["targetType"] == "AnyEnemy" and slot < len(enemies):
                     result = self.client.play(card, enemies[slot]["combatId"])
                 elif slot == 0:
@@ -261,7 +274,7 @@ class STS2CombatEnv(gym.Env):
         Without this a deterministic policy that picks an unplayable card gets
         the same observation back and repeats it until truncation."""
         hand = (self._combat.get("player") or {}).get("hand") or []
-        n_enemies = min(len(self._combat.get("enemies") or []), MAX_ENEMIES)
+        n_enemies = min(len(_living(self._combat)), MAX_ENEMIES)
         mask = np.zeros(END_TURN + 1, dtype=bool)
         for i, c in enumerate(hand[:MAX_HAND]):
             if c["canPlay"]:

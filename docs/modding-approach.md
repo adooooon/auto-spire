@@ -329,7 +329,7 @@ The mod's `play <idx> <targetId>` already took an optional target; the env now u
 
 ### 2026-10-09: Sim extended to Act 1 normal encounters
 
-Added NIBBITS_NORMAL, SLIMES_NORMAL (4 slimes, so `MAX_ENEMIES` = 4), OVERGROWTH_CRAWLERS, MAWLER_NORMAL, FLYCONID_NORMAL and RUBY_RAIDERS_NORMAL (3 distinct of 5 raiders) — 10 Act 1 encounters total; `--encounters weak|normal|act1` selects groups. Not yet modeled: Inklets, Cubex Construct, Vine Shambler, Fogmog, Snapping Jaxfruit, Slithering Strangler (they need Slippery, Artifact, Tangled, Constrict, summons, Dazed), plus elites and bosses. Game rules learned from source and confirmed live:
+Added NIBBITS_NORMAL, SLIMES_NORMAL (4 slimes, so `MAX_ENEMIES` = 4), OVERGROWTH_CRAWLERS, MAWLER_NORMAL, FLYCONID_NORMAL and RUBY_RAIDERS_NORMAL (3 distinct of 5 raiders) — 10 Act 1 encounters total (the other 6 normals were added 2026-10-15, below); `--encounters weak|normal|act1` selects groups. Game rules learned from source and confirmed live:
 - **Shrink is removed when its applier dies** (`ShrinkPower.AfterDeath`) — killing the Shrinker Beetle first in OVERGROWTH_CRAWLERS restores full attack damage.
 - **A debuff newly applied to the player skips its next tick** (`PowerCmd.Apply` sets `SkipNextDurationTick` for player-side debuffs; stacking onto an existing one doesn't). Vulnerable and Frail both tick at the end of the *enemy* turn, so a fresh Vulnerable 3 lasts 3 full player turns.
 - **`AddBranch(state, int, MoveRepeatType)` takes a cooldown, not a weight** (Flyconid's 3 and 2), and `UseOnlyOnce` zeroes a move once it's in the log (Mawler's Roar).
@@ -370,6 +370,21 @@ v2 (`ppo_sts2_sim_act1_v2_final`), sim, 1,000 fights each — win rate / HP lost
 | NIBBITS_NORMAL | 100% | 39.9 (34.3) | | RUBY_RAIDERS_NORMAL | 100% | 43.0 (46.6) |
 
 It flipped strategy: it now kills the Shrinker Beetle first in every OVERGROWTH_CRAWLERS fight (500/500), removing Shrink, instead of racing the Wurm. NIBBITS_NORMAL got slightly worse (34.3 → 39.9). Live: **10/10 OVERGROWTH_CRAWLERS** (mean 32.9 HP lost vs v1's ~69 in sim) and **20/20 over all 10 Act 1 encounters** (21.6 HP lost, 0 invalid actions); every win confirmed in `godot.log`, 0 errors.
+
+### 2026-10-15: Sim covers all 16 Act 1 weak + normal encounters
+
+Added INKLETS_NORMAL, CUBEX_CONSTRUCT_NORMAL, VINE_SHAMBLER_NORMAL, FOGMOG_NORMAL, SNAPPING_JAXFRUIT_NORMAL and SLITHERING_STRANGLER_NORMAL. Still not modeled: elites and bosses. Game rules learned from source and confirmed live:
+- **Slippery** (Inklets, 1 stack): the next HP loss of ≥1 after block is capped at 1, then the stack is spent (`ModifyHpLostAfterOsty` + `AfterDamageReceived`).
+- **Artifact** (Cubex, 1): negates the next debuff applied to it — Bash's Vulnerable — and spends a charge. Cubex also starts with 13 block (`AfterAddedToRoom`), which clears at the start of its first turn.
+- **Tangled** (Vine Shambler): Attack cards cost +amount; removed at the end of the player's next turn. `/combat`'s card `cost` already includes it (`EnergyCost.GetWithModifiers`).
+- **Constrict** (Slithering Strangler, +3 per use, stacks): damage at the end of the *player's* turn. It's `ValueProp.Unpowered`, not `Unblockable`, so block absorbs it and Vulnerable doesn't apply. Removed when the Strangler dies.
+- **Summons and illusions** (Fogmog): `ILLUSION_MOVE` adds an Eye With Teeth. Creatures are ordered by encounter slot and `FogmogNormal.Slots` = `["illusion", "fogmog"]`, so the Eye goes **in front** of Fogmog in `/combat` and acts first. `ExecuteEnemyTurn` iterates a snapshot, so a summon first acts the turn after. The Eye has IllusionPower + MinionPower: when killed it **stays in `/combat`'s enemy list with `isAlive=false`** (the one exception to "dead enemies are removed"), loses its debuffs, and on its next turn performs `REVIVE_MOVE` (heal to full) then resumes `DISTRACT_MOVE` (3 Dazed into the discard pile). Combat ends when no *primary* enemy is alive (`CombatManager.IsEnding`), so killing Fogmog wins with the Eye alive.
+- **Dazed**: Unplayable (cost −1), Ethereal (exhausted if still in hand at end of turn).
+- Weighted branches exist: Fogmog's `SWIPE_RANDOM` 0.4 / `HEADBUTT` 0.6. `CanRepeatForever` (Strangler) never zeroes a weight. Inklet builds an `INIT_RAND` it never uses: the opener is JAB, or WHIRLWIND for the middle Inklet.
+
+Env: action slots and observations now index *living* enemies only (`env._living()`), since a dead illusion can't be targeted. The observation gained player Tangled/Constrict and enemy Artifact/Slippery. `sim.validate` now pairs enemies by list position (summons shift ids) and checks Dazed counts, attack costs (when hands match), Tangled/Constrict/Artifact/Slippery and the enemy list itself. Result: 173 + 160 + the Inklets/Cubex/Vine runs, 0 mismatches. The Eye revived 12 times in those fights (`godot.log`: "EYE_WITH_TEETH performing move REVIVE_MOVE").
+
+v3 (`ppo_sts2_sim_act1_v3_final`, 15M steps over all 16, 64×64 net): 100% in sim on all 6 new encounters (HP lost 24–39) and **18/18 live** on them (24.3 HP lost, 0 errors). But it regressed on two old ones vs v2 — OVERGROWTH_CRAWLERS 99.1% / 63.9 HP lost (back to killing the Wurm first) and SLIMES_NORMAL 42.8 HP lost — so v4 retrains with a 256×256 net (`train.py --net 256 256`).
 
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 

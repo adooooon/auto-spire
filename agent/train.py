@@ -38,6 +38,7 @@ def main():
                         help='comma-separated encounter ids, or a group: weak, normal, act1')
     parser.add_argument("--backend", choices=["live", "sim"], default="live")
     parser.add_argument("--name", default=None, help="model name (default: ppo_sts2_<backend>_<encounters>)")
+    parser.add_argument("--net", type=int, nargs="+", default=[64, 64], help="hidden layer sizes (policy and value)")
     parser.add_argument("--n-envs", type=int, default=1, help="parallel sim envs (sim backend only)")
     parser.add_argument("--resume", type=str, default=None, help="path to a .zip checkpoint to continue training from")
     args = parser.parse_args()
@@ -73,6 +74,7 @@ def main():
             n_epochs=4,
             learning_rate=3e-4,
             gamma=0.99,
+            policy_kwargs={"net_arch": args.net},
             verbose=1,
             tensorboard_log=str(LOG_DIR),
         )

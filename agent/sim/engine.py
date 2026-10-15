@@ -26,7 +26,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from .cards import STARTER_CARDS, card_to_dict, starter_deck
+from .cards import STARTER_CARDS, card_cost, card_to_dict, starter_deck
 
 PLAYER_MAX_HP = 80
 PLAYER_MAX_ENERGY = 3
@@ -44,9 +44,14 @@ class Move:
     hits: int = 1  # MultiAttackIntent hit count (each hit is reduced by block separately)
     vulnerable: int = 0  # Vulnerable applied to the player
     frail: int = 0  # Frail applied to the player
+    tangled: int = 0  # Tangled applied to the player (Attack cards cost +amount until their turn ends)
+    constrict: int = 0  # Constrict applied to the player (blockable damage at the end of their turn)
+    dazed: int = 0  # Dazed status cards added to the player's discard pile
+    summon: str = ""  # monster id added to combat (acts from next turn)
+    revive: bool = False  # IllusionPower's REVIVE_MOVE: heal to full
 
 
-# A RandomBranchState: equal-weight choice among (move, max consecutive uses[, cooldown]).
+# A RandomBranchState: weighted choice among (move, max consecutive uses[, cooldown[, weight]]).
 # Weight is 0 if the last `max` logged moves were all this move — that's the
 # CannotRepeat (max=1) / CanRepeatXTimes rule in RandomBranchState.GetStateWeight —
 # or, for max=ONCE (UseOnlyOnce), if it was ever used; and also 0 if it is among the
@@ -54,6 +59,7 @@ class Move:
 # *cooldown*, not a weight.
 Branch = tuple[tuple, ...]
 ONCE = 0
+FOREVER = 10**6  # MoveRepeatType.CanRepeatForever
 
 
 @dataclass(frozen=True)
@@ -64,12 +70,21 @@ class MonsterDef:
     moves: dict[str, Move]
     first: str | Branch
     follow: dict[str, str | Branch]
+    start_block: int = 0  # AfterAddedToRoom block (clears at the start of its first turn)
+    artifact: int = 0  # ArtifactPower: negates that many debuffs
+    slippery: int = 0  # SlipperyPower: that many HP losses are capped at 1
+    # IllusionPower (+ MinionPower): not needed to win, stays in combat when killed and
+    # revives to full HP on its next turn.
+    illusion: bool = False
 
 
 _LEAF_S_RAND: Branch = (("TACKLE_MOVE", 1), ("GOOP_MOVE", 1))
 _TWIG_M_RAND: Branch = (("POKEY_POUNCE_MOVE", 2), ("STICKY_SHOT_MOVE", 1))
 _MAWLER_RAND: Branch = (("RIP_AND_TEAR_MOVE", 1), ("ROAR_MOVE", ONCE), ("CLAW_MOVE", 1))
 _FLYCONID_RAND: Branch = (("VULNERABLE_SPORES_MOVE", 1, 3), ("FRAIL_SPORES_MOVE", 1, 2), ("SMASH_MOVE", 1))
+_INKLET_RAND: Branch = (("PIERCING_GAZE_MOVE", 1), ("WHIRLWIND_MOVE", 1))
+_FOGMOG_BRANCH: Branch = (("SWIPE_RANDOM_MOVE", 1, 0, 0.4), ("HEADBUTT_MOVE", 1, 0, 0.6))
+_STRANGLER_RAND: Branch = (("THWACK", FOREVER), ("LASH", FOREVER))
 
 MONSTERS: dict[str, MonsterDef] = {m.model_id: m for m in [
     # Nibbit.cs — alone (NibbitsWeak) it opens with BUTT; NibbitsNormal overrides the opener per slot.
@@ -135,6 +150,45 @@ MONSTERS: dict[str, MonsterDef] = {m.model_id: m for m in [
         "TRACK_MOVE": Move("Debuff", frail=2),
         "HOUNDS_MOVE": Move("Attack", damage=1, hits=8),
     }, "TRACK_MOVE", {"TRACK_MOVE": "HOUNDS_MOVE", "HOUNDS_MOVE": "HOUNDS_MOVE"}),
+    # Inklet.cs: INIT_RAND is built but unused — the opener is JAB (WHIRLWIND for the middle one).
+    MonsterDef("INKLET", "Inklet", (11, 17), {
+        "JAB_MOVE": Move("Attack", damage=3),
+        "WHIRLWIND_MOVE": Move("Attack", damage=2, hits=3),
+        "PIERCING_GAZE_MOVE": Move("Attack", damage=10),
+    }, "JAB_MOVE", {"JAB_MOVE": _INKLET_RAND, "WHIRLWIND_MOVE": "JAB_MOVE", "PIERCING_GAZE_MOVE": "JAB_MOVE"},
+        slippery=1),
+    MonsterDef("CUBEX_CONSTRUCT", "Cubex Construct", (65, 65), {
+        "CHARGE_UP_MOVE": Move("Buff", strength=2),
+        "REPEATER_BLAST_MOVE": Move("Attack", damage=7, strength=2),
+        "REPEATER_BLAST_MOVE_2": Move("Attack", damage=7, strength=2),
+        "EXPEL_MOVE": Move("Attack", damage=5, hits=2),
+    }, "CHARGE_UP_MOVE", {"CHARGE_UP_MOVE": "REPEATER_BLAST_MOVE", "REPEATER_BLAST_MOVE": "REPEATER_BLAST_MOVE_2",
+                          "REPEATER_BLAST_MOVE_2": "EXPEL_MOVE", "EXPEL_MOVE": "REPEATER_BLAST_MOVE"},
+        start_block=13, artifact=1),
+    MonsterDef("VINE_SHAMBLER", "Vine Shambler", (61, 61), {
+        "SWIPE_MOVE": Move("Attack", damage=6, hits=2),
+        "GRASPING_VINES_MOVE": Move("Attack", damage=8, tangled=1),
+        "CHOMP_MOVE": Move("Attack", damage=16),
+    }, "SWIPE_MOVE", {"SWIPE_MOVE": "GRASPING_VINES_MOVE", "GRASPING_VINES_MOVE": "CHOMP_MOVE", "CHOMP_MOVE": "SWIPE_MOVE"}),
+    MonsterDef("FOGMOG", "Fogmog", (74, 74), {
+        "ILLUSION_MOVE": Move("Summon", summon="EYE_WITH_TEETH"),
+        "SWIPE_MOVE": Move("Attack", damage=8, strength=1),
+        "SWIPE_RANDOM_MOVE": Move("Attack", damage=8, strength=1),
+        "HEADBUTT_MOVE": Move("Attack", damage=14),
+    }, "ILLUSION_MOVE", {"ILLUSION_MOVE": "SWIPE_MOVE", "SWIPE_MOVE": _FOGMOG_BRANCH,
+                         "SWIPE_RANDOM_MOVE": "HEADBUTT_MOVE", "HEADBUTT_MOVE": "SWIPE_MOVE"}),
+    MonsterDef("EYE_WITH_TEETH", "Eye With Teeth", (6, 6), {
+        "DISTRACT_MOVE": Move("Status", dazed=3),
+        "REVIVE_MOVE": Move("Heal", revive=True),
+    }, "DISTRACT_MOVE", {"DISTRACT_MOVE": "DISTRACT_MOVE", "REVIVE_MOVE": "DISTRACT_MOVE"}, illusion=True),
+    MonsterDef("SNAPPING_JAXFRUIT", "Snapping Jaxfruit", (31, 33), {
+        "ENERGY_ORB_MOVE": Move("Attack", damage=3, strength=2),
+    }, "ENERGY_ORB_MOVE", {"ENERGY_ORB_MOVE": "ENERGY_ORB_MOVE"}),
+    MonsterDef("SLITHERING_STRANGLER", "Slithering Strangler", (53, 55), {
+        "CONSTRICT": Move("Debuff", constrict=3),
+        "THWACK": Move("Attack", damage=7, block=5),
+        "LASH": Move("Attack", damage=12),
+    }, "CONSTRICT", {"CONSTRICT": _STRANGLER_RAND, "THWACK": "CONSTRICT", "LASH": "CONSTRICT"}),
 ]}
 RUBY_RAIDERS = ("AXE_RUBY_RAIDER", "ASSASSIN_RUBY_RAIDER", "BRUTE_RUBY_RAIDER", "CROSSBOW_RUBY_RAIDER", "TRACKER_RUBY_RAIDER")
 
@@ -155,6 +209,16 @@ def encounter_roster(encounter: str, rng: random.Random) -> list[str]:
         "MAWLER_NORMAL": ["MAWLER"],
         "FLYCONID_NORMAL": [rng.choice(["LEAF_SLIME_M", "TWIG_SLIME_M"]), "FLYCONID"],
         "RUBY_RAIDERS_NORMAL": rng.sample(RUBY_RAIDERS, 3),
+        "INKLETS_NORMAL": ["INKLET", "INKLET:WHIRLWIND_MOVE", "INKLET"],
+        "CUBEX_CONSTRUCT_NORMAL": ["CUBEX_CONSTRUCT"],
+        "VINE_SHAMBLER_NORMAL": ["VINE_SHAMBLER"],
+        "FOGMOG_NORMAL": ["FOGMOG"],
+        "SNAPPING_JAXFRUIT_NORMAL": ["SNAPPING_JAXFRUIT", "FLYCONID"],
+        # SlitheringStranglerNormal.cs: a Jaxfruit, a medium slime, or two small slimes (with
+        # replacement), then the Strangler.
+        "SLITHERING_STRANGLER_NORMAL": rng.choice([
+            ["SNAPPING_JAXFRUIT"], [rng.choice(["LEAF_SLIME_M", "TWIG_SLIME_M"])],
+            [rng.choice(["LEAF_SLIME_S", "TWIG_SLIME_S"]) for _ in range(2)]]) + ["SLITHERING_STRANGLER"],
     }
     if encounter not in rosters:
         raise ValueError(f"sim does not model encounter {encounter!r} (only {ENCOUNTERS})")
@@ -163,27 +227,35 @@ def encounter_roster(encounter: str, rng: random.Random) -> list[str]:
 
 ENCOUNTERS = ("NIBBITS_WEAK", "SLIMES_WEAK", "SHRINKER_BEETLE_WEAK", "FUZZY_WURM_CRAWLER_WEAK",
               "NIBBITS_NORMAL", "SLIMES_NORMAL", "OVERGROWTH_CRAWLERS",
-              "MAWLER_NORMAL", "FLYCONID_NORMAL", "RUBY_RAIDERS_NORMAL")
+              "MAWLER_NORMAL", "FLYCONID_NORMAL", "RUBY_RAIDERS_NORMAL",
+              "INKLETS_NORMAL", "CUBEX_CONSTRUCT_NORMAL", "VINE_SHAMBLER_NORMAL", "FOGMOG_NORMAL",
+              "SNAPPING_JAXFRUIT_NORMAL", "SLITHERING_STRANGLER_NORMAL")
+
+
+def branch_weights(spec: str | Branch, log: list[str]) -> dict[str, float]:
+    """Nonzero-weight moves a branch can pick next, in branch order (RandomBranchState.GetStateWeight)."""
+    if isinstance(spec, str):
+        return {spec: 1.0}
+
+    def weight(m: str, n: int, cooldown: int = 0, w: float = 1.0) -> float:
+        if cooldown and m in log[-cooldown:]:
+            return 0.0
+        if n == ONCE:
+            return 0.0 if m in log else w
+        return 0.0 if len(log) >= n and all(x == m for x in log[-n:]) else w
+
+    weights = {b[0]: weight(*b) for b in spec}
+    # GetNextState: with total weight 0, NextFloat(0) = 0 and the loop returns the first branch.
+    return {m: w for m, w in weights.items() if w} or {spec[0][0]: 1.0}
 
 
 def legal_moves(spec: str | Branch, log: list[str]) -> list[str]:
-    """Moves a branch can pick next, in branch order (RandomBranchState.GetStateWeight)."""
-    if isinstance(spec, str):
-        return [spec]
-
-    def ok(m: str, n: int, cooldown: int = 0) -> bool:
-        if cooldown and m in log[-cooldown:]:
-            return False
-        if n == ONCE:
-            return m not in log
-        return not (len(log) >= n and all(x == m for x in log[-n:]))
-
-    # GetNextState: with total weight 0, NextFloat(0) = 0 and the loop returns the first branch.
-    return [b[0] for b in spec if ok(*b)] or [spec[0][0]]
+    return list(branch_weights(spec, log))
 
 
 def pick_move(spec: str | Branch, log: list[str], rng: random.Random) -> str:
-    return rng.choice(legal_moves(spec, log))
+    weights = branch_weights(spec, log)
+    return rng.choices(list(weights), list(weights.values()))[0]
 
 
 def player_attack_damage(base: int, target_vulnerable: bool, shrunk: bool) -> int:
@@ -200,11 +272,24 @@ class _Enemy:
     block: int = 0
     strength: int = 0
     vulnerable: int = 0
+    artifact: int = 0
+    slippery: int = 0
     log: list[str] = field(default_factory=list)  # performed moves, for RandomBranchState repeat rules
 
     @property
     def is_alive(self) -> bool:
         return self.hp > 0
+
+    @property
+    def in_combat(self) -> bool:
+        """Dead illusions stay in combat (IllusionPower.ShouldCreatureBeRemovedFromCombatAfterDeath)."""
+        return self.is_alive or self.defn.illusion
+
+    @classmethod
+    def spawn(cls, d: MonsterDef, rng: random.Random, first: str = "") -> "_Enemy":
+        hp = rng.randint(*d.hp)
+        return cls(d, hp, hp, first or pick_move(d.first, [], rng), block=d.start_block,
+                   artifact=d.artifact, slippery=d.slippery)
 
 
 @dataclass
@@ -215,6 +300,8 @@ class SimCombat:
     shrunk: bool = False
     vulnerable: int = 0  # player's: monster attacks x1.5
     frail: int = 0  # player's: card block x0.75
+    tangled: int = 0  # player's: Attack cards cost +tangled; removed at the end of their turn
+    constrict: int = 0  # player's: takes this much (blockable) damage at the end of their turn
     energy: int = 0
     round: int = 1
     in_combat: bool = False
@@ -234,15 +321,13 @@ class SimCombat:
         self.enemies = []
         for entry in encounter_roster(encounter, self.rng):
             model_id, _, first = entry.partition(":")
-            d = MONSTERS[model_id]
-            hp = self.rng.randint(*d.hp)
-            self.enemies.append(_Enemy(d, hp, hp, first or pick_move(d.first, [], self.rng)))
+            self.enemies.append(_Enemy.spawn(MONSTERS[model_id], self.rng, first))
         self.draw_pile = starter_deck()
         self.rng.shuffle(self.draw_pile)
         self.hand, self.discard_pile, self.exhaust_pile = [], [], []
         self.player_block = 0
         self.shrunk = False
-        self.vulnerable = self.frail = 0
+        self.vulnerable = self.frail = self.tangled = self.constrict = 0
         self.round = 1
         self.in_combat = True
         self.won = None
@@ -271,7 +356,8 @@ class SimCombat:
             return {"error": "invalid_card_index", "max": len(self.hand) - 1}
         card_id = self.hand[hand_index]
         card = STARTER_CARDS[card_id]
-        if card.cost > self.energy:
+        cost = card_cost(card_id, self.tangled)
+        if not 0 <= cost <= self.energy:
             return {"error": "card_not_playable", "card": card_id}
         if target_id is None:
             target = next((e for e in self.enemies if e.is_alive), None)
@@ -280,41 +366,68 @@ class SimCombat:
             if target is None or not target.is_alive:
                 return {"error": "invalid_target", "targetId": target_id}
 
-        self.energy -= card.cost
+        self.energy -= cost
         self.hand.pop(hand_index)
 
         if card.damage and target:
-            dmg = player_attack_damage(card.damage, target.vulnerable > 0, self.shrunk)
-            absorbed = min(target.block, dmg)
-            target.block -= absorbed
-            target.hp = max(0, target.hp - (dmg - absorbed))
-            # ShrinkPower.AfterDeath: Shrink goes away when its applier dies.
-            # ponytail: assumes one Shrink source per fight (true for all Act 1 rosters).
-            if not target.is_alive and any(m.shrink for m in target.defn.moves.values()):
-                self.shrunk = False
+            self._damage_enemy(target, player_attack_damage(card.damage, target.vulnerable > 0, self.shrunk))
         if card.vulnerable and target and target.is_alive:
-            target.vulnerable += card.vulnerable
+            if target.artifact:  # ArtifactPower negates the debuff and spends a charge
+                target.artifact -= 1
+            else:
+                target.vulnerable += card.vulnerable
         if card.block:
             self.player_block += card.block * 3 // 4 if self.frail else card.block
         if card.draw:
             self._draw(card.draw)
         (self.exhaust_pile if card.exhaust else self.discard_pile).append(card_id)
 
-        if not any(e.is_alive for e in self.enemies):
+        # CombatManager.IsEnding: won once no *primary* enemy (non-minion) is alive.
+        if not any(e.is_alive and not e.defn.illusion for e in self.enemies):
             self._end_combat(won=True)
         return {"ok": True, "played": card.title, "index": hand_index}
+
+    def _damage_enemy(self, e: _Enemy, dmg: int) -> None:
+        absorbed = min(e.block, dmg)
+        e.block -= absorbed
+        hp_loss = dmg - absorbed
+        if e.slippery and hp_loss >= 1:  # SlipperyPower: cap at 1, spend a stack
+            hp_loss = 1
+            e.slippery -= 1
+        e.hp = max(0, e.hp - hp_loss)
+        if e.is_alive:
+            return
+        # ShrinkPower / ConstrictPower.AfterDeath: removed when their applier dies.
+        # ponytail: assumes one source of each per fight (true for all Act 1 rosters).
+        moves = e.defn.moves.values()
+        if any(m.shrink for m in moves):
+            self.shrunk = False
+        if any(m.constrict for m in moves):
+            self.constrict = 0
+        if e.defn.illusion:  # keeps buffs, loses debuffs, revives on its next turn
+            e.vulnerable = 0
+            e.move = "REVIVE_MOVE"
 
     def end_turn(self) -> dict:
         if not self.in_combat or not self.is_play_phase:
             return {"error": "not_play_phase"}
-        self.discard_pile.extend(self.hand)
+        for c in self.hand:
+            (self.exhaust_pile if STARTER_CARDS[c].ethereal else self.discard_pile).append(c)
         self.hand = []
         self.is_play_phase = False
+        # End of the player's side turn: Constrict hits (Unpowered, so block applies but
+        # Vulnerable doesn't) and Tangled is removed.
+        if self.constrict:
+            self._damage_player(self.constrict)
+            if not self.in_combat:
+                return {"ok": True}
+        self.tangled = 0
         self._run_enemy_turn()
         return {"ok": True}
 
     def _run_enemy_turn(self) -> None:
-        alive = [e for e in self.enemies if e.is_alive]
+        # ExecuteEnemyTurn iterates a snapshot: summons act from next turn; dead illusions act (revive).
+        alive = [e for e in self.enemies if e.in_combat]
         for e in alive:
             e.block = 0  # block clears at the start of the enemy's own turn
         # PowerCmd.Apply: a debuff newly applied to the player skips its next tick-down,
@@ -329,7 +442,16 @@ class SimCombat:
             e.block += mv.block
             e.strength += mv.strength
             self.shrunk |= mv.shrink
-            self.discard_pile += ["SLIMED"] * mv.slimed
+            self.discard_pile += ["SLIMED"] * mv.slimed + ["DAZED"] * mv.dazed
+            self.tangled += mv.tangled
+            self.constrict += mv.constrict
+            if mv.summon:
+                # Creatures are ordered by encounter slot; FogmogNormal.Slots = ["illusion", "fogmog"],
+                # so the summoned Eye goes first (and acts before Fogmog from next turn).
+                # ponytail: Fogmog is the only Act 1 summoner; per-encounter slots if more appear.
+                self.enemies.insert(0, _Enemy.spawn(MONSTERS[mv.summon], self.rng))
+            if mv.revive:
+                e.hp = e.max_hp
             for name in ("vulnerable", "frail"):
                 if getattr(mv, name):
                     if not getattr(self, name):
@@ -375,6 +497,9 @@ class SimCombat:
             powers.append({"id": "STRENGTH", "name": "StrengthPower", "type": "Buff", "amount": e.strength})
         if e.vulnerable:
             powers.append({"id": "VULNERABLE", "name": "VulnerablePower", "type": "Debuff", "amount": e.vulnerable})
+        for name, amount in (("ArtifactPower", e.artifact), ("SlipperyPower", e.slippery)):
+            if amount:
+                powers.append({"id": name.upper(), "name": name, "type": "Buff", "amount": amount})
         return {
             "combatId": i + 1,
             "name": e.defn.name,
@@ -391,7 +516,7 @@ class SimCombat:
     def combat_dict(self) -> dict:
         if not self.in_combat:
             return {"inCombat": False}
-        cards = lambda pile: [card_to_dict(c, self.energy) for c in pile]  # noqa: E731
+        cards = lambda pile: [card_to_dict(c, self.energy, self.tangled) for c in pile]  # noqa: E731
         return {
             "inCombat": True,
             "isPlayPhase": self.is_play_phase,
@@ -411,13 +536,15 @@ class SimCombat:
                 "exhaustPile": cards(self.exhaust_pile),
                 "powers": [{"id": n.upper(), "name": n, "type": "Debuff", "amount": a} for n, a in (
                     ("ShrinkPower", -1 if self.shrunk else 0), ("VulnerablePower", self.vulnerable),
-                    ("FrailPower", self.frail)) if a],
+                    ("FrailPower", self.frail), ("TangledPower", self.tangled),
+                    ("ConstrictPower", self.constrict)) if a],
                 "relics": [],
                 "potions": [],
                 "deck": cards(starter_deck()),
             },
-            # The live game drops dead enemies from the list (combatIds stay stable).
-            "enemies": [self._enemy_dict(i, e) for i, e in enumerate(self.enemies) if e.is_alive],
+            # The live game drops dead enemies from the list (combatIds stay stable) — except
+            # illusions, which stay with isAlive=false until they revive.
+            "enemies": [self._enemy_dict(i, e) for i, e in enumerate(self.enemies) if e.in_combat],
         }
 
 

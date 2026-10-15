@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import random
 import time
+from collections import defaultdict
 
 from client import AutoSpireClient
 from env import STS2CombatEnv, _power, _ready, parse_encounters
@@ -28,16 +29,18 @@ def load(c: dict, logs: dict[int, list[str]]) -> SimCombat:
     sim = SimCombat(
         player_hp=p["hp"], player_max_hp=p["maxHp"], player_block=p["block"], energy=p["energy"],
         shrunk=_power(p, "ShrinkPower") != 0, vulnerable=_power(p, "VulnerablePower"), frail=_power(p, "FrailPower"),
-        round=c["round"], in_combat=True, is_play_phase=True,
+        tangled=_power(p, "TangledPower"), constrict=_power(p, "ConstrictPower"), round=c["round"], in_combat=True, is_play_phase=True,
         hand=[x["id"] for x in p["hand"]], draw_pile=[x["id"] for x in p["drawPile"]],
         discard_pile=[x["id"] for x in p["discardPile"]], exhaust_pile=[x["id"] for x in p["exhaustPile"]],
         rng=random.Random(0),
     )
+    # /combat lists exactly the enemies still in combat (dead illusions included), in order,
+    # so sim index + 1 lines up with list position.
     for e in c["enemies"]:
-        if e["isAlive"]:
-            sim.enemies.append(_Enemy(MONSTERS[e["modelId"]], e["hp"], e["maxHp"], e["intent"]["moveId"],
-                                      block=e["block"], strength=_power(e, "StrengthPower"),
-                                      vulnerable=_power(e, "VulnerablePower"), log=list(logs[e["combatId"]])))
+        sim.enemies.append(_Enemy(MONSTERS[e["modelId"]], e["hp"], e["maxHp"], e["intent"]["moveId"],
+                                  block=e["block"], strength=_power(e, "StrengthPower"),
+                                  vulnerable=_power(e, "VulnerablePower"), artifact=_power(e, "ArtifactPower"),
+                                  slippery=_power(e, "SlipperyPower"), log=list(logs[e["combatId"]])))
     return sim
 
 
@@ -53,30 +56,37 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs) -> list[s
             out.append(f"player.{k}: sim={s['player'][k]} live={p[k]}")
     if sim.shrunk != (_power(p, "ShrinkPower") != 0):
         out.append(f"player shrink: sim={sim.shrunk} live={_power(p, 'ShrinkPower')}")
-    for name in ("vulnerable", "frail"):
+    for name in ("vulnerable", "frail", "tangled", "constrict"):
         live = _power(p, f"{name.capitalize()}Power")
         if getattr(sim, name) != live:
             out.append(f"player {name}: sim={getattr(sim, name)} live={live}")
-    slimed = lambda pl: sum(x["id"] == "SLIMED" for k in ("hand", "drawPile", "discardPile") for x in pl[k])  # noqa: E731
-    if slimed(s["player"]) != slimed(p):
-        out.append(f"live Slimed in deck: sim={slimed(s['player'])} live={slimed(p)}")
-    live_by_id = {e["combatId"]: e for e in after["enemies"]}
-    alive_ids = [e["combatId"] for e in before["enemies"] if e["isAlive"]]
-    for cid, se in zip(alive_ids, sim.enemies):
-        le = live_by_id.get(cid)
-        live_hp = le["hp"] if le and le["isAlive"] else 0
-        if se.hp != live_hp:
-            out.append(f"{se.defn.model_id}#{cid}.hp: sim={se.hp} live={live_hp}")
-        if not le or not le["isAlive"]:
+    for status in ("SLIMED", "DAZED"):
+        count = lambda pl: sum(x["id"] == status for k in ("hand", "drawPile", "discardPile") for x in pl[k])  # noqa: E731
+        if count(s["player"]) != count(p):
+            out.append(f"live {status} in deck: sim={count(s['player'])} live={count(p)}")
+    attack_costs = lambda pl: sorted((x["id"], x["cost"]) for x in pl["hand"] if x["type"] == "Attack")  # noqa: E731
+    same_hand = sorted(x["id"] for x in s["player"]["hand"]) == sorted(x["id"] for x in p["hand"])  # not after a draw
+    if same_hand and attack_costs(s["player"]) != attack_costs(p):
+        out.append(f"attack costs in hand: sim={attack_costs(s['player'])} live={attack_costs(p)}")
+    if [e["modelId"] for e in s["enemies"]] != [e["modelId"] for e in after["enemies"]]:
+        return out + [f"enemies: sim={[e['modelId'] for e in s['enemies']]} live={[e['modelId'] for e in after['enemies']]}"]
+    # Same monsters in the same order, so pair them by position (summons insert in front).
+    for se, le in zip([e for e in sim.enemies if e.in_combat], after["enemies"]):
+        cid = le["combatId"]
+        if se.hp != le["hp"]:
+            out.append(f"{se.defn.model_id}#{cid}.hp: sim={se.hp} live={le['hp']}")
+        if not le["isAlive"]:
             continue
         for name, sv, lv in (("block", se.block, le["block"]), ("strength", se.strength, _power(le, "StrengthPower")),
-                             ("vulnerable", se.vulnerable, _power(le, "VulnerablePower"))):
+                             ("vulnerable", se.vulnerable, _power(le, "VulnerablePower")),
+                             ("artifact", se.artifact, _power(le, "ArtifactPower")),
+                             ("slippery", se.slippery, _power(le, "SlipperyPower"))):
             if sv != lv:
                 out.append(f"{se.defn.model_id}#{cid}.{name}: sim={sv} live={lv}")
         atk = lambda e: next((i["totalDamage"] for i in e["intent"]["intents"] if i["type"] == "Attack"), 0)  # noqa: E731
         if se.move == le["intent"]["moveId"] and atk(sim._enemy_dict(0, se)) != atk(le):  # random picks may differ
             out.append(f"{se.defn.model_id}#{cid} intent damage: sim={atk(sim._enemy_dict(0, se))} live={atk(le)}")
-        if action == "end":
+        if action == "end" and logs[cid]:  # (a fresh summon has no move yet)
             prev = logs[cid][-1]  # move just performed
             legal = legal_moves(se.defn.follow[prev], logs[cid])
             if le["intent"]["moveId"] not in legal:
@@ -109,25 +119,24 @@ def main():
         for fight in range(args.fights):
             env.reset()
             c = client.combat()
-            logs = {e["combatId"]: [] for e in c["enemies"]}
+            logs = defaultdict(list)  # combatId -> performed moves (summons join mid-fight)
             print(f"[{enc} #{fight}] " + ", ".join(f"{e['modelId']}({e['hp']})" for e in c["enemies"]))
             while c.get("inCombat"):
                 hand = c["player"]["hand"]
                 idx = next((i for want in PRIORITY for i, x in enumerate(hand) if x["id"] == want and x["canPlay"]), None)
                 living = [e for e in c["enemies"] if e["isAlive"]]
-                # Random target exercises targeting; sim enemies are the living ones in order.
-                pos = random.randrange(len(living)) if idx is not None and hand[idx]["targetType"] == "AnyEnemy" else None
-                action = "end" if idx is None else f"play {idx}" + ("" if pos is None else f" @{living[pos]['modelId']}")
+                # Random target exercises targeting.
+                tgt = random.choice(living) if idx is not None and hand[idx]["targetType"] == "AnyEnemy" else None
+                action = "end" if idx is None else f"play {idx}" + ("" if tgt is None else f" @{tgt['modelId']}")
                 sim = load(c, logs)
                 if idx is None:
                     sim.end_turn()
                     client.end_turn()
-                    for e in c["enemies"]:
-                        if e["isAlive"]:
-                            logs[e["combatId"]].append(e["intent"]["moveId"])
+                    for e in c["enemies"]:  # everything in combat acts, dead illusions included
+                        logs[e["combatId"]].append(e["intent"]["moveId"])
                 else:
-                    sim.play_card(idx, None if pos is None else pos + 1)
-                    client.play(idx, None if pos is None else living[pos]["combatId"])
+                    sim.play_card(idx, None if tgt is None else c["enemies"].index(tgt) + 1)
+                    client.play(idx, None if tgt is None else tgt["combatId"])
                 after = wait_ready(client)
                 problems = diff(c, action, after, sim, logs)
                 steps += 1
