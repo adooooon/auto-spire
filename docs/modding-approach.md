@@ -355,6 +355,22 @@ Win rate is saturated except OVERGROWTH_CRAWLERS; HP lost is the number to push 
 
 Live, 24 fights over the 6 normal encounters (2–8 of each, sampled): **24/24 wins**, mean 34.2 HP lost (the sim predicts ~38 for that mix), 19.8 steps/fight, 0 invalid actions, 0 errors in `godot.log`.
 
+### 2026-10-14: Closing the OVERGROWTH_CRAWLERS gap (v2 model)
+
+The v1 model always killed the Fuzzy Wurm Crawler first and won 94.6% of OVERGROWTH_CRAWLERS fights at ~69 HP lost; all failures were real deaths (none hit `MAX_STEPS`). A scripted greedy policy did far worse either way (Beetle-first 56%, Wurm-first 15%), so the agent wasn't missing an obvious line — but its observation was missing what this fight turns on: the Wurm's stacking Strength is only visible through attack intents (invisible while it Inhales), monster identity (who applies Shrink) could only be guessed from HP, and there was nothing about the draw pile. Added: enemy Strength, a monster-identity one-hot over the sim's `MONSTERS`, per-card draw/discard pile counts, and the round number (`OBS_DIM` 164). `train.py --n-envs 8` runs parallel sim envs (`SubprocVecEnv`, ~5.5k steps/s); trained 10M steps.
+
+v2 (`ppo_sts2_sim_act1_v2_final`), sim, 1,000 fights each — win rate / HP lost (v1 HP lost in parentheses):
+
+| Encounter | Win | HP lost | | Encounter | Win | HP lost |
+|---|---|---|---|---|---|---|
+| NIBBITS_WEAK | 100% | 11.8 (12.3) | | SLIMES_NORMAL | 100% | **27.3** (44.1) |
+| SLIMES_WEAK | 100% | 10.8 (12.1) | | OVERGROWTH_CRAWLERS | **100%** | **39.0** (69.0) |
+| SHRINKER_BEETLE_WEAK | 100% | 6.9 (8.0) | | MAWLER_NORMAL | 100% | 26.5 (27.2) |
+| FUZZY_WURM_CRAWLER_WEAK | 100% | 7.5 (7.4) | | FLYCONID_NORMAL | 100% | 33.5 (32.7) |
+| NIBBITS_NORMAL | 100% | 39.9 (34.3) | | RUBY_RAIDERS_NORMAL | 100% | 43.0 (46.6) |
+
+It flipped strategy: it now kills the Shrinker Beetle first in every OVERGROWTH_CRAWLERS fight (500/500), removing Shrink, instead of racing the Wurm. NIBBITS_NORMAL got slightly worse (34.3 → 39.9). Live: **10/10 OVERGROWTH_CRAWLERS** (mean 32.9 HP lost vs v1's ~69 in sim) and **20/20 over all 10 Act 1 encounters** (21.6 HP lost, 0 invalid actions); every win confirmed in `godot.log`, 0 errors.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.

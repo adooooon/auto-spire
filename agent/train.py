@@ -18,7 +18,9 @@ from pathlib import Path
 
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from client import AutoSpireClient
 from env import STS2CombatEnv, parse_encounters
@@ -35,9 +37,12 @@ def main():
     parser.add_argument("--encounters", default="NIBBITS_WEAK",
                         help='comma-separated encounter ids, or a group: weak, normal, act1')
     parser.add_argument("--backend", choices=["live", "sim"], default="live")
+    parser.add_argument("--name", default=None, help="model name (default: ppo_sts2_<backend>_<encounters>)")
+    parser.add_argument("--n-envs", type=int, default=1, help="parallel sim envs (sim backend only)")
     parser.add_argument("--resume", type=str, default=None, help="path to a .zip checkpoint to continue training from")
     args = parser.parse_args()
     encounters = parse_encounters(args.encounters)
+    name = args.name or f"ppo_sts2_{args.backend}_{args.encounters}"
 
     MODEL_DIR.mkdir(exist_ok=True)
     LOG_DIR.mkdir(exist_ok=True)
@@ -47,7 +52,11 @@ def main():
     if not client.ping():
         raise SystemExit("AutoSpire mod not reachable at localhost:31452 — is the game running?")
 
-    env = Monitor(STS2CombatEnv(encounter=encounters, client=client, episodes_per_restart=args.episodes_per_restart))
+    if sim and args.n_envs > 1:
+        env = make_vec_env(lambda: STS2CombatEnv(encounter=encounters, client=SimClient()),
+                           n_envs=args.n_envs, vec_env_cls=SubprocVecEnv)
+    else:
+        env = Monitor(STS2CombatEnv(encounter=encounters, client=client, episodes_per_restart=args.episodes_per_restart))
 
     if args.resume:
         model = MaskablePPO.load(args.resume, env=env, tensorboard_log=str(LOG_DIR))
@@ -60,7 +69,7 @@ def main():
             # a policy-update batch every ~256 steps (~1 minute) rather than
             # SB3's default 2048 (~7+ minutes before the first update).
             n_steps=2048 if sim else 256,
-            batch_size=64,
+            batch_size=64 * args.n_envs,  # keep minibatches-per-update constant as envs scale
             n_epochs=4,
             learning_rate=3e-4,
             gamma=0.99,
@@ -71,7 +80,7 @@ def main():
     checkpoint_callback = CheckpointCallback(
         save_freq=50_000 if sim else 500,
         save_path=str(MODEL_DIR),
-        name_prefix=f"ppo_sts2_{args.backend}_{args.encounters}",
+        name_prefix=name,
     )
 
     try:
@@ -81,7 +90,7 @@ def main():
             reset_num_timesteps=args.resume is None,
         )
     finally:
-        final_path = MODEL_DIR / f"ppo_sts2_{args.backend}_{args.encounters}_final"
+        final_path = MODEL_DIR / f"{name}_final"
         model.save(str(final_path))
         print(f"Saved final model to {final_path}.zip")
 

@@ -24,6 +24,8 @@ import requests
 from gymnasium import spaces
 
 from client import AutoSpireClient
+from sim.cards import STARTER_CARDS
+from sim.engine import MONSTERS
 
 MAX_HAND = 10
 MAX_ENEMIES = 4  # SLIMES_NORMAL
@@ -41,9 +43,15 @@ MAX_STEPS = 60
 END_TURN = MAX_HAND * MAX_ENEMIES
 
 CARD_FEATURES = 6  # cost, can_play, is_attack, is_skill, is_power, upgraded
-PLAYER_FEATURES = 7  # hp, block, energy, maxEnergy, shrunk, vulnerable, frail
-ENEMY_FEATURES = 7  # hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, is_alive
-OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + MAX_ENEMIES * ENEMY_FEATURES
+PLAYER_FEATURES = 8  # hp, block, energy, maxEnergy, shrunk, vulnerable, frail, round
+# Monster identity matters (which one applies Shrink, whose Strength stacks) and HP alone
+# only hints at it; the one-hot covers every monster the sim models.
+MONSTER_IDS = sorted(MONSTERS)
+CARD_IDS = sorted(STARTER_CARDS)
+PILE_FEATURES = 2 * len(CARD_IDS)  # per-card counts in draw and discard piles
+# hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, strength, is_alive + identity
+ENEMY_FEATURES = 8 + len(MONSTER_IDS)
+OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES
 
 
 def _encode_card(card: dict) -> list[float]:
@@ -78,7 +86,10 @@ def _encode(combat: dict) -> np.ndarray:
         float(_power(player, "ShrinkPower") != 0),
         _power(player, "VulnerablePower") / 5.0,
         _power(player, "FrailPower") / 5.0,
+        combat.get("round", 0) / 20.0,
     ]
+    pile_feats = [sum(c["id"] == cid for c in player.get(pile) or []) / 5.0
+                  for pile in ("drawPile", "discardPile") for cid in CARD_IDS]
 
     enemy_feats: list[float] = []
     for i in range(MAX_ENEMIES):
@@ -94,12 +105,13 @@ def _encode(combat: dict) -> np.ndarray:
                 (atk["totalDamage"] if atk else 0) / 30.0,
                 float(atk is not None),
                 _power(e, "VulnerablePower") / 5.0,
+                _power(e, "StrengthPower") / 10.0,
                 1.0,
-            ]
+            ] + [float(e.get("modelId") == mid) for mid in MONSTER_IDS]
         else:
             enemy_feats += [0.0] * ENEMY_FEATURES
 
-    return np.array(hand_feats + player_feats + enemy_feats, dtype=np.float32)
+    return np.array(hand_feats + player_feats + pile_feats + enemy_feats, dtype=np.float32)
 
 
 def _ready(combat: dict) -> bool:
