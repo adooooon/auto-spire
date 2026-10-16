@@ -417,6 +417,22 @@ The sim now models 18 of the 20 Ironclad Commons (`sim/cards.py`): Anger, Blood 
 
 v5 (`ppo_sts2_sim_act1_decks_v5_final`, 30M steps with `--random-decks`, 256×256, ~2h on AC power), sim, 500 random-deck fights per encounter: 100% on 15/16 and 99.6% on OVERGROWTH_CRAWLERS; HP lost 2.8–25.0 per fight (weak 3–6, normals 14–25). On the plain starter deck across all 16: 100%, 23.2 HP lost (v4's per-encounter average was ~24.5), so learning the new cards didn't cost starter-deck play. Live, random decks over all 16 (13 came up), 27.9M-step checkpoint: **20/20 wins**, 6.6 HP lost, 0 invalid actions, 0 errors. It played 18 different cards: Perfected Strike 14×, Anger 14×, Cinder 9×, Molten Fist 7×, down to Havoc and Bloodletting once each.
 
+### 2026-10-16: Card reward picks (`agent/picker.py`)
+
+- **Reading rewards, live**: `/state` now has `rewards` whenever the post-combat `NRewardsScreen` is the top overlay (`NOverlayStack.Instance.Peek()`). Its `RewardsSet` is the private `_rewardsSet`, read by reflection. Each reward gives its type (`GoldReward`, `PotionReward`, `CardReward`, …), and card rewards also list the offered cards (same shape as hand cards). The agent never clicks the screen: it adds its pick with `card <ID> Deck`, and the next `fight` clears the screen.
+- **Reward generation** (`CardFactory.CreateForReward`, `CardRarityOdds`): 3 distinct cards from the character pool. Each card rolls Rare 3% + a pity offset (starts −5%, +1% per non-Rare roll, cap 40%, reset on a Rare), Uncommon 37%, else Common. Act 1 offers are never upgraded: the upgrade roll's base chance is 0 and only grows with the act index. So most real offers include an Uncommon the sim can't play yet.
+- **The picker**: for each option (skip, or each offered card the sim models), simulate N full-HP fights over the normal encounters with the v5 combat policy, using the same seeds for every option. Take the option with the least mean HP lost (a death counts as all HP lost). Unmodeled offers are never picked. This needs no training; it's a one-step lookahead using the combat policy as the evaluator.
+- **Mini-run harness**: 3 weak + 4 normal fights, HP carries over. Burning Blood (`BurningBlood.cs`, the starter relic) heals 6 after each win, and a rest site partway heals 30% of max HP (`HealRestSiteOption`, 24). Offers use the game's odds. Uncommon/Rare slots are placeholders and Armaments/Headbutt can't be played, so roughly half the slots are unpickable, like live. 200 runs per strategy, N = 24:
+
+| Strategy | Survive all 7 | Fights won | HP at end | Cards added |
+|---|---|---|---|---|
+| Always skip | 53.5% | 6.44 | 10.9 | 0 |
+| Random pick | 86.5% | 6.83 | 34.1 | 3.8 |
+| **Simulated pick** | **98.5%** | 6.99 | **51.6** | 5.1 |
+
+  Its favourite is Anger (0-cost damage), then a spread of efficient attacks and Shrug It Off. It rarely takes Blood Wall, Havoc or Body Slam.
+- **Live** (`python picker.py --model ... --live`): the same mini-run in the real game, picking from real reward screens. 7/7 fights won, ended at 72/80 HP, took Setup Strike ×2, Anger, Iron Wave, True Grit, and skipped twice. In the game, Burning Blood's heal lands *after* the reward screen appears (even at the start of the next fight), so the live log's per-fight HP-lost numbers are off by its 6.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.

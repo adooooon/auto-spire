@@ -160,11 +160,14 @@ class STS2CombatEnv(gym.Env):
         client: AutoSpireClient | None = None,
         episodes_per_restart: int = 40,
         random_decks: bool = False,
+        heal: bool = True,  # False: HP carries over from the previous fight (multi-fight runs)
     ):
         super().__init__()
         self.encounters = [encounter] if isinstance(encounter, str) else list(encounter)
         self.client = client or AutoSpireClient()
         self.random_decks = random_decks
+        self.heal = heal
+        self.deck: list[str] | None = None  # fixed deck (e.g. a run's), overriding random/starter
         self.action_space = spaces.Discrete(END_TURN + 1)
         self.observation_space = spaces.Box(low=-1.0, high=10.0, shape=(OBS_DIM,), dtype=np.float32)
         self._steps = 0
@@ -188,11 +191,13 @@ class STS2CombatEnv(gym.Env):
                 if self._needs_restart or self._episode_count % self.episodes_per_restart == 0:
                     self.client.full_restart()  # lands inRun=true on the Act 1 map, not yet in combat
                     self._needs_restart = False
-                self.client.exec("heal 999")
+                if self.heal:
+                    self.client.exec("heal 999")
                 # The deck persists across fights in a live run, so set it every episode.
-                self.client.set_deck(random_deck(self.np_random) if self.random_decks else starter_deck())
+                self.client.set_deck(self.deck or (random_deck(self.np_random) if self.random_decks else starter_deck()))
                 self.client.exec(f"fight {self.np_random.choice(self.encounters)}", settle=0.5)
-                self.client.exec("heal 999")
+                if self.heal:
+                    self.client.exec("heal 999")
                 combat = self.client.wait_for(_ready, timeout=15.0)
                 self._episode_count += 1
                 self._steps = 0

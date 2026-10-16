@@ -21,6 +21,9 @@ using MegaCrit.Sts2.Core.DevConsole;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
 using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Screens;
+using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Saves;
 
@@ -171,8 +174,26 @@ public static class AutoSpireMod
             actFloor = runState.ActFloor,
             roomType = runState.CurrentRoom?.RoomType.ToString(),
             player = player != null ? SerializePlayer(player) : null,
-            combat = combatMgr.IsInProgress ? GetCombatState() : null
+            combat = combatMgr.IsInProgress ? GetCombatState() : null,
+            rewards = GetRewards()
         };
+    }
+
+    // The post-combat rewards screen, if it's the top overlay: each reward's type, plus the
+    // offered cards for card rewards. Read-only — the agent adds its pick via `card <ID> Deck`.
+    private static readonly System.Reflection.FieldInfo RewardsSetField =
+        typeof(NRewardsScreen).GetField("_rewardsSet", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+    private static object? GetRewards()
+    {
+        if (NOverlayStack.Instance?.Peek() is not NRewardsScreen screen)
+            return null;
+        var set = RewardsSetField.GetValue(screen) as RewardsSet;
+        return set?.Rewards.Select(r => new
+        {
+            type = r.GetType().Name,
+            cards = r is CardReward cr ? cr.Cards.Select(SerializeCard).ToList() : null
+        }).ToList();
     }
 
     private static object? GetCombatState()
