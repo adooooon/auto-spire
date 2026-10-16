@@ -386,6 +386,21 @@ Env: action slots and observations now index *living* enemies only (`env._living
 
 v3 (`ppo_sts2_sim_act1_v3_final`, 15M steps over all 16, 64×64 net): 100% in sim on all 6 new encounters (HP lost 24–39) and **18/18 live** on them (24.3 HP lost, 0 errors). But it regressed on two old ones vs v2 — OVERGROWTH_CRAWLERS 99.1% / 63.9 HP lost (back to killing the Wurm first) and SLIMES_NORMAL 42.8 HP lost — so v4 retrains with a 256×256 net (`train.py --net 256 256`).
 
+v4 (`ppo_sts2_sim_act1_v4_final`, 20M steps, 256×256): the bigger net fixed the regressions — capacity, not the 16-encounter mix, was the problem (the 11.7M checkpoint already had them fixed). Sim, 1,000 fights each — all **100%**, HP lost per fight:
+
+| Encounter | HP lost | | Encounter | HP lost |
+|---|---|---|---|---|
+| NIBBITS_WEAK | 6.3 | | RUBY_RAIDERS_NORMAL | 36.6 |
+| SLIMES_WEAK | 8.2 | | INKLETS_NORMAL | 20.9 |
+| SHRINKER_BEETLE_WEAK | 7.6 | | CUBEX_CONSTRUCT_NORMAL | 37.7 |
+| FUZZY_WURM_CRAWLER_WEAK | 7.0 | | VINE_SHAMBLER_NORMAL | 33.4 |
+| NIBBITS_NORMAL | 31.4 | | FOGMOG_NORMAL | 23.7 |
+| SLIMES_NORMAL | 22.8 | | SNAPPING_JAXFRUIT_NORMAL | 34.8 |
+| OVERGROWTH_CRAWLERS | 38.3 | | SLITHERING_STRANGLER_NORMAL | 29.9 |
+| MAWLER_NORMAL | 25.0 | | FLYCONID_NORMAL | 28.2 |
+
+Live, 32 fights sampled across all 16 (13 encounters came up): **32/32 wins**, 16.8 HP lost, 0 invalid actions, 0 errors in `godot.log`. Training took ~5h wall-clock on battery with a sleep in the middle; the 256×256 update step (main process) is the bottleneck, not the sim workers.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.
