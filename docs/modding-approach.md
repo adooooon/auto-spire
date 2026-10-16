@@ -433,6 +433,25 @@ v5 (`ppo_sts2_sim_act1_decks_v5_final`, 30M steps with `--random-decks`, 256×25
   Its favourite is Anger (0-cost damage), then a spread of efficient attacks and Shrug It Off. It rarely takes Blood Wall, Havoc or Body Slam.
 - **Live** (`python picker.py --model ... --live`): the same mini-run in the real game, picking from real reward screens. 7/7 fights won, ended at 72/80 HP, took Setup Strike ×2, Anger, Iron Wave, True Grit, and skipped twice. In the game, Burning Blood's heal lands *after* the reward screen appears (even at the start of the next fight), so the live log's per-fight HP-lost numbers are off by its 6.
 
+### 2026-10-16: Act 1 elites and bosses
+
+The sim covers all 22 Act 1 encounters: 4 weak, 12 normal, 3 elites and 3 bosses. Groups: `--encounters elite`, `boss`, `hallway` (weak+normal), `act1` (all); comma lists mix groups and ids. `MAX_STEPS` is now 250. Rules from source, all confirmed live:
+- **Bygone Effigy** (127 HP): SLEEP → WAKE (+10 Strength) → SLASHES 13 forever. Its `SLEEP_MOVE_2` is in the state list, but nothing leads to it. **SlowPower**: it takes ×(1 + 0.1·n) damage, where n = cards the player has already played this turn. The counter resets at the start of the enemy turn.
+- **Byrdonis** (81–84): SWOOP 17 ↔ PECK 3×3. **TerritorialPower** 1: gains 1 Strength at the end of each of its turns.
+- **Phrog Parasite** (61–64): INFECT (3 Infection) ↔ LASH 4×4. **InfestedPower**: on death it spawns 4 **Wrigglers** (17–21 HP) in slots `wriggler1..4`, stunned (`SPAWNED_MOVE`). It also returns `ShouldStopCombatFromEnding`, so the fight continues. Each Wriggler's opener depends on its slot: 1/3 NASTY_BITE 6, 2/4 WRIGGLE (+2 Strength, 1 Infection). Then they alternate.
+- **Infection**: Unplayable status. If it's in hand at end of turn it deals 3 damage (Unpowered, so block applies and Vulnerable doesn't).
+- **Vantom** (173): Slippery **8**. INK_BLOT 7 → INKY_LANCE 6×2 → DISMEMBER 26 + 3 **Wounds** (Unplayable, no effect) → PREPARE +2 Strength.
+- **Ceremonial Beast** (252):
+  - Phase 1: STAMP (Plow 150 on itself) → PLOW 18 +2 Strength, repeated.
+  - **PlowPower**: once unblocked damage leaves it at **≤ its Plow amount**, it loses all Strength, Plow is removed, and it's stunned.
+  - `CreatureCmd.Stun` → `Creature.StunInternal` builds a fresh move state with id **`STUNNED`** (the Beast's own `STUN_MOVE` is never used). Its follow-up is the given `nextMoveId`, here BEAST_CRY.
+  - Phase 2: BEAST_CRY (**Ringing**) → STOMP 15 → CRUSH 17 +3 Strength.
+- **RingingPower**: on the player's next turn every card is afflicted, and `ShouldPlay` refuses a second card play. `/combat` gains `cardsPlayedThisTurn` (from `CombatManager.History.CardPlaysStarted`), which feeds both Ringing and Slow.
+- **The Kin**: KIN_PRIEST (190): ORB_OF_FRAILTY 8 + Frail 1 → ORB_OF_WEAKNESS 8 + **Weak** 1 → BEAM 3×3 → RITUAL +2 Strength. Two KIN_FOLLOWERs (58–59, **MinionPower**, so not needed to win): QUICK_SLASH 5 → BOOMERANG 2×2 → POWER_DANCE +2 Strength. The slot-1 follower opens with the dance.
+- **Weak** on the player: their attacks deal ×0.75. It ticks like Vulnerable/Frail.
+
+Live validation (random decks, random play): 196 steps over Phrog/Vantom/Beast/Kin and 4 Effigy/Byrdonis fights, 0 mismatches. A forced damage deck reached Beast phase 2 in 3/3 fights: 82 steps, 0 mismatches. The one `godot.log` error in these runs was the game's own `VfxCmd` inside `CreatureCmd.Heal` (a disposed `Marker2D`), probably Burning Blood firing as `fight` swaps the room.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.
