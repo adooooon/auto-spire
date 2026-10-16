@@ -35,13 +35,17 @@ NORMAL_ENCOUNTERS = ("NIBBITS_NORMAL", "SLIMES_NORMAL", "OVERGROWTH_CRAWLERS",
                      "MAWLER_NORMAL", "FLYCONID_NORMAL", "RUBY_RAIDERS_NORMAL",
                      "INKLETS_NORMAL", "CUBEX_CONSTRUCT_NORMAL", "VINE_SHAMBLER_NORMAL", "FOGMOG_NORMAL",
                      "SNAPPING_JAXFRUIT_NORMAL", "SLITHERING_STRANGLER_NORMAL")
-ENCOUNTER_GROUPS = {"weak": WEAK_ENCOUNTERS, "normal": NORMAL_ENCOUNTERS, "act1": WEAK_ENCOUNTERS + NORMAL_ENCOUNTERS}
+ELITE_ENCOUNTERS = ("BYGONE_EFFIGY_ELITE", "BYRDONIS_ELITE", "PHROG_PARASITE_ELITE")
+BOSS_ENCOUNTERS = ("VANTOM_BOSS", "CEREMONIAL_BEAST_BOSS", "THE_KIN_BOSS")
+ENCOUNTER_GROUPS = {"weak": WEAK_ENCOUNTERS, "normal": NORMAL_ENCOUNTERS, "hallway": WEAK_ENCOUNTERS + NORMAL_ENCOUNTERS,
+                    "elite": ELITE_ENCOUNTERS, "boss": BOSS_ENCOUNTERS,
+                    "act1": WEAK_ENCOUNTERS + NORMAL_ENCOUNTERS + ELITE_ENCOUNTERS + BOSS_ENCOUNTERS}
 
 
 def parse_encounters(arg: str) -> list[str]:
-    """CLI --encounters: a group name (weak/normal/act1) or comma-separated encounter ids."""
-    return list(ENCOUNTER_GROUPS.get(arg) or arg.split(","))
-MAX_STEPS = 100  # card plays count as steps; 0-cost cards (Anger) and draw make fights longer
+    """CLI --encounters: comma-separated encounter ids and/or group names (weak/normal/hallway/elite/boss/act1)."""
+    return [enc for part in arg.split(",") for enc in ENCOUNTER_GROUPS.get(part, (part,))]
+MAX_STEPS = 250  # card plays count as steps; bosses (Ceremonial Beast: 252 HP) take many turns
 END_TURN = MAX_HAND * MAX_ENEMIES
 
 # Monster identity matters (which one applies Shrink, whose Strength stacks) and HP alone
@@ -49,12 +53,13 @@ END_TURN = MAX_HAND * MAX_ENEMIES
 MONSTER_IDS = sorted(MONSTERS)
 CARD_IDS = sorted(CARDS)
 CARD_FEATURES = 6 + len(CARD_IDS)  # cost, can_play, is_attack, is_skill, is_power, upgraded + identity
-# hp, block, energy, maxEnergy, shrunk, vulnerable, frail, tangled, constrict, strength, round
-PLAYER_FEATURES = 11
+# hp, block, energy, maxEnergy, shrunk, vulnerable, frail, tangled, constrict, strength, weak,
+# ringing, cards played this turn, round
+PLAYER_FEATURES = 14
 PILE_FEATURES = 2 * len(CARD_IDS)  # per-card counts in draw and discard piles
 # hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, strength, artifact, slippery,
-# is_alive + identity
-ENEMY_FEATURES = 10 + len(MONSTER_IDS)
+# plow, is_alive + identity
+ENEMY_FEATURES = 11 + len(MONSTER_IDS)
 OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES
 
 
@@ -108,6 +113,9 @@ def _encode(combat: dict) -> np.ndarray:
         _power(player, "TangledPower") / 2.0,
         _power(player, "ConstrictPower") / 10.0,
         _power(player, "StrengthPower") / 5.0,
+        _power(player, "WeakPower") / 5.0,
+        float(_power(player, "RingingPower") != 0),
+        combat.get("cardsPlayedThisTurn", 0) / 10.0,
         combat.get("round", 0) / 20.0,
     ]
     pile_feats = [sum(c["id"] == cid for c in player.get(pile) or []) / 5.0
@@ -130,6 +138,7 @@ def _encode(combat: dict) -> np.ndarray:
                 _power(e, "StrengthPower") / 10.0,
                 float(_power(e, "ArtifactPower")),
                 float(_power(e, "SlipperyPower")),
+                _power(e, "PlowPower") / 100.0,
                 1.0,
             ] + [float(e.get("modelId") == mid) for mid in MONSTER_IDS]
         else:

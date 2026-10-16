@@ -49,6 +49,11 @@ class Move:
     dazed: int = 0  # Dazed status cards added to the player's discard pile
     summon: str = ""  # monster id added to combat (acts from next turn)
     revive: bool = False  # IllusionPower's REVIVE_MOVE: heal to full
+    infection: int = 0  # Infection status cards added to the player's discard pile
+    wound: int = 0  # Wound status cards added to the player's discard pile
+    weak: int = 0  # Weak applied to the player (their attacks x0.75)
+    ringing: bool = False  # RingingPower on the player: one card play on their next turn
+    plow: int = 0  # PlowPower applied to itself (Ceremonial Beast)
 
 
 # A RandomBranchState: weighted choice among (move, max consecutive uses[, cooldown[, weight]]).
@@ -76,6 +81,10 @@ class MonsterDef:
     # IllusionPower (+ MinionPower): not needed to win, stays in combat when killed and
     # revives to full HP on its next turn.
     illusion: bool = False
+    minion: bool = False  # MinionPower without the illusion revive (Kin Followers)
+    slow: bool = False  # SlowPower: takes +10% damage per card the player played this turn
+    territorial: int = 0  # TerritorialPower: gains this much Strength at the end of its turns
+    on_death_spawn: tuple[str, ...] = ()  # InfestedPower: monsters spawned (stunned) on death
 
 
 _LEAF_S_RAND: Branch = (("TACKLE_MOVE", 1), ("GOOP_MOVE", 1))
@@ -85,6 +94,8 @@ _FLYCONID_RAND: Branch = (("VULNERABLE_SPORES_MOVE", 1, 3), ("FRAIL_SPORES_MOVE"
 _INKLET_RAND: Branch = (("PIERCING_GAZE_MOVE", 1), ("WHIRLWIND_MOVE", 1))
 _FOGMOG_BRANCH: Branch = (("SWIPE_RANDOM_MOVE", 1, 0, 0.4), ("HEADBUTT_MOVE", 1, 0, 0.6))
 _STRANGLER_RAND: Branch = (("THWACK", FOREVER), ("LASH", FOREVER))
+# Wriggler.cs INIT_MOVE: by slot, wriggler1/3 BITE and wriggler2/4 WRIGGLE.
+WRIGGLER_SLOT_OPENERS = ("NASTY_BITE_MOVE", "WRIGGLE_MOVE", "NASTY_BITE_MOVE", "WRIGGLE_MOVE")
 
 MONSTERS: dict[str, MonsterDef] = {m.model_id: m for m in [
     # Nibbit.cs — alone (NibbitsWeak) it opens with BUTT; NibbitsNormal overrides the opener per slot.
@@ -189,6 +200,63 @@ MONSTERS: dict[str, MonsterDef] = {m.model_id: m for m in [
         "THWACK": Move("Attack", damage=7, block=5),
         "LASH": Move("Attack", damage=12),
     }, "CONSTRICT", {"CONSTRICT": _STRANGLER_RAND, "THWACK": "CONSTRICT", "LASH": "CONSTRICT"}),
+    # --- Act 1 elites ---
+    # BygoneEffigy.cs: SLEEP_MOVE_2 is in the state list but nothing transitions to it.
+    MonsterDef("BYGONE_EFFIGY", "Bygone Effigy", (127, 127), {
+        "SLEEP_MOVE": Move("Sleep"),
+        "WAKE_MOVE": Move("Buff", strength=10),
+        "SLASHES_MOVE": Move("Attack", damage=13),
+    }, "SLEEP_MOVE", {"SLEEP_MOVE": "WAKE_MOVE", "WAKE_MOVE": "SLASHES_MOVE", "SLASHES_MOVE": "SLASHES_MOVE"},
+        slow=True),
+    MonsterDef("BYRDONIS", "Byrdonis", (81, 84), {
+        "SWOOP_MOVE": Move("Attack", damage=17),
+        "PECK_MOVE": Move("Attack", damage=3, hits=3),
+    }, "SWOOP_MOVE", {"SWOOP_MOVE": "PECK_MOVE", "PECK_MOVE": "SWOOP_MOVE"}, territorial=1),
+    MonsterDef("PHROG_PARASITE", "Phrog Parasite", (61, 64), {
+        "INFECT_MOVE": Move("Status", infection=3),
+        "LASH_MOVE": Move("Attack", damage=4, hits=4),
+    }, "INFECT_MOVE", {"INFECT_MOVE": "LASH_MOVE", "LASH_MOVE": "INFECT_MOVE"}, on_death_spawn=("WRIGGLER",) * 4),
+    # Spawned stunned (SPAWNED_MOVE does nothing), then its slot's opener (WRIGGLER_SLOT_OPENERS).
+    MonsterDef("WRIGGLER", "Wriggler", (17, 21), {
+        "SPAWNED_MOVE": Move("Stun"),
+        "NASTY_BITE_MOVE": Move("Attack", damage=6),
+        "WRIGGLE_MOVE": Move("Buff", strength=2, infection=1),
+    }, "SPAWNED_MOVE", {"NASTY_BITE_MOVE": "WRIGGLE_MOVE", "WRIGGLE_MOVE": "NASTY_BITE_MOVE"}),
+    # --- Act 1 bosses ---
+    MonsterDef("VANTOM", "Vantom", (173, 173), {
+        "INK_BLOT_MOVE": Move("Attack", damage=7),
+        "INKY_LANCE_MOVE": Move("Attack", damage=6, hits=2),
+        "DISMEMBER_MOVE": Move("Attack", damage=26, wound=3),
+        "PREPARE_MOVE": Move("Buff", strength=2),
+    }, "INK_BLOT_MOVE", {"INK_BLOT_MOVE": "INKY_LANCE_MOVE", "INKY_LANCE_MOVE": "DISMEMBER_MOVE",
+                         "DISMEMBER_MOVE": "PREPARE_MOVE", "PREPARE_MOVE": "INK_BLOT_MOVE"}, slippery=8),
+    # Phase 1 STAMP (Plow 150 on itself) then PLOW forever. When unblocked damage leaves it at or
+    # below its Plow amount, PlowPower strips its Strength and stuns it into phase 2.
+    MonsterDef("CEREMONIAL_BEAST", "Ceremonial Beast", (252, 252), {
+        "STAMP_MOVE": Move("Buff", plow=150),
+        "PLOW_MOVE": Move("Attack", damage=18, strength=2),
+        # CreatureCmd.Stun -> Creature.StunInternal builds a fresh "STUNNED" state (its own
+        # STUN_MOVE is never used), followed by the given nextMoveId (BEAST_CRY_MOVE).
+        "STUNNED": Move("Stun"),
+        "BEAST_CRY_MOVE": Move("Debuff", ringing=True),
+        "STOMP_MOVE": Move("Attack", damage=15),
+        "CRUSH_MOVE": Move("Attack", damage=17, strength=3),
+    }, "STAMP_MOVE", {"STAMP_MOVE": "PLOW_MOVE", "PLOW_MOVE": "PLOW_MOVE",
+                      "BEAST_CRY_MOVE": "STOMP_MOVE", "STOMP_MOVE": "CRUSH_MOVE", "CRUSH_MOVE": "BEAST_CRY_MOVE"}),
+    MonsterDef("KIN_PRIEST", "Kin Priest", (190, 190), {
+        "ORB_OF_FRAILTY_MOVE": Move("Attack", damage=8, frail=1),
+        "ORB_OF_WEAKNESS_MOVE": Move("Attack", damage=8, weak=1),
+        "BEAM_MOVE": Move("Attack", damage=3, hits=3),
+        "RITUAL_MOVE": Move("Buff", strength=2),
+    }, "ORB_OF_FRAILTY_MOVE", {"ORB_OF_FRAILTY_MOVE": "ORB_OF_WEAKNESS_MOVE", "ORB_OF_WEAKNESS_MOVE": "BEAM_MOVE",
+                               "BEAM_MOVE": "RITUAL_MOVE", "RITUAL_MOVE": "ORB_OF_FRAILTY_MOVE"}),
+    # MinionPower: not needed to win. TheKinBoss's slot1 follower opens with POWER_DANCE.
+    MonsterDef("KIN_FOLLOWER", "Kin Follower", (58, 59), {
+        "QUICK_SLASH_MOVE": Move("Attack", damage=5),
+        "BOOMERANG_MOVE": Move("Attack", damage=2, hits=2),
+        "POWER_DANCE_MOVE": Move("Buff", strength=2),
+    }, "QUICK_SLASH_MOVE", {"QUICK_SLASH_MOVE": "BOOMERANG_MOVE", "BOOMERANG_MOVE": "POWER_DANCE_MOVE",
+                            "POWER_DANCE_MOVE": "QUICK_SLASH_MOVE"}, minion=True),
 ]}
 RUBY_RAIDERS = ("AXE_RUBY_RAIDER", "ASSASSIN_RUBY_RAIDER", "BRUTE_RUBY_RAIDER", "CROSSBOW_RUBY_RAIDER", "TRACKER_RUBY_RAIDER")
 
@@ -216,6 +284,12 @@ def encounter_roster(encounter: str, rng: random.Random) -> list[str]:
         "SNAPPING_JAXFRUIT_NORMAL": ["SNAPPING_JAXFRUIT", "FLYCONID"],
         # SlitheringStranglerNormal.cs: a Jaxfruit, a medium slime, or two small slimes (with
         # replacement), then the Strangler.
+        "BYGONE_EFFIGY_ELITE": ["BYGONE_EFFIGY"],
+        "BYRDONIS_ELITE": ["BYRDONIS"],
+        "PHROG_PARASITE_ELITE": ["PHROG_PARASITE"],
+        "VANTOM_BOSS": ["VANTOM"],
+        "CEREMONIAL_BEAST_BOSS": ["CEREMONIAL_BEAST"],
+        "THE_KIN_BOSS": ["KIN_FOLLOWER:POWER_DANCE_MOVE", "KIN_FOLLOWER", "KIN_PRIEST"],
         "SLITHERING_STRANGLER_NORMAL": rng.choice([
             ["SNAPPING_JAXFRUIT"], [rng.choice(["LEAF_SLIME_M", "TWIG_SLIME_M"])],
             [rng.choice(["LEAF_SLIME_S", "TWIG_SLIME_S"]) for _ in range(2)]]) + ["SLITHERING_STRANGLER"],
@@ -229,7 +303,9 @@ ENCOUNTERS = ("NIBBITS_WEAK", "SLIMES_WEAK", "SHRINKER_BEETLE_WEAK", "FUZZY_WURM
               "NIBBITS_NORMAL", "SLIMES_NORMAL", "OVERGROWTH_CRAWLERS",
               "MAWLER_NORMAL", "FLYCONID_NORMAL", "RUBY_RAIDERS_NORMAL",
               "INKLETS_NORMAL", "CUBEX_CONSTRUCT_NORMAL", "VINE_SHAMBLER_NORMAL", "FOGMOG_NORMAL",
-              "SNAPPING_JAXFRUIT_NORMAL", "SLITHERING_STRANGLER_NORMAL")
+              "SNAPPING_JAXFRUIT_NORMAL", "SLITHERING_STRANGLER_NORMAL",
+              "BYGONE_EFFIGY_ELITE", "BYRDONIS_ELITE", "PHROG_PARASITE_ELITE",
+              "VANTOM_BOSS", "CEREMONIAL_BEAST_BOSS", "THE_KIN_BOSS")
 
 
 def branch_weights(spec: str | Branch, log: list[str]) -> dict[str, float]:
@@ -258,9 +334,13 @@ def pick_move(spec: str | Branch, log: list[str], rng: random.Random) -> str:
     return rng.choices(list(weights), list(weights.values()))[0]
 
 
-def player_attack_damage(base: int, target_vulnerable: bool, shrunk: bool) -> int:
-    """floor(base * 1.5[Vulnerable] * 0.7[Shrink]) in exact integer math."""
-    return base * (3 if target_vulnerable else 2) * (7 if shrunk else 10) // 20
+def player_attack_damage(base: int, target_vulnerable: bool, shrunk: bool, weak: bool = False,
+                         slow_cards: int | None = None) -> int:
+    """floor(base * 1.5[target Vulnerable] * 0.7[Shrink] * 0.75[Weak] * (1 + 0.1n)[target Slow, n cards
+    played this turn]) in exact integer math (Hook.ModifyDamage multiplies decimals, then truncates)."""
+    num = base * (3 if target_vulnerable else 2) * (7 if shrunk else 10) * (3 if weak else 4)
+    num *= 10 + (slow_cards or 0)
+    return num // (2 * 10 * 4 * 10)
 
 
 @dataclass
@@ -274,6 +354,8 @@ class _Enemy:
     vulnerable: int = 0
     artifact: int = 0
     slippery: int = 0
+    plow: int = 0
+    next_override: str | None = None  # CreatureCmd.Stun's nextMoveId: the move after the current one
     log: list[str] = field(default_factory=list)  # performed moves, for RandomBranchState repeat rules
 
     @property
@@ -304,6 +386,9 @@ class SimCombat:
     constrict: int = 0  # player's: takes this much (blockable) damage at the end of their turn
     strength: int = 0  # player's, added to every attack hit
     temp_strength: int = 0  # the part of `strength` that goes away at the end of their turn
+    weak: int = 0  # player's: their attacks x0.75
+    ringing: bool = False  # player's: only one card play this turn; removed at the end of it
+    cards_played: int = 0  # this player turn (SlowPower's counter; RingingPower's check)
     energy: int = 0
     round: int = 1
     in_combat: bool = False
@@ -330,7 +415,8 @@ class SimCombat:
         self.player_block = 0
         self.shrunk = False
         self.vulnerable = self.frail = self.tangled = self.constrict = 0
-        self.strength = self.temp_strength = 0
+        self.strength = self.temp_strength = self.weak = self.cards_played = 0
+        self.ringing = False
         self.round = 1
         self.in_combat = True
         self.won = None
@@ -360,7 +446,7 @@ class SimCombat:
         card_id = self.hand[hand_index]
         card = CARDS[card_id]
         cost = card_cost(card_id, self.tangled)
-        if not 0 <= cost <= self.energy:
+        if not 0 <= cost <= self.energy or (self.ringing and self.cards_played):
             return {"error": "card_not_playable", "card": card_id}
         if target_id is None:
             target = next((e for e in self.enemies if e.is_alive), None)
@@ -373,7 +459,7 @@ class SimCombat:
         self.hand.pop(hand_index)
         self._resolve(card_id, target)
         # CombatManager.IsEnding: won once no *primary* enemy (non-minion) is alive.
-        if self.in_combat and not any(e.is_alive and not e.defn.illusion for e in self.enemies):
+        if self.in_combat and not any(e.is_alive and not (e.defn.illusion or e.defn.minion) for e in self.enemies):
             self._end_combat(won=True)
         return {"ok": True, "played": card.title, "index": hand_index}
 
@@ -408,7 +494,8 @@ class SimCombat:
                 else:
                     targets = [target] if target and target.is_alive else []
                 for t in targets:
-                    self._damage_enemy(t, player_attack_damage(base + self.strength, t.vulnerable > 0, self.shrunk))
+                    self._damage_enemy(t, player_attack_damage(base + self.strength, t.vulnerable > 0, self.shrunk,
+                                                               self.weak > 0, self.cards_played if t.defn.slow else None))
         if card.vulnerable:
             for t in self._hittable() if card.target_type == "AllEnemies" else [target] if target else []:
                 if t.is_alive:
@@ -438,6 +525,7 @@ class SimCombat:
                         self._hittable() else None
                     self._resolve(top, auto, force_exhaust=True)
         (self.exhaust_pile if card.exhaust or force_exhaust else self.discard_pile).append(card_id)
+        self.cards_played += 1  # AfterCardPlayed (autoplays included)
 
     def _damage_enemy(self, e: _Enemy, dmg: int) -> None:
         absorbed = min(e.block, dmg)
@@ -448,7 +536,16 @@ class SimCombat:
             e.slippery -= 1
         e.hp = max(0, e.hp - hp_loss)
         if e.is_alive:
+            # PlowPower.AfterDamageReceived: at or below its Plow amount, lose all Strength and get
+            # stunned (STUNNED, then BEAST_CRY_MOVE: phase 2); Plow is removed.
+            if e.plow and hp_loss > 0 and e.hp <= e.plow:
+                e.plow, e.strength, e.move, e.next_override = 0, 0, "STUNNED", "BEAST_CRY_MOVE"
             return
+        # InfestedPower.AfterDeath: spawns that start stunned, in slots after the dead one.
+        for i, mid in enumerate(e.defn.on_death_spawn):
+            spawn = _Enemy.spawn(MONSTERS[mid], self.rng)
+            spawn.next_override = WRIGGLER_SLOT_OPENERS[i]
+            self.enemies.append(spawn)
         # ShrinkPower / ConstrictPower.AfterDeath: removed when their applier dies.
         # ponytail: assumes one source of each per fight (true for all Act 1 rosters).
         moves = e.defn.moves.values()
@@ -463,10 +560,17 @@ class SimCombat:
     def end_turn(self) -> dict:
         if not self.in_combat or not self.is_play_phase:
             return {"error": "not_play_phase"}
+        for c in self.hand:  # OnTurnEndInHand (Infection), before the hand is discarded
+            if CARDS[c].end_turn_damage:
+                self._damage_player(CARDS[c].end_turn_damage)
+                if not self.in_combat:
+                    return {"ok": True}
         for c in self.hand:
             (self.exhaust_pile if CARDS[c].ethereal else self.discard_pile).append(c)
         self.hand = []
         self.is_play_phase = False
+        self.ringing = False
+        self.cards_played = 0  # SlowPower resets at the start of the enemy turn
         # End of the player's side turn: Constrict hits (Unpowered, so block applies but
         # Vulnerable doesn't) and Tangled is removed.
         if self.constrict:
@@ -497,8 +601,11 @@ class SimCombat:
             e.strength += mv.strength
             self.shrunk |= mv.shrink
             self.discard_pile += ["SLIMED"] * mv.slimed + ["DAZED"] * mv.dazed
+            self.discard_pile += ["INFECTION"] * mv.infection + ["WOUND"] * mv.wound
             self.tangled += mv.tangled
             self.constrict += mv.constrict
+            self.ringing |= mv.ringing
+            e.plow += mv.plow
             if mv.summon:
                 # Creatures are ordered by encounter slot; FogmogNormal.Slots = ["illusion", "fogmog"],
                 # so the summoned Eye goes first (and acts before Fogmog from next turn).
@@ -506,17 +613,23 @@ class SimCombat:
                 self.enemies.insert(0, _Enemy.spawn(MONSTERS[mv.summon], self.rng))
             if mv.revive:
                 e.hp = e.max_hp
-            for name in ("vulnerable", "frail"):
+            for name in ("vulnerable", "frail", "weak"):
                 if getattr(mv, name):
                     if not getattr(self, name):
                         fresh.add(name)
                     setattr(self, name, getattr(self, name) + getattr(mv, name))
             e.log.append(e.move)
-            e.move = pick_move(e.defn.follow[e.move], e.log, self.rng)
+            if e.next_override:
+                e.move, e.next_override = e.next_override, None
+            else:
+                e.move = pick_move(e.defn.follow[e.move], e.log, self.rng)
 
         for e in alive:
             e.vulnerable = max(0, e.vulnerable - 1)  # ticks down after the enemy's turn ends
-        for name in ("vulnerable", "frail"):  # the player's tick at the same point
+        for e in alive:  # TerritorialPower.AfterSideTurnEnd
+            if e.is_alive:
+                e.strength += e.defn.territorial
+        for name in ("vulnerable", "frail", "weak"):  # the player's tick at the same point
             if name not in fresh:
                 setattr(self, name, max(0, getattr(self, name) - 1))
         self.round += 1
@@ -558,7 +671,7 @@ class SimCombat:
             powers.append({"id": "STRENGTH", "name": "StrengthPower", "type": "Buff", "amount": e.strength})
         if e.vulnerable:
             powers.append({"id": "VULNERABLE", "name": "VulnerablePower", "type": "Debuff", "amount": e.vulnerable})
-        for name, amount in (("ArtifactPower", e.artifact), ("SlipperyPower", e.slippery)):
+        for name, amount in (("ArtifactPower", e.artifact), ("SlipperyPower", e.slippery), ("PlowPower", e.plow)):
             if amount:
                 powers.append({"id": name.upper(), "name": name, "type": "Buff", "amount": amount})
         return {
@@ -577,11 +690,13 @@ class SimCombat:
     def combat_dict(self) -> dict:
         if not self.in_combat:
             return {"inCombat": False}
-        cards = lambda pile: [card_to_dict(c, self.energy, self.tangled) for c in pile]  # noqa: E731
+        spent = self.ringing and self.cards_played > 0
+        cards = lambda pile: [card_to_dict(c, self.energy, self.tangled, spent) for c in pile]  # noqa: E731
         return {
             "inCombat": True,
             "isPlayPhase": self.is_play_phase,
             "round": self.round,
+            "cardsPlayedThisTurn": self.cards_played,
             "currentSide": "Player" if self.is_play_phase else "Enemy",
             "player": {
                 "hp": self.player_hp,
@@ -599,7 +714,8 @@ class SimCombat:
                     ("ShrinkPower", -1 if self.shrunk else 0), ("VulnerablePower", self.vulnerable),
                     ("FrailPower", self.frail), ("TangledPower", self.tangled),
                     ("ConstrictPower", self.constrict), ("StrengthPower", self.strength),
-                    ("SetupStrikePower", self.temp_strength)) if a],
+                    ("SetupStrikePower", self.temp_strength), ("WeakPower", self.weak),
+                    ("RingingPower", int(self.ringing))) if a],
                 "relics": [],
                 "potions": [],
                 "deck": cards(starter_deck()),

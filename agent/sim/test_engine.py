@@ -185,6 +185,49 @@ total = sum(e.hp for e in c.enemies)
 c.play_card(0)
 assert total - sum(e.hp for e in c.enemies) <= 9 and len(c.discard_pile) == 1
 
+# Elites and bosses.
+c = solo(["STRIKE_IRONCLAD"] * 3, "BYGONE_EFFIGY_ELITE")  # Slow: +10% per card already played
+c.play_card(0, 1); c.play_card(0, 1); c.play_card(0, 1)
+assert c.enemies[0].max_hp - c.enemies[0].hp == 6 + 6 + 7  # 6, 6.6, 7.2
+c.end_turn()
+assert c.cards_played == 0
+c = solo([], "BYRDONIS_ELITE")
+c.end_turn()
+assert c.enemies[0].strength == 1  # Territorial, after its turn
+c = solo(["STRIKE_IRONCLAD"], "PHROG_PARASITE_ELITE")
+c.enemies[0].hp = 1
+c.play_card(0, 1)
+spawned = [e for e in c.enemies if e.is_alive]
+assert c.in_combat and [e.move for e in spawned] == ["SPAWNED_MOVE"] * 4
+c.end_turn()
+assert [e.move for e in spawned] == ["NASTY_BITE_MOVE", "WRIGGLE_MOVE", "NASTY_BITE_MOVE", "WRIGGLE_MOVE"]
+c = solo(["INFECTION", "DEFEND_IRONCLAD"], "PHROG_PARASITE_ELITE")
+c.enemies[0].move = "INFECT_MOVE"
+c.end_turn()  # 3 from the held Infection; the Phrog's turn adds 3 more to the discard pile
+assert c.player_hp == PLAYER_MAX_HP - 3 and c.discard_pile.count("INFECTION") + c.hand.count("INFECTION") \
+    + c.draw_pile.count("INFECTION") == 4
+c = solo(["STRIKE_IRONCLAD"], "CEREMONIAL_BEAST_BOSS")
+c.end_turn()  # STAMP: Plow 150
+beast = c.enemies[0]
+assert beast.plow == 150 and beast.move == "PLOW_MOVE"
+c.end_turn()
+beast.hp, c.hand[0] = 155, "STRIKE_IRONCLAD"
+c.play_card(0, 1)
+assert beast.plow == 0 and beast.strength == 0 and beast.move == "STUNNED"
+c.end_turn(); c.end_turn()  # stunned turn, then BEAST_CRY: Ringing
+assert c.ringing and beast.move == "STOMP_MOVE"
+c.hand = ["STRIKE_IRONCLAD", "STRIKE_IRONCLAD"]
+c.play_card(0, 1)
+assert c.play_card(0, 1)["error"] == "card_not_playable" and not c.combat_dict()["player"]["hand"][0]["canPlay"]
+c = solo(["STRIKE_IRONCLAD"], "THE_KIN_BOSS")
+assert [e.move for e in c.enemies] == ["POWER_DANCE_MOVE", "QUICK_SLASH_MOVE", "ORB_OF_FRAILTY_MOVE"]
+c.weak, hp = 1, c.enemies[2].hp
+c.play_card(0, 3)  # Weak: 6 * 0.75 = 4.5 -> 4
+assert hp - c.enemies[2].hp == 4
+c.enemies[2].hp, c.hand = 1, ["STRIKE_IRONCLAD"]
+c.play_card(0, 3)
+assert c.won and c.enemies[0].is_alive  # followers are minions
+
 # Every encounter runs to completion under a random policy.
 for enc in ENCOUNTERS:
     sim = SimClient(seed=2)

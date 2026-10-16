@@ -38,6 +38,7 @@ class CardDef:
     exhaust_random: bool = False  # Cinder / True Grit: exhaust a random card from hand
     autoplay_top: bool = False  # Havoc: play the top draw-pile card for free, then exhaust it
     copy_to_discard: bool = False  # Anger: add a copy of itself to the discard pile
+    end_turn_damage: int = 0  # Infection: blockable damage to the player if in hand at end of turn
 
 
 CARDS: dict[str, CardDef] = {c.id: c for c in [
@@ -48,6 +49,10 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("SLIMED", "Slimed", "Status", 1, "None", draw=1, exhaust=True),
     # Status card Eye With Teeth shuffles into the discard pile: Unplayable, Ethereal.
     CardDef("DAZED", "Dazed", "Status", -1, "None", ethereal=True),
+    # Phrog Parasite / Wriggler: Unplayable; 3 damage (Unpowered, so blockable) if held at end of turn.
+    CardDef("INFECTION", "Infection", "Status", -1, "None", end_turn_damage=3),
+    # Vantom's Dismember: Unplayable, does nothing else.
+    CardDef("WOUND", "Wound", "Status", -1, "None"),
     # Ironclad Commons.
     CardDef("ANGER", "Anger", "Attack", 0, "AnyEnemy", damage=6, copy_to_discard=True),
     CardDef("BLOOD_WALL", "Blood Wall", "Skill", 2, "Self", hp_loss=2, block=16),
@@ -70,8 +75,8 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("TRUE_GRIT", "True Grit", "Skill", 1, "Self", block=7, exhaust_random=True),
     CardDef("TWIN_STRIKE", "Twin Strike", "Attack", 1, "AnyEnemy", damage=5, hits=2, strike=True),
 ]}
-COMMONS = tuple(sorted(cid for cid in CARDS if cid not in (
-    "STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH", "SLIMED", "DAZED")))
+COMMONS = tuple(sorted(cid for cid in CARDS if CARDS[cid].type != "Status" and cid not in (
+    "STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH")))
 
 
 def starter_deck() -> list[str]:
@@ -85,7 +90,8 @@ def card_cost(card_id: str, tangled: int = 0) -> int:
     return c.cost + tangled if c.type == "Attack" else c.cost
 
 
-def card_to_dict(card_id: str, energy: int, tangled: int = 0) -> dict:
+def card_to_dict(card_id: str, energy: int, tangled: int = 0, ringing_spent: bool = False) -> dict:
+    """ringing_spent: RingingPower is up and a card was already played this turn — no more plays."""
     c = CARDS[card_id]
     cost = card_cost(card_id, tangled)
     return {
@@ -95,7 +101,7 @@ def card_to_dict(card_id: str, energy: int, tangled: int = 0) -> dict:
         "type": c.type,
         "rarity": "Status" if c.type == "Status" else "Common" if c.id in COMMONS else "Basic",
         "cost": cost,
-        "canPlay": 0 <= cost <= energy,
+        "canPlay": 0 <= cost <= energy and not ringing_spent,
         "targetType": c.target_type,
         "upgraded": False,
         "upgradeLevel": 0,

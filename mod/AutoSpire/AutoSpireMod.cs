@@ -216,6 +216,8 @@ public static class AutoSpireMod
             // without this an agent can read the pre-action state and repeat its action.
             actionsIdle = RunManager.Instance.ActionQueueSet.IsEmpty && !RunManager.Instance.ActionExecutor.IsRunning,
             round = state.RoundNumber,
+            // Card plays started this turn (what RingingPower checks; SlowPower counts finished ones).
+            cardsPlayedThisTurn = combatMgr.History.CardPlaysStarted.Count(e => e.HappenedThisTurn(state)),
             currentSide = state.CurrentSide.ToString(),
             player = player != null ? SerializePlayerCombat(player) : null,
             enemies = state.Enemies.Select(SerializeCreature).ToList()
