@@ -401,6 +401,20 @@ v4 (`ppo_sts2_sim_act1_v4_final`, 20M steps, 256×256): the bigger net fixed the
 
 Live, 32 fights sampled across all 16 (13 encounters came up): **32/32 wins**, 16.8 HP lost, 0 invalid actions, 0 errors in `godot.log`. Training took ~5h wall-clock on battery with a sleep in the middle; the 256×256 update step (main process) is the bottleneck, not the sim workers.
 
+### 2026-10-16: Decks beyond the starter cards (Ironclad Commons)
+
+The sim now models 18 of the 20 Ironclad Commons (`sim/cards.py`): Anger, Blood Wall, Bloodletting, Body Slam, Breakthrough, Cinder, Havoc, Iron Wave, Molten Fist, Perfected Strike, Pommel Strike, Setup Strike, Shrug It Off, Sword Boomerang, Thunderclap, Tremble, True Grit, Twin Strike. Unupgraded only. **Armaments and Headbutt are left out**: they open a card-choice prompt (`CardSelectCmd`) that the mod has no command to answer.
+- **Deck control, live**: the dev console's `card <ID> Deck` and `remove_card <ID> Deck` (via `/exec` passthrough) edit the run's deck between fights. Edits persist for the rest of the run, so `AutoSpireClient.set_deck()` diffs against `/state`'s `player.deck` and the env sets the deck every episode. `SimClient.set_deck()` mirrors it.
+- **`env.random_deck`**: the starter deck minus 0–3 Strikes/Defends (never Bash), plus 0–8 random Commons. Use `--random-decks` on train/evaluate. The observation gained a card-identity one-hot per hand slot and player Strength. `MAX_STEPS` went from 60 to 100.
+- **Mod bug found and fixed**: `ExecPlay` auto-targeted any card whose `TargetType` string contained "Enemy". That included `RandomEnemy` (Sword Boomerang), and **the game silently drops a RandomEnemy card played with a target**: `/exec` returned ok, but nothing happened and there was no "playing card" line in `godot.log`. `AllEnemies` escaped by luck, since "Enemies" doesn't contain "Enemy". Now only `AnyEnemy` is auto-targeted.
+- Rules confirmed live:
+  - **Havoc's "Exhaust" is only a hover tip.** Havoc itself is discarded, and the card it autoplays (the *top* of the draw pile) is exhausted, unplayable ones included. `/combat` lists `drawPile` **top-first**, while the sim draws from the end, so `sim.validate.load()` reverses it.
+  - Setup Strike's +2 is `TemporaryStrengthPower`, which shows as `StrengthPower` + `SetupStrikePower` and is removed at the end of the player's turn.
+  - Perfected Strike counts Strike-tagged cards in every pile plus itself.
+  - Breakthrough / Blood Wall / Bloodletting HP loss is unblockable.
+  - Cinder / True Grit (unupgraded) exhaust a random hand card.
+- `sim.validate` now uses random decks and random playable cards (or `--deck a,b,c`), and skips only the comparisons a random pick changes. Result: 327 steps over all 16 encounters + 46 steps with a forced deck of the rarely drawn cards, 0 mismatches. Plus a Havoc/Dazed check, 4/4 exact pile matches.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.

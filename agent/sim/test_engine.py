@@ -1,7 +1,7 @@
 """Self-check for the sim's ported rules: python -m sim.test_engine (from agent/)."""
 import random
 
-from .engine import MONSTERS, SimCombat, SimClient, pick_move, player_attack_damage, ENCOUNTERS
+from .engine import PLAYER_MAX_HP, MONSTERS, SimCombat, SimClient, pick_move, player_attack_damage, ENCOUNTERS
 
 # Damage: floor(base * 1.5 vuln * 0.7 shrink), exact.
 assert player_attack_damage(6, False, False) == 6
@@ -122,6 +122,69 @@ w = __import__("collections").Counter(pick_move(MONSTERS["FOGMOG"].follow["SWIPE
                                        for _ in range(5000))
 assert 0.36 < w["SWIPE_RANDOM_MOVE"] / 5000 < 0.44, w
 
+# Ironclad Commons.
+def solo(hand, encounter="MAWLER_NORMAL", seed=10):
+    """A fight with a known hand, empty piles and 3 energy."""
+    c = SimCombat(rng=random.Random(seed))
+    c.fight(encounter)
+    c.hand, c.draw_pile, c.discard_pile, c.exhaust_pile = list(hand), ["DEFEND_IRONCLAD"] * 5, [], []
+    c.player_block = 0
+    return c
+
+
+c = solo(["TWIN_STRIKE", "SETUP_STRIKE", "STRIKE_IRONCLAD"])
+hp = c.enemies[0].hp
+c.play_card(0, 1)  # Twin Strike 5x2
+c.play_card(0, 1)  # Setup Strike 7, then +2 Strength this turn
+c.play_card(0, 1)  # Strike 6+2
+assert hp - c.enemies[0].hp == 10 + 7 + 8 and c.strength == 2
+c.end_turn()
+assert c.strength == 0 and c.temp_strength == 0
+c = solo(["IRON_WAVE", "BODY_SLAM"])
+hp = c.enemies[0].hp
+c.play_card(0, 1)
+c.play_card(0, 1)  # Body Slam = current block (5)
+assert hp - c.enemies[0].hp == 10 and c.player_block == 5
+c = solo(["PERFECTED_STRIKE"])
+c.draw_pile, hp = ["STRIKE_IRONCLAD"] * 3, c.enemies[0].hp
+c.play_card(0, 1)  # 6 + 2 * (3 Strikes + itself)
+assert hp - c.enemies[0].hp == 14
+c = solo(["BASH", "MOLTEN_FIST"])
+c.play_card(0, 1)
+c.play_card(0, 1)  # Vulnerable 2 doubled to 4; Exhaust
+assert c.enemies[0].vulnerable == 4 and c.exhaust_pile == ["MOLTEN_FIST"]
+c = solo(["THUNDERCLAP", "BREAKTHROUGH"], "SLIMES_NORMAL")
+hps = [e.hp for e in c.enemies]
+c.play_card(0)
+c.play_card(0)
+assert all(e.vulnerable == 1 for e in c.enemies if e.is_alive) and c.player_hp == PLAYER_MAX_HP - 1
+assert [max(0, h - 4 - 13) for h in hps] == [e.hp for e in c.enemies]  # 4, then 9 x1.5
+c = solo(["BLOODLETTING", "BLOOD_WALL"])
+c.play_card(0)
+assert c.energy == 5 and c.player_hp == PLAYER_MAX_HP - 3
+c.play_card(0)
+assert c.player_block == 16 and c.player_hp == PLAYER_MAX_HP - 5
+c = solo(["ANGER", "SHRUG_IT_OFF"])
+c.play_card(0, 1)
+assert sorted(c.discard_pile) == ["ANGER", "ANGER"] and c.energy == 3
+c.play_card(0)
+assert c.player_block == 8 and c.hand == ["DEFEND_IRONCLAD"]
+c = solo(["CINDER", "DEFEND_IRONCLAD", "DEFEND_IRONCLAD"])
+c.play_card(0, 1)
+assert len(c.hand) == 1 and c.exhaust_pile == ["DEFEND_IRONCLAD"]
+c = solo(["HAVOC"])
+c.draw_pile = ["DEFEND_IRONCLAD", "TWIN_STRIKE"]  # top is the end
+hp = c.enemies[0].hp
+c.play_card(0)  # plays the top card (Twin Strike) for free and exhausts it; Havoc is discarded
+assert hp - c.enemies[0].hp == 10 and c.energy == 2 and c.exhaust_pile == ["TWIN_STRIKE"] and c.discard_pile == ["HAVOC"]
+c = solo(["TREMBLE"], "CUBEX_CONSTRUCT_NORMAL")
+c.play_card(0, 1)  # Artifact eats it
+assert c.enemies[0].vulnerable == 0 and c.enemies[0].artifact == 0
+c = solo(["SWORD_BOOMERANG"], "SLIMES_NORMAL")
+total = sum(e.hp for e in c.enemies)
+c.play_card(0)
+assert total - sum(e.hp for e in c.enemies) <= 9 and len(c.discard_pile) == 1
+
 # Every encounter runs to completion under a random policy.
 for enc in ENCOUNTERS:
     sim = SimClient(seed=2)
@@ -139,7 +202,7 @@ assert set(ENCOUNTER_GROUPS["act1"]) == set(ENCOUNTERS), "env encounter groups o
 # Env: every masked-legal action is accepted by the sim (no invalid actions).
 from env import STS2CombatEnv  # noqa: E402
 
-env = STS2CombatEnv(encounter=list(ENCOUNTERS), client=SimClient(seed=4))
+env = STS2CombatEnv(encounter=list(ENCOUNTERS), client=SimClient(seed=4), random_decks=True)
 for _ in range(100):
     env.reset()
     done = False

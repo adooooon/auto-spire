@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--backend", choices=["live", "sim"], default="live")
     parser.add_argument("--name", default=None, help="model name (default: ppo_sts2_<backend>_<encounters>)")
     parser.add_argument("--net", type=int, nargs="+", default=[64, 64], help="hidden layer sizes (policy and value)")
+    parser.add_argument("--random-decks", action="store_true", help="starter deck +/- random Commons each episode")
     parser.add_argument("--n-envs", type=int, default=1, help="parallel sim envs (sim backend only)")
     parser.add_argument("--resume", type=str, default=None, help="path to a .zip checkpoint to continue training from")
     args = parser.parse_args()
@@ -54,10 +55,11 @@ def main():
         raise SystemExit("AutoSpire mod not reachable at localhost:31452 — is the game running?")
 
     if sim and args.n_envs > 1:
-        env = make_vec_env(lambda: STS2CombatEnv(encounter=encounters, client=SimClient()),
+        env = make_vec_env(lambda: STS2CombatEnv(encounter=encounters, client=SimClient(), random_decks=args.random_decks),
                            n_envs=args.n_envs, vec_env_cls=SubprocVecEnv)
     else:
-        env = Monitor(STS2CombatEnv(encounter=encounters, client=client, episodes_per_restart=args.episodes_per_restart))
+        env = Monitor(STS2CombatEnv(encounter=encounters, client=client, episodes_per_restart=args.episodes_per_restart,
+                                    random_decks=args.random_decks))
 
     if args.resume:
         model = MaskablePPO.load(args.resume, env=env, tensorboard_log=str(LOG_DIR))

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from collections import Counter
 from typing import Any
 
 import requests
@@ -80,6 +81,18 @@ class AutoSpireClient:
 
     def end_turn(self) -> dict[str, Any]:
         return self.exec("end")
+
+    def set_deck(self, deck: list[str]) -> None:
+        """Make the run's deck exactly `deck` (card ids) via the dev console's card/remove_card,
+        touching only the difference. Takes effect from the next `fight`."""
+        have = Counter(c["id"] for c in (self.state().get("player") or {}).get("deck") or [])
+        want = Counter(deck)
+        for cid, n in (have - want).items():
+            for _ in range(n):
+                self.exec(f"remove_card {cid} Deck", settle=0.0)
+        for cid, n in (want - have).items():
+            for _ in range(n):
+                self.exec(f"card {cid} Deck", settle=0.0)
 
     def wait_for(
         self,

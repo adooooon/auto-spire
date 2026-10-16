@@ -24,7 +24,7 @@ import requests
 from gymnasium import spaces
 
 from client import AutoSpireClient
-from sim.cards import STARTER_CARDS
+from sim.cards import CARDS, COMMONS, starter_deck
 from sim.engine import MONSTERS
 
 MAX_HAND = 10
@@ -41,15 +41,16 @@ ENCOUNTER_GROUPS = {"weak": WEAK_ENCOUNTERS, "normal": NORMAL_ENCOUNTERS, "act1"
 def parse_encounters(arg: str) -> list[str]:
     """CLI --encounters: a group name (weak/normal/act1) or comma-separated encounter ids."""
     return list(ENCOUNTER_GROUPS.get(arg) or arg.split(","))
-MAX_STEPS = 60
+MAX_STEPS = 100  # card plays count as steps; 0-cost cards (Anger) and draw make fights longer
 END_TURN = MAX_HAND * MAX_ENEMIES
 
-CARD_FEATURES = 6  # cost, can_play, is_attack, is_skill, is_power, upgraded
-PLAYER_FEATURES = 10  # hp, block, energy, maxEnergy, shrunk, vulnerable, frail, tangled, constrict, round
 # Monster identity matters (which one applies Shrink, whose Strength stacks) and HP alone
-# only hints at it; the one-hot covers every monster the sim models.
+# only hints at it; the one-hots cover every monster and card the sim models.
 MONSTER_IDS = sorted(MONSTERS)
-CARD_IDS = sorted(STARTER_CARDS)
+CARD_IDS = sorted(CARDS)
+CARD_FEATURES = 6 + len(CARD_IDS)  # cost, can_play, is_attack, is_skill, is_power, upgraded + identity
+# hp, block, energy, maxEnergy, shrunk, vulnerable, frail, tangled, constrict, strength, round
+PLAYER_FEATURES = 11
 PILE_FEATURES = 2 * len(CARD_IDS)  # per-card counts in draw and discard piles
 # hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, strength, artifact, slippery,
 # is_alive + identity
@@ -65,7 +66,16 @@ def _encode_card(card: dict) -> list[float]:
         float(card["type"] == "Skill"),
         float(card["type"] == "Power"),
         float(card["upgraded"]),
-    ]
+    ] + [float(card["id"] == cid) for cid in CARD_IDS]
+
+
+def random_deck(rng: np.random.Generator) -> list[str]:
+    """Starter deck minus 0-3 Strikes/Defends, plus 0-8 random Commons (with replacement) —
+    roughly the decks an Act 1 run sees."""
+    deck = starter_deck()
+    for _ in range(rng.integers(0, 4)):
+        deck.remove(rng.choice([c for c in deck if c != "BASH"]))
+    return deck + list(rng.choice(COMMONS, size=rng.integers(0, 9)))
 
 
 def _power(entity: dict, name: str) -> int:
@@ -97,6 +107,7 @@ def _encode(combat: dict) -> np.ndarray:
         _power(player, "FrailPower") / 5.0,
         _power(player, "TangledPower") / 2.0,
         _power(player, "ConstrictPower") / 10.0,
+        _power(player, "StrengthPower") / 5.0,
         combat.get("round", 0) / 20.0,
     ]
     pile_feats = [sum(c["id"] == cid for c in player.get(pile) or []) / 5.0
@@ -148,10 +159,12 @@ class STS2CombatEnv(gym.Env):
         encounter: str | tuple[str, ...] | list[str] = ENCOUNTER,
         client: AutoSpireClient | None = None,
         episodes_per_restart: int = 40,
+        random_decks: bool = False,
     ):
         super().__init__()
         self.encounters = [encounter] if isinstance(encounter, str) else list(encounter)
         self.client = client or AutoSpireClient()
+        self.random_decks = random_decks
         self.action_space = spaces.Discrete(END_TURN + 1)
         self.observation_space = spaces.Box(low=-1.0, high=10.0, shape=(OBS_DIM,), dtype=np.float32)
         self._steps = 0
@@ -176,6 +189,8 @@ class STS2CombatEnv(gym.Env):
                     self.client.full_restart()  # lands inRun=true on the Act 1 map, not yet in combat
                     self._needs_restart = False
                 self.client.exec("heal 999")
+                # The deck persists across fights in a live run, so set it every episode.
+                self.client.set_deck(random_deck(self.np_random) if self.random_decks else starter_deck())
                 self.client.exec(f"fight {self.np_random.choice(self.encounters)}", settle=0.5)
                 self.client.exec("heal 999")
                 combat = self.client.wait_for(_ready, timeout=15.0)

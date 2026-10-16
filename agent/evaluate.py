@@ -23,12 +23,13 @@ def main():
     parser.add_argument("--encounters", default="NIBBITS_WEAK",
                         help='comma-separated encounter ids, or a group: weak, normal, act1')
     parser.add_argument("--backend", choices=["live", "sim"], default="sim")
+    parser.add_argument("--random-decks", action="store_true", help="starter deck +/- random Commons each episode")
     parser.add_argument("--episodes", type=int, default=100)
     args = parser.parse_args()
     encounters = parse_encounters(args.encounters)
 
     client = SimClient(seed=0) if args.backend == "sim" else AutoSpireClient()
-    env = STS2CombatEnv(encounter=encounters, client=client)
+    env = STS2CombatEnv(encounter=encounters, client=client, random_decks=args.random_decks)
     model = None if args.model == "random" else MaskablePPO.load(args.model)
 
     wins, aborted, rewards, lengths, invalid, hp_lost = 0, 0, [], [], 0, []

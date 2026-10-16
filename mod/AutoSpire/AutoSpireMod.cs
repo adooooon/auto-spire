@@ -415,9 +415,10 @@ public static class AutoSpireMod
                   ?? combatState.Allies.FirstOrDefault(e => e.CombatId == targetId.Value);
             if (target == null) return new { error = "invalid_target", targetId };
         }
-        else if (card.TargetType.ToString().Contains("Enemy"))
+        else if (card.TargetType == TargetType.AnyEnemy)
         {
-            // Auto-target first hittable enemy if none specified
+            // Auto-target first hittable enemy if none specified. Only AnyEnemy takes a target:
+            // the game silently drops a RandomEnemy card (Sword Boomerang) played with one.
             target = combatState.HittableEnemies.FirstOrDefault();
         }
 

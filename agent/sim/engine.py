@@ -26,7 +26,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from .cards import STARTER_CARDS, card_cost, card_to_dict, starter_deck
+from .cards import CARDS, card_cost, card_to_dict, starter_deck
 
 PLAYER_MAX_HP = 80
 PLAYER_MAX_ENERGY = 3
@@ -302,6 +302,8 @@ class SimCombat:
     frail: int = 0  # player's: card block x0.75
     tangled: int = 0  # player's: Attack cards cost +tangled; removed at the end of their turn
     constrict: int = 0  # player's: takes this much (blockable) damage at the end of their turn
+    strength: int = 0  # player's, added to every attack hit
+    temp_strength: int = 0  # the part of `strength` that goes away at the end of their turn
     energy: int = 0
     round: int = 1
     in_combat: bool = False
@@ -317,17 +319,18 @@ class SimCombat:
     def heal(self, amount: int) -> None:
         self.player_hp = min(self.player_max_hp, self.player_hp + amount)
 
-    def fight(self, encounter: str) -> None:
+    def fight(self, encounter: str, deck: list[str] | None = None) -> None:
         self.enemies = []
         for entry in encounter_roster(encounter, self.rng):
             model_id, _, first = entry.partition(":")
             self.enemies.append(_Enemy.spawn(MONSTERS[model_id], self.rng, first))
-        self.draw_pile = starter_deck()
+        self.draw_pile = list(deck or starter_deck())  # draw_pile[-1] is the top card
         self.rng.shuffle(self.draw_pile)
         self.hand, self.discard_pile, self.exhaust_pile = [], [], []
         self.player_block = 0
         self.shrunk = False
         self.vulnerable = self.frail = self.tangled = self.constrict = 0
+        self.strength = self.temp_strength = 0
         self.round = 1
         self.in_combat = True
         self.won = None
@@ -355,7 +358,7 @@ class SimCombat:
         if hand_index < 0 or hand_index >= len(self.hand):
             return {"error": "invalid_card_index", "max": len(self.hand) - 1}
         card_id = self.hand[hand_index]
-        card = STARTER_CARDS[card_id]
+        card = CARDS[card_id]
         cost = card_cost(card_id, self.tangled)
         if not 0 <= cost <= self.energy:
             return {"error": "card_not_playable", "card": card_id}
@@ -368,24 +371,73 @@ class SimCombat:
 
         self.energy -= cost
         self.hand.pop(hand_index)
-
-        if card.damage and target:
-            self._damage_enemy(target, player_attack_damage(card.damage, target.vulnerable > 0, self.shrunk))
-        if card.vulnerable and target and target.is_alive:
-            if target.artifact:  # ArtifactPower negates the debuff and spends a charge
-                target.artifact -= 1
-            else:
-                target.vulnerable += card.vulnerable
-        if card.block:
-            self.player_block += card.block * 3 // 4 if self.frail else card.block
-        if card.draw:
-            self._draw(card.draw)
-        (self.exhaust_pile if card.exhaust else self.discard_pile).append(card_id)
-
+        self._resolve(card_id, target)
         # CombatManager.IsEnding: won once no *primary* enemy (non-minion) is alive.
-        if not any(e.is_alive and not e.defn.illusion for e in self.enemies):
+        if self.in_combat and not any(e.is_alive and not e.defn.illusion for e in self.enemies):
             self._end_combat(won=True)
         return {"ok": True, "played": card.title, "index": hand_index}
+
+    def _hittable(self) -> list[_Enemy]:
+        return [e for e in self.enemies if e.is_alive]
+
+    def _apply_vulnerable(self, e: _Enemy, amount: int) -> None:
+        if e.artifact:  # ArtifactPower negates the debuff and spends a charge
+            e.artifact -= 1
+        else:
+            e.vulnerable += amount
+
+    def _resolve(self, card_id: str, target: _Enemy | None, force_exhaust: bool = False) -> None:
+        """A card's OnPlay, in the order documented in cards.py. The card is "in play" (in no pile)."""
+        card = CARDS[card_id]
+        if card.hp_loss:
+            self._lose_hp(card.hp_loss)
+            if not self.in_combat:
+                return
+        if card.block:
+            self.player_block += card.block * 3 // 4 if self.frail else card.block
+        if card.damage or card.damage_from_block:
+            base = self.player_block if card.damage_from_block else card.damage
+            if card.damage_per_strike:  # PlayerCombatState.AllCards: every pile plus the card in play
+                piles = self.hand + self.draw_pile + self.discard_pile + self.exhaust_pile
+                base += card.damage_per_strike * (sum(CARDS[c].strike for c in piles) + card.strike)
+            for _ in range(card.hits):
+                if card.target_type == "AllEnemies":
+                    targets = self._hittable()
+                elif card.target_type == "RandomEnemy":
+                    targets = [self.rng.choice(self._hittable())] if self._hittable() else []
+                else:
+                    targets = [target] if target and target.is_alive else []
+                for t in targets:
+                    self._damage_enemy(t, player_attack_damage(base + self.strength, t.vulnerable > 0, self.shrunk))
+        if card.vulnerable:
+            for t in self._hittable() if card.target_type == "AllEnemies" else [target] if target else []:
+                if t.is_alive:
+                    self._apply_vulnerable(t, card.vulnerable)
+        if card.double_vulnerable and target and target.is_alive and target.vulnerable:
+            self._apply_vulnerable(target, target.vulnerable)
+        self.strength += card.temp_strength
+        self.temp_strength += card.temp_strength
+        if card.draw:
+            self._draw(card.draw)
+        self.energy += card.energy
+        if card.exhaust_random and self.hand:  # Rng.CombatCardSelection.NextItem(hand)
+            self.exhaust_pile.append(self.hand.pop(self.rng.randrange(len(self.hand))))
+        if card.copy_to_discard:
+            self.discard_pile.append(card_id)
+        if card.autoplay_top:  # CardPileCmd.AutoPlayFromDrawPile(1, Top, forceExhaust)
+            if not self.draw_pile and self.discard_pile:  # ShuffleIfNecessary
+                self.draw_pile, self.discard_pile = self.discard_pile, []
+                self.rng.shuffle(self.draw_pile)
+            if self.draw_pile:
+                top = self.draw_pile.pop()
+                if CARDS[top].cost < 0:  # Unplayable: MoveToResultPileWithoutPlaying
+                    # ponytail: assumed to land in the exhaust pile like the forced-exhaust play would
+                    self.exhaust_pile.append(top)
+                else:  # CardCmd.AutoPlay: free, AnyEnemy cards get a random hittable target
+                    auto = self.rng.choice(self._hittable()) if CARDS[top].target_type == "AnyEnemy" and \
+                        self._hittable() else None
+                    self._resolve(top, auto, force_exhaust=True)
+        (self.exhaust_pile if card.exhaust or force_exhaust else self.discard_pile).append(card_id)
 
     def _damage_enemy(self, e: _Enemy, dmg: int) -> None:
         absorbed = min(e.block, dmg)
@@ -412,7 +464,7 @@ class SimCombat:
         if not self.in_combat or not self.is_play_phase:
             return {"error": "not_play_phase"}
         for c in self.hand:
-            (self.exhaust_pile if STARTER_CARDS[c].ethereal else self.discard_pile).append(c)
+            (self.exhaust_pile if CARDS[c].ethereal else self.discard_pile).append(c)
         self.hand = []
         self.is_play_phase = False
         # End of the player's side turn: Constrict hits (Unpowered, so block applies but
@@ -422,6 +474,8 @@ class SimCombat:
             if not self.in_combat:
                 return {"ok": True}
         self.tangled = 0
+        self.strength -= self.temp_strength  # TemporaryStrengthPower.AfterSideTurnEnd
+        self.temp_strength = 0
         self._run_enemy_turn()
         return {"ok": True}
 
@@ -470,6 +524,13 @@ class SimCombat:
 
     def monster_hit_damage(self, base: int) -> int:
         return base * 3 // 2 if self.vulnerable else base
+
+    def _lose_hp(self, amount: int) -> None:
+        """Unblockable self-damage (Blood Wall, Bloodletting, Breakthrough)."""
+        self.player_hp -= amount
+        if self.player_hp <= 0:
+            self.player_hp = 0
+            self._end_combat(won=False)
 
     def _damage_player(self, dmg: int) -> None:
         absorbed = min(self.player_block, dmg)
@@ -537,7 +598,8 @@ class SimCombat:
                 "powers": [{"id": n.upper(), "name": n, "type": "Debuff", "amount": a} for n, a in (
                     ("ShrinkPower", -1 if self.shrunk else 0), ("VulnerablePower", self.vulnerable),
                     ("FrailPower", self.frail), ("TangledPower", self.tangled),
-                    ("ConstrictPower", self.constrict)) if a],
+                    ("ConstrictPower", self.constrict), ("StrengthPower", self.strength),
+                    ("SetupStrikePower", self.temp_strength)) if a],
                 "relics": [],
                 "potions": [],
                 "deck": cards(starter_deck()),
@@ -554,6 +616,10 @@ class SimClient:
 
     def __init__(self, seed: int | None = None):
         self._combat = SimCombat(rng=random.Random(seed))
+        self._deck: list[str] | None = None  # None = starter deck
+
+    def set_deck(self, deck: list[str]) -> None:
+        self._deck = list(deck)
 
     def ping(self) -> bool:
         return True
@@ -572,7 +638,7 @@ class SimClient:
             self._combat.heal(int(parts[1]) if len(parts) > 1 else 999)
             return {"ok": True}
         if verb == "fight":
-            self._combat.fight(parts[1] if len(parts) > 1 else "NIBBITS_WEAK")
+            self._combat.fight(parts[1] if len(parts) > 1 else "NIBBITS_WEAK", self._deck)
             return {"ok": True}
         if verb == "newrun":
             self._combat = SimCombat(rng=self._combat.rng)
