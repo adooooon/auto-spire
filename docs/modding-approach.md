@@ -415,6 +415,8 @@ The sim now models 18 of the 20 Ironclad Commons (`sim/cards.py`): Anger, Blood 
   - Cinder / True Grit (unupgraded) exhaust a random hand card.
 - `sim.validate` now uses random decks and random playable cards (or `--deck a,b,c`), and skips only the comparisons a random pick changes. Result: 327 steps over all 16 encounters + 46 steps with a forced deck of the rarely drawn cards, 0 mismatches. Plus a Havoc/Dazed check, 4/4 exact pile matches.
 
+v5 (`ppo_sts2_sim_act1_decks_v5_final`, 30M steps with `--random-decks`, 256×256, ~2h on AC power), sim, 500 random-deck fights per encounter: 100% on 15/16 and 99.6% on OVERGROWTH_CRAWLERS; HP lost 2.8–25.0 per fight (weak 3–6, normals 14–25). On the plain starter deck across all 16: 100%, 23.2 HP lost (v4's per-encounter average was ~24.5), so learning the new cards didn't cost starter-deck play. Live, random decks over all 16 (13 came up), 27.9M-step checkpoint: **20/20 wins**, 6.6 HP lost, 0 invalid actions, 0 errors. It played 18 different cards: Perfected Strike 14×, Anger 14×, Cinder 9×, Molten Fist 7×, down to Havoc and Bloodletting once each.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.
