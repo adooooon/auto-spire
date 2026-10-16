@@ -431,7 +431,7 @@ v5 (`ppo_sts2_sim_act1_decks_v5_final`, 30M steps with `--random-decks`, 256×25
 | **Simulated pick** | **98.5%** | 6.99 | **51.6** | 5.1 |
 
   Its favourite is Anger (0-cost damage), then a spread of efficient attacks and Shrug It Off. It rarely takes Blood Wall, Havoc or Body Slam.
-- **Live** (`python picker.py --model ... --live`): the same mini-run in the real game, picking from real reward screens. 7/7 fights won, ended at 72/80 HP, took Setup Strike ×2, Anger, Iron Wave, True Grit, and skipped twice. In the game, Burning Blood's heal lands *after* the reward screen appears (even at the start of the next fight), so the live log's per-fight HP-lost numbers are off by its 6.
+- **Live** (originally `python picker.py --live`, now `python run.py --live`): the same mini-run in the real game, picking from real reward screens. 7/7 fights won, ended at 72/80 HP, took Setup Strike ×2, Anger, Iron Wave, True Grit, and skipped twice. In the game, Burning Blood's heal lands *after* the reward screen appears (even at the start of the next fight), so the live log's per-fight HP-lost numbers are off by its 6.
 
 ### 2026-10-16: Act 1 elites and bosses
 
