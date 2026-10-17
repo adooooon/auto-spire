@@ -185,6 +185,122 @@ total = sum(e.hp for e in c.enemies)
 c.play_card(0)
 assert total - sum(e.hp for e in c.enemies) <= 9 and len(c.discard_pile) == 1
 
+# Ironclad Uncommons and Rares (Mawler: 72 HP, opens CLAW 4x2).
+c = solo(["WHIRLWIND"])
+c.play_card(0)  # X = 3 energy: 3 x 5
+assert c.enemies[0].hp == 72 - 15 and c.energy == 0
+c = solo(["FEEL_NO_PAIN", "TRUE_GRIT", "STRIKE_IRONCLAD"])
+c.play_card(0); c.play_card(0)  # 7 block, exhaust the Strike: +3
+assert c.player_block == 10 and c.exhaust_pile == ["STRIKE_IRONCLAD"] and c.discard_pile == ["TRUE_GRIT"]
+c = solo(["RUPTURE", "HEMOKINESIS", "STRIKE_IRONCLAD"])
+c.play_card(0); c.play_card(0, 1)  # Strength comes after the card that cost the HP
+assert c.enemies[0].hp == 72 - 15 and c.strength == 1 and c.player_hp == PLAYER_MAX_HP - 2
+c.play_card(0, 1)
+assert c.enemies[0].hp == 72 - 15 - 7
+c = solo(["INFERNO"])
+c.play_card(0); c.end_turn()  # Mawler's claw is blocked by nothing: 8 HP, then Inferno's 1 at turn start
+assert c.player_hp == PLAYER_MAX_HP - 8 - 1 and c.enemies[0].hp == 72 - 6
+c = solo(["UNMOVABLE", "DEFEND_IRONCLAD", "DEFEND_IRONCLAD"])
+c.energy = 4
+c.play_card(0); c.play_card(0); c.play_card(0)  # the first block card this turn is doubled
+assert c.player_block == 10 + 5
+c = solo(["TRUE_GRIT", "STRIKE_IRONCLAD"])
+c.play_card(0)  # exhausts the Strike, so Evil Eye blocks twice
+c.hand = ["EVIL_EYE"]
+c.play_card(0)
+assert c.player_block == 7 + 16
+c = solo(["JUGGERNAUT", "DEFEND_IRONCLAD"])
+c.play_card(0); c.play_card(0)
+assert c.enemies[0].hp == 72 - 6
+c = solo(["FLAME_BARRIER"])
+c.play_card(0); c.end_turn()  # Claw 4x2 into 12 block: 4 back per hit
+assert c.enemies[0].hp == 72 - 8 and c.player_hp == PLAYER_MAX_HP and "FlameBarrierPower" not in c.pw
+c = solo(["STRIKE_IRONCLAD", "STRIKE_IRONCLAD", "STOMP"])
+c.play_card(0, 1); c.play_card(0, 1)
+assert c.cost("STOMP") == 1 and c.can_play("STOMP")
+c = solo(["ONE_TWO_PUNCH", "STRIKE_IRONCLAD", "STRIKE_IRONCLAD"])
+c.play_card(0); c.play_card(0, 1)
+assert c.enemies[0].hp == 72 - 12 and "OneTwoPunchPower" not in c.pw
+c.play_card(0, 1)
+assert c.enemies[0].hp == 72 - 18
+c = solo(["JUGGLING", "ANGER", "ANGER", "ANGER"])
+c.play_card(0); c.play_card(0, 1); c.play_card(0, 1); c.play_card(0, 1)
+assert c.hand == ["ANGER"]  # the 3rd Attack this turn is copied into hand
+c = solo(["BATTLE_TRANCE", "POMMEL_STRIKE"])
+c.play_card(0)
+assert len(c.hand) == 4 and c.pw == {"NoDrawPower": 1}
+c.play_card(c.hand.index("POMMEL_STRIKE"), 1)
+assert len(c.hand) == 3
+c.end_turn()
+assert "NoDrawPower" not in c.pw and len(c.hand) == 5
+c = solo(["BARRICADE", "DEFEND_IRONCLAD"])
+c.energy = 4
+c.play_card(0); c.play_card(0); c.end_turn()  # Claw 4x2 into 5 block: 2 left, kept
+assert c.player_block == 0 and c.player_hp == PLAYER_MAX_HP - 3
+c = solo(["COLOSSUS", "BASH"])
+c.play_card(0); c.play_card(0, 1); c.end_turn()  # Vulnerable Mawler hits for half: 2 x 2 into 5 block
+assert c.player_hp == PLAYER_MAX_HP and "ColossusPower" not in c.pw
+c = solo(["UPPERCUT"])
+c.play_card(0, 1)
+assert c.enemies[0].weak == 1 and c.enemies[0].vulnerable == 1
+assert c.combat_dict()["enemies"][0]["intent"]["intents"][0]["damage"] == 3  # 4 x 0.75
+c.end_turn()
+assert c.player_hp == PLAYER_MAX_HP - 6 and c.enemies[0].weak == 0
+c = solo(["MANGLE"])
+c.play_card(0, 1)
+assert c.enemies[0].strength == -10 and c.enemies[0].mangle == 10
+c.end_turn()
+assert c.player_hp == PLAYER_MAX_HP and c.enemies[0].strength == 0
+c = solo(["FEED"])
+c.enemies[0].hp = 5
+c.play_card(0, 1)
+assert c.won and c.player_max_hp == PLAYER_MAX_HP + 3
+c = solo(["PACTS_END", "PACTS_END"])
+c.play_card(0)
+assert c.enemies[0].hp == 72
+c.exhaust_pile = ["WOUND"] * 3
+c.play_card(0)
+assert c.enemies[0].hp == 72 - 17
+c = solo(["DARK_EMBRACE", "TRUE_GRIT", "STRIKE_IRONCLAD"])
+c.play_card(0); c.play_card(0)  # exhausts the Strike, draws a Defend
+assert c.hand == ["DEFEND_IRONCLAD"]
+c = solo(["HELLRAISER"])
+c.draw_pile = ["DEFEND_IRONCLAD"] * 4 + ["TWIN_STRIKE"]
+c.play_card(0); c.end_turn()  # Claw 8, then the drawn Twin Strike plays itself
+assert c.enemies[0].hp == 72 - 10 and "TWIN_STRIKE" in c.discard_pile and len(c.hand) == 4
+c = solo(["RAMPAGE", "RAMPAGE"])
+c.play_card(0, 1); c.play_card(0, 1)
+assert c.enemies[0].hp == 72 - 9 - 14
+c = solo(["EXPECT_A_FIGHT", "STRIKE_IRONCLAD", "BASH", "BLOODLETTING"])
+c.play_card(0)  # 2 Attacks in hand: +2, then no more energy gain this turn
+c.play_card(c.hand.index("BLOODLETTING"))
+assert c.energy == 3
+c = solo(["STONE_ARMOR"])
+c.play_card(0); c.end_turn()  # 4 block at end of turn soaks the Claw's 8 down to 4
+assert c.player_hp == PLAYER_MAX_HP - 4 and c.pw["PlatingPower"] == 3
+c = solo(["INFERNAL_BLADE"])
+c.play_card(0)
+assert len(c.hand) == 1 and c.cost(c.hand[0]) == 0 and c.exhaust_pile == ["INFERNAL_BLADE"]
+c = solo(["PRIMAL_FORCE", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD"])
+c.play_card(0)
+assert c.hand == ["GIANT_ROCK", "DEFEND_IRONCLAD"]
+c = solo(["CRUELTY", "BASH", "STRIKE_IRONCLAD"])
+c.energy = 4
+c.play_card(0); c.play_card(0, 1); c.play_card(0, 1)  # 6 x 1.75
+assert c.enemies[0].hp == 72 - 8 - 10
+c = solo(["VICIOUS", "BASH"])
+c.play_card(0); c.play_card(0, 1)
+assert len(c.hand) == 1
+c = solo(["TEAR_ASUNDER"])
+c.end_turn()  # 2 unblocked Claw hits
+c.hand = ["TEAR_ASUNDER"]
+c.play_card(0, 1)
+assert c.enemies[0].hp == 72 - 15
+c = solo(["CASCADE"])
+c.draw_pile = ["DEFEND_IRONCLAD", "STRIKE_IRONCLAD", "STRIKE_IRONCLAD"]
+c.play_card(0)  # X = 3: plays the top 3 for free
+assert c.enemies[0].hp == 72 - 12 and c.player_block == 5 and c.energy == 0
+
 # Elites and bosses.
 c = solo(["STRIKE_IRONCLAD"] * 3, "BYGONE_EFFIGY_ELITE")  # Slow: +10% per card already played
 c.play_card(0, 1); c.play_card(0, 1); c.play_card(0, 1)

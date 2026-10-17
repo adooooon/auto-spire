@@ -24,7 +24,7 @@ import requests
 from gymnasium import spaces
 
 from client import AutoSpireClient
-from sim.cards import CARDS, COMMONS, starter_deck
+from sim.cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
 from sim.engine import MONSTERS
 
 MAX_HAND = 10
@@ -54,12 +54,14 @@ MONSTER_IDS = sorted(MONSTERS)
 CARD_IDS = sorted(CARDS)
 CARD_FEATURES = 6 + len(CARD_IDS)  # cost, can_play, is_attack, is_skill, is_power, upgraded + identity
 # hp, block, energy, maxEnergy, shrunk, vulnerable, frail, tangled, constrict, strength, weak,
-# ringing, cards played this turn, round
-PLAYER_FEATURES = 14
-PILE_FEATURES = 2 * len(CARD_IDS)  # per-card counts in draw and discard piles
+# ringing, cards played this turn, round, + the amount of each power the player's cards apply.
+# ponytail: "exhausted / lost HP this turn" (Evil Eye, Spite, ...) aren't in /combat, so not observed.
+PLAYER_POWERS = sorted({name for c in CARDS.values() for name, _ in c.powers} - {"StrengthPower"})
+PLAYER_FEATURES = 14 + len(PLAYER_POWERS)
+PILE_FEATURES = 3 * len(CARD_IDS)  # per-card counts in draw, discard and exhaust piles
 # hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, strength, artifact, slippery,
-# plow, is_alive + identity
-ENEMY_FEATURES = 11 + len(MONSTER_IDS)
+# plow, weak, mangle, is_alive + identity
+ENEMY_FEATURES = 13 + len(MONSTER_IDS)
 OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES
 
 
@@ -75,12 +77,14 @@ def _encode_card(card: dict) -> list[float]:
 
 
 def random_deck(rng: np.random.Generator) -> list[str]:
-    """Starter deck minus 0-3 Strikes/Defends, plus 0-8 random Commons (with replacement) —
-    roughly the decks an Act 1 run sees."""
+    """Starter deck minus 0-3 Strikes/Defends, plus 0-8 random Ironclad cards (with replacement) —
+    roughly the decks an Act 1 run sees. Rarity 60/30/10%: Rares oversampled vs. the ~3% of offers
+    so the policy learns to play them."""
     deck = starter_deck()
     for _ in range(rng.integers(0, 4)):
         deck.remove(rng.choice([c for c in deck if c != "BASH"]))
-    return deck + list(rng.choice(COMMONS, size=rng.integers(0, 9)))
+    pools = [COMMONS, UNCOMMONS, RARES]
+    return deck + [str(rng.choice(pools[rng.choice(3, p=[0.6, 0.3, 0.1])])) for _ in range(rng.integers(0, 9))]
 
 
 def _power(entity: dict, name: str) -> int:
@@ -117,9 +121,9 @@ def _encode(combat: dict) -> np.ndarray:
         float(_power(player, "RingingPower") != 0),
         combat.get("cardsPlayedThisTurn", 0) / 10.0,
         combat.get("round", 0) / 20.0,
-    ]
+    ] + [min(_power(player, name), 25) / 5.0 for name in PLAYER_POWERS]
     pile_feats = [sum(c["id"] == cid for c in player.get(pile) or []) / 5.0
-                  for pile in ("drawPile", "discardPile") for cid in CARD_IDS]
+                  for pile in ("drawPile", "discardPile", "exhaustPile") for cid in CARD_IDS]
 
     enemy_feats: list[float] = []
     for i in range(MAX_ENEMIES):
@@ -139,6 +143,8 @@ def _encode(combat: dict) -> np.ndarray:
                 float(_power(e, "ArtifactPower")),
                 float(_power(e, "SlipperyPower")),
                 _power(e, "PlowPower") / 100.0,
+                _power(e, "WeakPower") / 5.0,
+                _power(e, "ManglePower") / 10.0,
                 1.0,
             ] + [float(e.get("modelId") == mid) for mid in MONSTER_IDS]
         else:
@@ -308,7 +314,9 @@ class STS2CombatEnv(gym.Env):
         n_enemies = min(len(_living(self._combat)), MAX_ENEMIES)
         mask = np.zeros(END_TURN + 1, dtype=bool)
         for i, c in enumerate(hand[:MAX_HAND]):
-            if c["canPlay"]:
+            # Cards the sim doesn't model open a choice prompt the mod can't answer (live, Stoke /
+            # Infernal Blade can generate them): never play them.
+            if c["canPlay"] and c["id"] in CARDS:
                 slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
                 mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True
         mask[END_TURN] = True

@@ -10,3 +10,4 @@ mod/pack/.godot/
 agent/models/
 agent/tb_logs/
 .DS_Store
+agent/validate_mismatches.jsonl

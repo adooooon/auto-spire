@@ -2,8 +2,8 @@
 by simulating fights with the combat policy, and take the one that loses the least HP.
 
 Every option is scored on the same seeds (common random numbers), so the comparison
-isn't decided by luck of the draw. Offered cards the sim doesn't model (most
-Uncommons/Rares, Armaments, Headbutt) can't be scored and are never picked.
+isn't decided by luck of the draw. Offered cards the sim doesn't model (Armaments,
+Headbutt, Burning Pact, Brand: card-choice prompts) can't be scored and are never picked.
 
 Runs that use this (sim and live) live in run.py.
 """
@@ -12,11 +12,12 @@ from __future__ import annotations
 import random
 
 from env import STS2CombatEnv
-from sim.cards import CARDS, COMMONS
+from sim.cards import CARDS, COMMONS, RARES, UNCOMMONS
 from sim.engine import SimClient
 
-# The Ironclad Common reward pool; the last two open a card-choice prompt and aren't simulated.
-REWARD_COMMONS = COMMONS + ("ARMAMENTS", "HEADBUTT")
+# The Ironclad reward pools by rarity; the extras open a card-choice prompt and aren't simulated.
+REWARD_POOLS = {"COMMON": COMMONS + ("ARMAMENTS", "HEADBUTT"), "UNCOMMON": UNCOMMONS + ("BURNING_PACT",),
+                "RARE": RARES + ("BRAND",)}
 
 
 class RarityOdds:
@@ -37,11 +38,10 @@ class RarityOdds:
 
 
 def offer(rng: random.Random, odds: RarityOdds, elite: bool = False) -> list[str]:
-    """CardFactory.CreateForReward: 3 cards, no repeats. Uncommon/Rare are placeholders."""
+    """CardFactory.CreateForReward: 3 cards, no repeats."""
     out: list[str] = []
     for _ in range(3):
-        rarity = odds.roll(rng, elite)
-        out.append(rng.choice([c for c in REWARD_COMMONS if c not in out]) if rarity == "COMMON" else rarity)
+        out.append(rng.choice([c for c in REWARD_POOLS[odds.roll(rng, elite)] if c not in out]))
     return out
 
 

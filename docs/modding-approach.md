@@ -486,6 +486,62 @@ Live validation (random decks, random play): 196 steps over Phrog/Vantom/Beast/K
 - **The ceiling isn't the policy alone.** The sim deck can only grow with Commons. There are no Uncommons/Rares (about half of real offers), relics, potions, upgrades or shops yet, and those are what normally carry a deck through the boss.
 - **Game crash under load.** A live run alongside 6-env training died mid-fight with a native SIGABRT in the **FMOD** audio thread (`std::mutex::lock` throwing, in `libGodotFmod`; macOS crash report, nothing in `godot.log`). It's the game's own, not the mod's. A crash ends the live run: the next reset would `full_restart` into a fresh one. `play_fight` now raises on aborted fights.
 
+### 2026-10-17: Ironclad Uncommons and Rares
+
+The sim models the whole Ironclad pool: 34 Uncommons and 24 Rares (84 cards with starters, statuses and Primal Force's Giant Rock token).
+
+**Left out:**
+- **Card-choice prompts:** Armaments, Headbutt, Brand and Burning Pact open a prompt the mod can't answer. Offers of them are never picked. The env masks them, since Stoke and Infernal Blade can still generate them live.
+- **Multiplayer-only:** Demonic Shield and Tank never appear in single-player rewards (`FilterForPlayerCount`).
+- **Upgrades:** the sim has none, so Aggression returns its card unupgraded.
+
+**Rules from source** (`Models.Cards`, `Models.Powers`, `CombatManager`) that the engine now follows:
+
+- **Player turn start:**
+  1. Block clears, unless Barricade.
+  2. `BeforeSideTurnStart`: Aggression.
+  3. Energy resets to 3 + Pyre.
+  4. Draw 5. Hellraiser autoplays each drawn Strike-tagged card, on a random target.
+  5. `AfterPlayerTurnStart`: Crimson Mantle and Inferno self-damage.
+  6. `AfterSideTurnStart`: Demon Form, then Plating ticks down (not on turn 1).
+- **Player turn end:**
+  1. AutoPostPlay phase: Stampede autoplays random Attacks from hand. Howl from Beyond autoplays itself out of the exhaust pile, into the discard pile.
+  2. Plating gives its block.
+  3. Ethereal cards exhaust, *then* Infection hits. The old sim had these two the other way round.
+  4. The hand is flushed.
+  5. `AfterSideTurnEnd`: Constrict, Tangled, temporary Strength, and Rage/No Draw/No Energy Gain/One-Two Punch end. Dark Embrace draws for Ethereal exhausts *after* the flush, so those cards stay in hand into the next turn.
+- **A card play** (`OnPlayWrapper`), repeated per play (One-Two Punch adds one, for Attacks):
+  1. `BeforeCardPlayed`: Free Attack is spent, the Attack counter for Stomp/Juggling goes up, and Rupture registers the card.
+  2. OnPlay.
+  3. `AfterCardPlayed`: Rage block, Juggling's clone on the 3rd Attack, and Rupture's Strength for HP the card cost.
+
+  Only then does the card go to its pile. Powers leave combat, so the exhaust triggers (Feel No Pain, Dark Embrace, Drum of Battle's energy) fire last.
+- **Auto-plays** (`CardCmd.AutoPlay`) are free, pick a random target, and set X to current energy. Ringing still blocks them.
+- **"This turn"** (`CombatHistoryEntry.HappenedThisTurn`) means the same round *and* side. Evil Eye, Forgotten Ritual, Spite and Unmovable only count things from the player's side. Tear Asunder counts every unblocked hit taken this combat.
+- **Unpowered damage** gets no Strength, Vulnerable or Weak, but Plow and Slippery still apply. That covers Juggernaut, Flame Barrier, Inferno, Constrict and Infection. Power block (Plating, Feel No Pain, Rage, Crimson Mantle) ignores Frail.
+- **Individual cards and powers:**
+  - **Rupture and Inferno** only trigger on HP lost during the player's side. That includes the turn-start self-damage and Constrict.
+  - **Unmovable** doubles card block from the first block-gaining card play each turn; every gain within that play counts, e.g. Evil Eye's two.
+  - **Colossus** halves attacks *from Vulnerable monsters*.
+  - **Cruelty** adds its amount, in percent, to the Vulnerable multiplier.
+  - **Mangle** is a temporary Strength-down on the enemy, restored at the end of its turn. Artifact blocks it, along with Weak and Vulnerable.
+  - **Feed** gains max HP and heals the same amount (`GainMaxHp`).
+  - **Drum of Battle's** Exhaust is only a hover tip. It gives energy when *something else* exhausts it.
+  - **Generated cards** go to the discard pile when the hand is full (10). Draws stop at 10.
+
+**Live validation** (`python -m sim.validate --new-cards`): decks of 4 starter cards plus 10 random Uncommons/Rares, on all 12 normals, 3 elites and 3 bosses (450 steps), then a fixed deck of the 12 cards those runs hadn't played (`--deck`, 88 steps, 0 mismatches). Every Uncommon and Rare has been played live.
+- **Real mismatch:** one, a Thrash hit-count bug in the sim. Fixed.
+- **Everything else** was randomness the validator now skips:
+  - Draws after a reshuffle under Hellraiser.
+  - Stampede's random Attack.
+  - Aggression's upgraded card.
+  - A history counter thrown off by an earlier random step. It's now capped at the live card-play count.
+- **Validator mechanics:**
+  - It carries history `/combat` doesn't show from the previous step's sim (`HISTORY_FIELDS`). Free-this-turn cards are read from live costs.
+  - Mismatches are dumped to `agent/validate_mismatches.jsonl` for offline replay.
+
+**FMOD crash:** it recurred with nothing else running, about once per few hundred live steps. It's the game's own.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.
