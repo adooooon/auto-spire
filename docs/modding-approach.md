@@ -452,6 +452,40 @@ The sim covers all 22 Act 1 encounters: 4 weak, 12 normal, 3 elites and 3 bosses
 
 Live validation (random decks, random play): 196 steps over Phrog/Vantom/Beast/Kin and 4 Effigy/Byrdonis fights, 0 mismatches. A forced damage deck reached Beast phase 2 in 3/3 fights: 82 steps, 0 mismatches. The one `godot.log` error in these runs was the game's own `VfxCmd` inside `CreatureCmd.Heal` (a disposed `Marker2D`), probably Burning Blood firing as `fight` swaps the room.
 
+### 2026-10-17: Training on elites/bosses, and whole Act 1 runs (`agent/run.py`)
+
+**v6**: 40M steps on all 22 encounters (`--encounters act1 --random-decks`, 256×256). Sim, random decks, 300 fights each:
+
+| Encounters | Win rate | HP lost |
+|---|---|---|
+| 4 weak | 100% | 4–9 |
+| 12 normal | 99.7–100% | 15–28 |
+| Byrdonis / Bygone Effigy / Phrog Parasite | 99.7% / 81% / 60% | 45 / 59 / 60 |
+| Vantom / Ceremonial Beast / The Kin | 6% / 3% / 1% | ~80 (deaths) |
+
+- **More boss practice barely helps.** v6b (+10M steps, bosses ~37% of fights via `--encounters act1,elite,elite,boss,boss,boss,boss`, since repeating a group upweights it) moved bosses by at most 2 points.
+- **Deck strength does help.** v6b with the starter deck plus 0–2 / 3–5 / 6–8 random Commons:
+  - Phrog Parasite: 55 → 84 → 95%
+  - Vantom: 6 → 12 → 19%
+  - Beast: 4 → 11 → 12%
+  - Kin: 0 → 7 → 5%
+- **Whole runs.** `ACT1_PATH` is 3 weak → 2 normal → rest → elite → 2 normal → rest → elite → normal → rest → boss: 11 fights. HP and deck carry over, with Burning Blood +6 per win, rests +24, and a pick after every win.
+- **Run-mode training.** `train.py --run-mode` (`RunModeEnv`) is one fight per episode, but each fight starts where the run left off, with random picks.
+  - v7 resumed v6b for 10M steps.
+  - v7b added 15M more with **HP lost weighted 3×** (`hp_weight`; the default reward values a lost HP the same as a point of damage dealt, and damage dealt per win is fixed, so a lone fight barely cares about HP).
+- **Results**, 150 sim runs per strategy, picker N = 16:
+
+| Model | Skip: fights won | Random | Picker | Picker: reach boss / clear |
+|---|---|---|---|---|
+| v6b | 4.91 | 5.82 | 7.31 | 20% / 0% |
+| v7 (run mode) | 5.02 | 6.09 | 7.53 | 19% / 0% |
+| v7b (run mode, HP ×3) | 5.15 | 6.17 | **7.91** | **29% / 1.3%** |
+
+  Runs die of HP attrition (normal fights cost 15–28 HP at full health) or at the boss.
+- **Live full run** (`python run.py --live`, v7b): it won all 10 fights before the boss, with HP 80 → 80 (weak ×3) → 73 → rest 80 → elite 39 → 26 → rest 50 → elite 21 → 18 → rest 42. Then it lost to Vantom. Picks: Setup Strike ×2, Anger ×2, Iron Wave, Shrug It Off, True Grit, Tremble; it skipped both elite offers, since every option was an unmodeled Uncommon/Rare. A v7 run earlier was at 47 HP after the two normals, against v7b's 73.
+- **The ceiling isn't the policy alone.** The sim deck can only grow with Commons. There are no Uncommons/Rares (about half of real offers), relics, potions, upgrades or shops yet, and those are what normally carry a deck through the boss.
+- **Game crash under load.** A live run alongside 6-env training died mid-fight with a native SIGABRT in the **FMOD** audio thread (`std::mutex::lock` throwing, in `libGodotFmod`; macOS crash report, nothing in `godot.log`). It's the game's own, not the mod's. A crash ends the live run: the next reset would `full_restart` into a fresh one. `play_fight` now raises on aborted fights.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.

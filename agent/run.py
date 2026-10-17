@@ -6,9 +6,9 @@ sites healing 30% of max HP (HealRestSiteOption.cs). ponytail: no events, shops,
 relic/potion rewards or map choice; add them as the sim grows.
 
 Compare pick strategies over simulated runs:
-    python run.py --model models/ppo_sts2_sim_act1_full_v6_final.zip --runs 200
+    python run.py --model models/ppo_sts2_sim_act1_run_v7b_final.zip --runs 200
 Play one run in the live game, picking from its real reward screens:
-    python run.py --model models/ppo_sts2_sim_act1_full_v6_final.zip --live
+    python run.py --model models/ppo_sts2_sim_act1_run_v7b_final.zip --live
 
 RunModeEnv is the training version: one fight per episode, but each fight starts where the run
 left off (HP, deck grown by random picks), so the policy sees low-HP and late-run states.
@@ -53,7 +53,8 @@ class RunModeEnv(STS2CombatEnv):
     """Sim training env: one fight per episode, but fights chain through ACT1_PATH."""
 
     def __init__(self, **kwargs):
-        super().__init__(client=SimClient(), heal=False, episodes_per_restart=10**9, **kwargs)
+        # HP lost carries into every later fight, so it costs 3x the damage-dealt reward here
+        super().__init__(client=SimClient(), heal=False, episodes_per_restart=10**9, hp_weight=3.0, **kwargs)
         self._rng = random.Random()
         self._node = len(ACT1_PATH)  # forces a new run on the first reset
 

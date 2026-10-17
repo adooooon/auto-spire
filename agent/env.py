@@ -170,12 +170,14 @@ class STS2CombatEnv(gym.Env):
         episodes_per_restart: int = 40,
         random_decks: bool = False,
         heal: bool = True,  # False: HP carries over from the previous fight (multi-fight runs)
+        hp_weight: float = 1.0,  # HP lost costs hp_weight x what dealing that much damage earns
     ):
         super().__init__()
         self.encounters = [encounter] if isinstance(encounter, str) else list(encounter)
         self.client = client or AutoSpireClient()
         self.random_decks = random_decks
         self.heal = heal
+        self.hp_weight = hp_weight
         self.deck: list[str] | None = None  # fixed deck (e.g. a run's), overriding random/starter
         self.action_space = spaces.Discrete(END_TURN + 1)
         self.observation_space = spaces.Box(low=-1.0, high=10.0, shape=(OBS_DIM,), dtype=np.float32)
@@ -283,7 +285,7 @@ class STS2CombatEnv(gym.Env):
             player_hp = _player_hp(combat)
             won = None
 
-        reward = (prev_enemy_hp - enemy_hp) / 10.0 - (prev_player_hp - player_hp) / 10.0
+        reward = (prev_enemy_hp - enemy_hp) / 10.0 - self.hp_weight * (prev_player_hp - player_hp) / 10.0
         if invalid:
             reward -= 0.1
         if terminated:

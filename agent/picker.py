@@ -52,6 +52,8 @@ def play_fight(model, env: STS2CombatEnv, seed: int | None = None) -> tuple[bool
         action = int(model.predict(obs, action_masks=env.action_masks(), deterministic=True)[0])
         obs, _, terminated, truncated, info = env.step(action)
         done = terminated or truncated
+    if info.get("aborted"):  # live API failure; the env would full_restart (a new run) next reset
+        raise RuntimeError(f"fight aborted: {info.get('error', 'reading final HP failed')}")
     return bool(info.get("won")), hp0 - info["player_hp"]
 
 
