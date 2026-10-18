@@ -50,6 +50,12 @@ def main():
     parser.add_argument("--n-envs", type=int, default=1, help="parallel sim envs (sim backend only)")
     parser.add_argument("--resume", type=str, default=None, help="path to a .zip checkpoint to continue training from")
     args = parser.parse_args()
+    if args.run_policy and not args.combat_model:
+        parser.error("--run-policy needs --combat-model (otherwise fights are random moves)")
+    if args.run_model and not args.run_mode:
+        parser.error("--run-model only applies with --run-mode")
+    if (args.run_policy or args.run_mode) and args.backend != "sim":
+        parser.error("--run-policy and --run-mode need --backend sim")
     encounters = parse_encounters(args.encounters)
     name = args.name or f"ppo_sts2_{args.backend}_{args.encounters}"
 

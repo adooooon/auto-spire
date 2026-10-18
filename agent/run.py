@@ -254,7 +254,8 @@ def main():
             rs = [r for r in results if r["strategy"] == s]
             died = Counter(r["died_at"] for r in rs if r["died_at"])
             print(f"{s:8} cleared={np.mean([r['cleared'] for r in rs]):.1%}  floor={np.mean([r['floor'] for r in rs]):.1f}"
-                  f"/16  spent={np.mean([r['spent'] for r in rs]):.0f}  died_at={dict(died)}")
+                  f"/16  spent={np.mean([r['spent'] for r in rs]):.0f}  died_at={dict(died)}"
+                  f"  stuck={sum(not r['cleared'] and not r['died_at'] for r in rs)}")  # hit MAX_DECISIONS
         return
     strategies = args.strategies.split(",")
     with Pool(initializer=_init, initargs=(args.model,)) as pool:

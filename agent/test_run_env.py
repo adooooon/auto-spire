@@ -88,4 +88,19 @@ for _ in range(30):
     fights += 1
 assert fights == 30 and menv.driver.run is not None
 
+# Review fix: "remove a card" commits (no cancel), so shop -> remove -> cancel can't loop forever.
+renv.reset(seed=4)
+renv.decision, renv.run.gold = "shop", 1000
+renv.run.shop = Shop(["SHRUG_IT_OFF", None, None, None, None], [50] * 5, 75)
+renv.step(SHOP_REMOVE)
+assert not renv.action_masks()[N_ACTIONS - 1], "remove has no cancel"
+
+# Review fix: train.py refuses flag combinations that would silently train the wrong thing.
+import subprocess
+import sys
+
+for bad in (["--backend", "sim", "--run-policy"], ["--backend", "sim", "--run-model", "x.zip"], ["--run-policy", "--combat-model", "x.zip"]):
+    p = subprocess.run([sys.executable, "train.py", *bad, "--timesteps", "0", "--name", "guard_check"], capture_output=True, text=True)
+    assert p.returncode == 2 and "error:" in p.stderr, (bad, p.returncode, p.stderr[-300:])
+
 print("run env checks ok")

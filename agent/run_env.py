@@ -20,7 +20,7 @@ from sim.engine import SimClient
 from sim.map import BOSS_ROW, COLS, ROOM_TYPES
 
 DECISIONS = ("path", "pick", "shop", "remove")
-# Actions: [path: one per column][pick: 3 cards, skip][shop: one per slot, remove, leave][remove: one per card id, cancel]
+# Actions: [path: one per column][pick: 3 cards, skip][shop: one per slot, remove, leave][remove: one per card id, then an unused cancel slot]
 PATH = 0
 PICK = PATH + COLS
 SHOP = PICK + 4
@@ -164,9 +164,8 @@ class RunPolicyEnv(gym.Env):
             m[SHOP_REMOVE] = not s.removal_used and run.gold >= s.removal_price
             m[SHOP_LEAVE] = True
         else:
-            for c in set(run.deck):
+            for c in set(run.deck):  # no cancel: shop -> remove -> cancel would let a deterministic policy loop
                 m[REMOVE + CARD_INDEX[c]] = True
-            m[REMOVE + len(CARD_IDS)] = True
         return m
 
     def _obs(self) -> np.ndarray:
