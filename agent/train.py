@@ -42,6 +42,9 @@ def main():
     parser.add_argument("--random-decks", action="store_true", help="starter deck +/- random Commons each episode")
     parser.add_argument("--run-mode", action="store_true",
                         help="sim only: fights chain through an Act 1 run (HP/deck carry over); see run.py")
+    parser.add_argument("--run-policy", action="store_true",
+                        help="sim only: train the run policy (run_env.py) over a frozen --combat-model")
+    parser.add_argument("--combat-model", default=None, help="combat model zip that plays fights for --run-policy")
     parser.add_argument("--n-envs", type=int, default=1, help="parallel sim envs (sim backend only)")
     parser.add_argument("--resume", type=str, default=None, help="path to a .zip checkpoint to continue training from")
     args = parser.parse_args()
@@ -56,7 +59,11 @@ def main():
     if not client.ping():
         raise SystemExit("AutoSpire mod not reachable at localhost:31452 — is the game running?")
 
-    if sim and args.run_mode:
+    if sim and args.run_policy:
+        from run_env import RunPolicyEnv
+        env = make_vec_env(lambda: RunPolicyEnv(combat_model=args.combat_model), n_envs=args.n_envs,
+                           vec_env_cls=SubprocVecEnv if args.n_envs > 1 else None)
+    elif sim and args.run_mode:
         from run import RunModeEnv
         env = make_vec_env(RunModeEnv, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv if args.n_envs > 1 else None)
     elif sim and args.n_envs > 1:
