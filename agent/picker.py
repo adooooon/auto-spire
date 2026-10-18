@@ -9,40 +9,10 @@ Runs that use this (sim and live) live in run.py.
 """
 from __future__ import annotations
 
-import random
-
 from env import STS2CombatEnv
-from sim.cards import CARDS, COMMONS, RARES, UNCOMMONS
+from sim.act import REWARD_POOLS, RarityOdds, offer  # noqa: F401  (run.py imports these from here)
+from sim.cards import CARDS
 from sim.engine import SimClient
-
-# The Ironclad reward pools by rarity; the extras open a card-choice prompt and aren't simulated.
-REWARD_POOLS = {"COMMON": COMMONS + ("ARMAMENTS", "HEADBUTT"), "UNCOMMON": UNCOMMONS + ("BURNING_PACT",),
-                "RARE": RARES + ("BRAND",)}
-
-
-class RarityOdds:
-    """CardRarityOdds.cs at ascension 0. Regular fights: Rare 3% + an offset that starts at -5%,
-    grows 1% per non-Rare roll (cap 40%) and resets on a Rare; Uncommon 37%. Elites: Rare 10%
-    + offset, Uncommon 40%. One instance per run (the offset carries)."""
-
-    def __init__(self):
-        self.offset = -0.05
-
-    def roll(self, rng: random.Random, elite: bool = False) -> str:
-        r, rare = rng.random(), (0.10 if elite else 0.03) + self.offset
-        if r < rare:
-            self.offset = -0.05
-            return "RARE"
-        self.offset = min(self.offset + 0.01, 0.4)
-        return "UNCOMMON" if r < rare + (0.40 if elite else 0.37) else "COMMON"
-
-
-def offer(rng: random.Random, odds: RarityOdds, elite: bool = False) -> list[str]:
-    """CardFactory.CreateForReward: 3 cards, no repeats."""
-    out: list[str] = []
-    for _ in range(3):
-        out.append(rng.choice([c for c in REWARD_POOLS[odds.roll(rng, elite)] if c not in out]))
-    return out
 
 
 def play_fight(model, env: STS2CombatEnv, seed: int | None = None) -> tuple[bool, int]:

@@ -473,6 +473,34 @@ The combat handler is **not intelligent** — it's a QA stress-test tool:
 | `maxFloor` | 49 |
 | `watchdogTimeout` | 30 seconds |
 
+## Act 1 runs (map, rooms, shop)
+
+Ported to the sim in `agent/sim/map.py` and `agent/sim/act.py`.
+
+- **Map** (`Map/StandardActMap.cs`):
+  - **Grid:** 7 columns. Row 0 is the Ancient (Neow), rows 1–15 are rooms (`Overgrowth.BaseNumberOfRooms`) and row 16 is the boss.
+  - **Paths:** 7 paths start on row 1, the second always on a new column. Each path steps to column −1, 0 or +1 in shuffled order, skipping a step that would cross the neighbor's diagonal.
+  - **Fixed rows:** row 1 is all Monster, row 9 (rows − 7) all Treasure, row 15 all RestSite.
+  - **Random rooms:** a queue of RestSite × N(7,1)∈[6,7], Shop × 3, Elite × 5 and Unknown × N(12,1)∈[10,14] is placed at random. Up to 3 passes are made over unassigned points, and invalid types rotate to the back of the queue. Leftover points become Monster.
+  - **Placement rules:** no RestSite or Elite below row 6, and no RestSite in rows 13+. Elite, RestSite, Treasure and Shop can't sit next to the same type (parent or child). RestSite, Monster, Unknown, Elite and Shop can't sit beside the same type (siblings, meaning a parent's other children).
+  - **After generation:** `MapPathPruning` removes duplicate parallel segments, and `MapPostProcessing` moves columns only.
+- **Encounters** (`ActModel.GenerateRooms`):
+  - The monster-room queue is 3 weak encounters, then 12 regular ones, each drawn from a refilling bag that avoids the previous encounter and any shared `EncounterTag`.
+  - Elites come from their own bag (15 deep).
+  - The boss is drawn at run start, but a not-yet-seen boss is forced first (`BossDiscoveryOrder`: Vantom, Ceremonial Beast, Kin).
+- **"?" rooms** (`Odds/UnknownMapPointOdds.cs`):
+  - Base odds are Monster 10%, Treasure 2%, Shop 3%, otherwise Event; Elite is −1, so never.
+  - A rolled type resets to its base, and each unrolled allowed type grows by its base.
+  - Shop is blacklisted after a shop, or when every next point is a shop (`RunManager.BuildRoomTypeBlacklist`).
+  - On a profile's first run, the first two "?" rooms are events and the third is a monster.
+- **Gold:** the Ironclad starts with 99. Fights pay Monster 10–20, Elite 35–45, Boss 100 (`EncounterModel.Min/MaxGoldReward`).
+- **Shop** (`Entities/Merchant/`):
+  - **Character cards:** 5 slots typed Attack, Attack, Skill, Skill, Power. Rarity uses the shop odds (Rare 9% + the card-rarity offset, which this roll doesn't advance; Uncommon 37%). If a type has no card of that rarity, it falls to the next rarity (Common → Uncommon → Rare → Common). Already-stocked cards are excluded.
+  - **Price:** 50/75/150 by rarity × U(0.95, 1.05), rounded; colorless cards ×1.15. One random character card is half price.
+  - **Other stock:** 2 colorless cards (Uncommon, Rare), 3 relics (2 rolled + 1 Shop rarity) and 3 potions.
+  - **Card removal:** once per shop, 75 + 25 per removal used this run.
+- **Rest site:** heals 30% of max HP (`HealRestSiteOption`).
+
 ## File structure
 
 ### PCK contents
