@@ -544,6 +544,32 @@ The sim models the whole Ironclad pool: 34 Uncommons and 24 Rares (84 cards with
 
 **Pillage infinite loop (hung v8 training at 36.3M steps):** `Pillage.OnPlay` is `do Draw while (an Attack && hand not full)`. With Hellraiser, a drawn Strike is autoplayed out of the hand, and under Ringing (Ceremonial Beast's Beast Cry) the autoplay is blocked, so the Strike goes straight to discard. The loop then reshuffles and redraws forever. The sim caps it at one pass over the draw and discard piles. The real game probably soft-locks here too; not tested live.
 
+**Retraining on the full pool.** The observation changed (`OBS_DIM` 1358), so v8 started from scratch: 40M steps, act1, random decks drawing 60/30/10% Common/Uncommon/Rare. v9 resumed it in run mode with HP ×3 for 15M steps, and v9b added 20M more.
+
+- **Per encounter**, sim win rate, 300 fights each with random decks:
+
+| Model | Effigy | Byrdonis | Phrog | Vantom | Beast | Kin |
+|---|---|---|---|---|---|---|
+| v6 (Commons only) | 81% | 99.7% | 60% | 6% | 3% | 1% |
+| v8 | 77% | 99.3% | 62% | 11% | 15% | 7% |
+| v9 | 82% | 99.0% | 55% | 9% | 7% | 5% |
+| v9b | 85% | 99.7% | 59% | 7% | 12% | 4% |
+
+  Weak and normal fights stay at 100% for all three. Run-mode training trades boss win rate in single fights for less HP lost in normals (v8 24.5 → v9b 20.9).
+- **Deck size** (starter-like / +3–5 / +6–8 cards from the full pool):
+  - v8 bosses are 9 → 13 → 18% (Vantom), 15 → 15 → 16% (Beast) and 7 → 5 → 15% (Kin). Phrog is 54 → 78 → 92%.
+  - v9 is similar.
+  - Against the Commons-only v6b (at most 12% on any boss), Uncommons and Rares help, but bosses stay at 25% or below.
+- **Whole runs**, 150 sim runs, picker N = 16:
+
+| Model | Skip: fights won | Random | Picker | Picker: reach boss / clear |
+|---|---|---|---|---|
+| v8 | 4.87 | 6.08 | 8.35 | 40% / 3.3% |
+| v9 (run mode, HP ×3) | 5.08 | 6.53 | **9.03** | **59% / 8.7%** |
+| v9b (+20M) | 5.21 | 6.78 | 9.05 | 58% / 8.7% |
+
+  Run-mode training gets most runs to the boss, and the boss is where most then die (v9: 76 of 150). v9b's extra 20M steps added nothing, so run-mode training has plateaued at this network size.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.

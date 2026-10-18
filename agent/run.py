@@ -6,9 +6,9 @@ sites healing 30% of max HP (HealRestSiteOption.cs). ponytail: no events, shops,
 relic/potion rewards or map choice; add them as the sim grows.
 
 Compare pick strategies over simulated runs:
-    python run.py --model models/ppo_sts2_sim_act1_run_v7b_final.zip --runs 200
+    python run.py --model models/ppo_sts2_sim_act1_run_v9_final.zip --runs 200
 Play one run in the live game, picking from its real reward screens:
-    python run.py --model models/ppo_sts2_sim_act1_run_v7b_final.zip --live
+    python run.py --model models/ppo_sts2_sim_act1_run_v9_final.zip --live
 
 RunModeEnv is the training version: one fight per episode, but each fight starts where the run
 left off (HP, deck grown by random picks), so the policy sees low-HP and late-run states.
