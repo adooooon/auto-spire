@@ -72,7 +72,7 @@ The exact numbers (per-encounter gold ranges, shop slot counts and rarities, sal
 
 ### `agent/run_env.py`: run policy env
 
-**Actions:** one flat `Discrete` space of 101 actions, masked to the current decision.
+**Actions:** one flat `Discrete` space of 103 actions (7 + 4 + 7 + 85), masked to the current decision.
 
 | Decision | Actions | When |
 |---|---|---|
