@@ -569,6 +569,10 @@ The sim models the whole Ironclad pool: 34 Uncommons and 24 Rares (84 cards with
 | v9b (+20M) | 5.21 | 6.78 | 9.05 | 58% / 8.7% |
 
   Run-mode training gets most runs to the boss, and the boss is where most then die (v9: 76 of 150). v9b's extra 20M steps added nothing, so run-mode training has plateaued at this network size.
+- **Live full run** (v9): **cleared Act 1**, the first live clear. It beat the boss with 19 HP left; the game log names Vantom.
+  - HP: 79 → 80 → 80 (weak ×3) → 59 → 62 → rest 80 → elite 68 → 72 → 70 → rest 80 → elite 66 → 61 → rest 80 → boss.
+  - Picks: Setup Strike, Anger, Dismantle, Stomp, Rage, Evil Eye, Uppercut, Tremble, Rampage; it skipped the last offer.
+  - v7b had 39 and 21 HP after the elites and reached the boss at 42. v9 left both elites above 65 HP.
 
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
