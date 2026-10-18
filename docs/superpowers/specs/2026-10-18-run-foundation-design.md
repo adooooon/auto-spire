@@ -39,9 +39,10 @@ A Python port of `StandardActMap` for Overgrowth:
 - **Shape:** 15 room floors (`BaseNumberOfRooms`), plus Neow's floor first and the boss floor last.
 - **Grid:** 7 columns with crossing paths.
 - **Room counts** follow `MapPointTypeCounts` and Overgrowth's `GetMapPointTypes`: 5 elites, 3 shops, 10–14 Unknown rooms (Gaussian 12, σ1), and 6–7 rest sites (Gaussian 7, σ1, clamped to 6–7).
-- **Placement** follows the game's rules and post-processing (`MapPostProcessing`, `MapPathPruning`), including the fixed floors: the first room floor is a monster, there's a treasure floor partway up, and the floor before the boss is a rest.
+- **Placement** follows the game's rules (`StandardActMap.IsValidPointType`), including the fixed floors: the first room floor is a monster, there's a treasure floor partway up, and the floor before the boss is a rest.
 - **RNG:** Python's `random`, seeded per run. Maps follow the game's distribution, not exact game seeds.
 - **Output:** a list of nodes `(floor, col, type)` and edges to the next floor.
+- **Skipped:** `MapPostProcessing` only re-centers and spreads columns and never changes edges. `MapPathPruning` removes duplicate parallel segments (same endpoints, same room types) and needs every path through the map enumerated, which is about a second per map in Python. It's marked `ponytail:` in the code, to port if map statistics drift from the game's.
 
 ### `agent/sim/act.py`: run state and rooms
 
@@ -61,7 +62,7 @@ A Python port of `StandardActMap` for Overgrowth:
 |---|---|
 | Monster, Elite, Boss | A sim fight by the combat policy, with HP and the deck carried over. Burning Blood +6 on a win. Gold from `GoldReward`: each encounter's own `MinGoldReward`–`MaxGoldReward`, then a card offer from `offer()`. |
 | RestSite | Heal 30% of max HP (`HealRestSiteOption`). |
-| Shop | Ironclad cards from `MerchantInventory`: price by rarity × U(0.95, 1.05), one card on sale. Card removal is 75 + 25 × removals used (`MerchantCardRemovalEntry`). No colorless cards, potions or relics yet. |
+| Shop | 5 Ironclad cards from `MerchantInventory` (Attack, Attack, Skill, Skill, Power; shop rarity odds Rare 9% + offset, Uncommon 37%): price 50/75/150 by rarity × U(0.95, 1.05), one card at half price. Card removal is 75 + 25 × removals used (`MerchantCardRemovalEntry`). No colorless cards, potions or relics yet. |
 | Unknown | Resolved with `UnknownMapPointOdds`: base 10% monster, 2% treasure, 3% shop, otherwise an event. The chances shift as the game's do. |
 | Event, Treasure, Ancient (Neow) | Empty placeholders until sub-projects 3 and 4. |
 
@@ -71,13 +72,13 @@ The exact numbers (per-encounter gold ranges, shop slot counts and rarities, sal
 
 ### `agent/run_env.py`: run policy env
 
-**Actions:** one flat `Discrete` space of about 105 actions, masked to the current decision.
+**Actions:** one flat `Discrete` space of 101 actions, masked to the current decision.
 
 | Decision | Actions | When |
 |---|---|---|
 | Path | 7, one per map column (only the connected next nodes are allowed) | after every room |
 | Card pick | 3 offered + skip | after a won fight |
-| Shop | buy slot 0–6, remove a card, leave | on entering a shop, repeated until leave |
+| Shop | buy slot 0–4, remove a card, leave | on entering a shop, repeated until leave |
 | Remove | one per `CARD_IDS` entry (allowed if it's in the deck), plus cancel | after "remove a card" |
 
 Rest sites and Unknown rooms resolve without a decision.
