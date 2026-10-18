@@ -542,6 +542,8 @@ The sim models the whole Ironclad pool: 34 Uncommons and 24 Rares (84 cards with
 
 **FMOD crash:** it recurred with nothing else running, about once per few hundred live steps. It's the game's own.
 
+**Pillage infinite loop (hung v8 training at 36.3M steps):** `Pillage.OnPlay` is `do Draw while (an Attack && hand not full)`. With Hellraiser, a drawn Strike is autoplayed out of the hand, and under Ringing (Ceremonial Beast's Beast Cry) the autoplay is blocked, so the Strike goes straight to discard. The loop then reshuffles and redraws forever. The sim caps it at one pass over the draw and discard piles. The real game probably soft-locks here too; not tested live.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.

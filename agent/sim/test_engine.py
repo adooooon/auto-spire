@@ -268,6 +268,11 @@ c = solo(["HELLRAISER"])
 c.draw_pile = ["DEFEND_IRONCLAD"] * 4 + ["TWIN_STRIKE"]
 c.play_card(0); c.end_turn()  # Claw 8, then the drawn Twin Strike plays itself
 assert c.enemies[0].hp == 72 - 10 and "TWIN_STRIKE" in c.discard_pile and len(c.hand) == 4
+c = solo(["PILLAGE"], encounter="CEREMONIAL_BEAST_BOSS")  # Ringing + Hellraiser: Strikes go to discard
+c.ringing, c.pw["HellraiserPower"] = True, 1
+c.draw_pile, c.discard_pile = ["STRIKE_IRONCLAD"] * 2, ["STRIKE_IRONCLAD"] * 3
+c.play_card(0, 1)  # used to reshuffle forever; now stops after one pass
+assert c.hand == [] and len(c.draw_pile) + len(c.discard_pile) == 6  # 5 Strikes + Pillage
 c = solo(["RAMPAGE", "RAMPAGE"])
 c.play_card(0, 1); c.play_card(0, 1)
 assert c.enemies[0].hp == 72 - 9 - 14

@@ -628,9 +628,12 @@ class SimCombat:
                 target.strength += 1
         elif cid == "PILLAGE":  # draw until a non-Attack (or a full hand / nothing to draw)
             self._hit(card, target, 6)
-            drawn = self._draw_one()
-            while drawn and CARDS[drawn].type == "Attack" and len(self.hand) < MAX_HAND_SIZE and self.in_combat:
+            # ponytail: capped at one pass over the piles. Uncapped (as in the game's do/while),
+            # Hellraiser Strikes that Ringing sends straight to discard reshuffle forever.
+            for _ in range(len(self.draw_pile) + len(self.discard_pile)):
                 drawn = self._draw_one()
+                if not (drawn and CARDS[drawn].type == "Attack" and len(self.hand) < MAX_HAND_SIZE and self.in_combat):
+                    break
         elif cid in ("RAMPAGE", "THRASH"):
             self._hit(card, target, card.damage + self.bonus_damage.get(cid, 0), card.hits)
             if cid == "RAMPAGE":
