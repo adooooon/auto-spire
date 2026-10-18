@@ -9,6 +9,8 @@ Compare pick strategies over simulated runs:
     python run.py --model models/ppo_sts2_sim_act1_run_v9_final.zip --runs 200
 Play one run in the live game, picking from its real reward screens:
     python run.py --model models/ppo_sts2_sim_act1_run_v9_final.zip --live
+Compare on generated maps (shops, ? rooms), baseline vs a run policy:
+    python run.py --model models/ppo_sts2_sim_act1_run_v9_final.zip --maps generated --run-model models/ppo_sts2_sim_run_policy_v1_final.zip --runs 500 --n 16
 
 RunModeEnv is the training version: one fight per episode, but each fight starts where the run
 left off (HP, deck grown by random picks), so the policy sees low-HP and late-run states.
@@ -27,6 +29,7 @@ from sb3_contrib import MaskablePPO
 from client import AutoSpireClient
 from env import BOSS_ENCOUNTERS, ELITE_ENCOUNTERS, NORMAL_ENCOUNTERS, WEAK_ENCOUNTERS, STS2CombatEnv
 from picker import RarityOdds, offer, pick, play_fight
+from run_env import CARD_INDEX, PICK, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RunPolicyEnv
 from sim.cards import CARDS, starter_deck
 from sim.engine import SimClient
 
@@ -86,11 +89,13 @@ class RunModeEnv(STS2CombatEnv):
 
 
 _model = None
+_run_model = None
 
 
-def _init(model_path: str) -> None:
-    global _model
+def _init(model_path: str, run_model_path: str | None = None) -> None:
+    global _model, _run_model
     _model = MaskablePPO.load(model_path)
+    _run_model = MaskablePPO.load(run_model_path) if run_model_path else None
 
 
 def sim_run(args: tuple[str, int, int]) -> dict:
@@ -116,6 +121,35 @@ def sim_run(args: tuple[str, int, int]) -> dict:
             deck = deck + ([choice] if choice else [])
     return {"strategy": strategy, "won": won, "cleared": won == len(FIGHTS), "died_at": died_at,
             "hp": combat.player_hp if won == len(FIGHTS) else 0, "deck": deck[10:]}
+
+
+def baseline_action(env: RunPolicyEnv, rng: random.Random, n: int) -> int:
+    """The pre-run-policy way to play: random path, MC card picks, remove a Strike when affordable."""
+    mask = env.action_masks()
+    if env.decision == "path":
+        return int(rng.choice(np.flatnonzero(mask)))
+    if env.decision == "pick":
+        choice = choose("mc", _model, env.run.deck, env.offered, rng, n)
+        return PICK + (env.offered.index(choice) if choice else 3)
+    if env.decision == "shop":
+        return SHOP_REMOVE if mask[SHOP_REMOVE] and "STRIKE_IRONCLAD" in env.run.deck else SHOP_LEAVE
+    return REMOVE + CARD_INDEX["STRIKE_IRONCLAD"]
+
+
+def generated_run(args: tuple[str, int, int]) -> dict:
+    """One run on generated map `seed`: every strategy sees the same map and encounter queue."""
+    strategy, seed, n = args
+    env = RunPolicyEnv()
+    env.combat = _model
+    obs, _ = env.reset(seed=seed)
+    rng, done, truncated, info = random.Random(seed), False, False, {}
+    while not (done or truncated):
+        if strategy == "policy":
+            action = int(_run_model.predict(obs, action_masks=env.action_masks(), deterministic=True)[0])
+        else:
+            action = baseline_action(env, rng, n)
+        obs, _, done, truncated, info = env.step(action)
+    return {"strategy": strategy, **info}
 
 
 def live_run(model_path: str, n: int) -> None:
@@ -157,9 +191,22 @@ def main():
     ap.add_argument("--n", type=int, default=24, help="fights simulated per pick candidate")
     ap.add_argument("--strategies", default="skip,random,mc")
     ap.add_argument("--live", action="store_true", help="play one run in the live game instead")
+    ap.add_argument("--maps", choices=["fixed", "generated"], default="fixed",
+                    help="fixed: ACT1_PATH; generated: sim/map.py maps with shops and ? rooms")
+    ap.add_argument("--run-model", default=None, help="run policy zip (adds the 'policy' strategy on generated maps)")
     args = ap.parse_args()
     if args.live:
         return live_run(args.model, args.n)
+    if args.maps == "generated":
+        strategies = ["baseline"] + (["policy"] if args.run_model else [])
+        with Pool(initializer=_init, initargs=(args.model, args.run_model)) as pool:
+            results = pool.map(generated_run, [(s, seed, args.n) for s in strategies for seed in range(args.runs)])
+        for s in strategies:
+            rs = [r for r in results if r["strategy"] == s]
+            died = Counter(r["died_at"] for r in rs if r["died_at"])
+            print(f"{s:8} cleared={np.mean([r['cleared'] for r in rs]):.1%}  floor={np.mean([r['floor'] for r in rs]):.1f}"
+                  f"/16  spent={np.mean([r['spent'] for r in rs]):.0f}  died_at={dict(died)}")
+        return
     strategies = args.strategies.split(",")
     with Pool(initializer=_init, initargs=(args.model,)) as pool:
         results = pool.map(sim_run, [(s, seed, args.n) for s in strategies for seed in range(args.runs)])
