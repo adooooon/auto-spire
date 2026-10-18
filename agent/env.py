@@ -25,7 +25,7 @@ from gymnasium import spaces
 
 from client import AutoSpireClient
 from sim.cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
-from sim.engine import MONSTERS
+from sim.engine import MONSTERS, SimLoopError
 
 MAX_HAND = 10
 MAX_ENEMIES = 4  # SLIMES_NORMAL
@@ -265,7 +265,7 @@ class STS2CombatEnv(gym.Env):
                 time.sleep(0.05)
             else:
                 raise TimeoutError("turn never returned to the player (game turn loop wedged?)")
-        except (requests.RequestException, TimeoutError) as exc:
+        except (requests.RequestException, TimeoutError, SimLoopError) as exc:
             # Live-game connection hiccup mid-episode (see docs/modding-approach.md
             # for the animation/CPU-backlog symptom this comes from) — end this
             # episode early instead of crashing the whole training run.

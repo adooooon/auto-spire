@@ -382,4 +382,15 @@ while not done:
     _, r, term, trunc, info = env.step(env.action_space.n - 1)  # only ever end turn
     done = term or trunc
 assert term and info["won"] is False and info["player_hp"] == 0 and r < 0, (info, r)
+# A reshuffle loop (like Pillage under Ringing + Hellraiser was) raises instead of hanging.
+from .engine import MAX_SHUFFLES, SimLoopError
+c = solo(["DEFEND_IRONCLAD"])
+c.draw_pile, c.discard_pile, c.shuffles = [], ["STRIKE_IRONCLAD"], MAX_SHUFFLES
+try:
+    c._take_top()
+    raise AssertionError("expected SimLoopError")
+except SimLoopError:
+    pass
+c.fight("NIBBITS_WEAK")
+assert c.shuffles == 0  # the cap is per fight
 print("sim self-check ok")

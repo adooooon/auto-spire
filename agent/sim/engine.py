@@ -36,6 +36,12 @@ PLAYER_MAX_HP = 80
 PLAYER_MAX_ENERGY = 3
 HAND_DRAW_COUNT = 5
 MAX_HAND_SIZE = 10  # CardPile.MaxCardsInHand: draws stop, generated cards go to the discard pile
+MAX_SHUFFLES = 1000  # per fight; real fights reshuffle a handful of times
+
+
+class SimLoopError(RuntimeError):
+    """MAX_SHUFFLES reshuffles in one fight: an infinite draw loop (Pillage under Ringing +
+    Hellraiser was one). STS2CombatEnv ends the episode instead of hanging training."""
 
 
 @dataclass(frozen=True)
@@ -458,6 +464,7 @@ class SimCombat:
         self.pw, self.bonus_damage = {}, {}
         self.crimson_self = self.inferno_self = self.hp_loss_events = 0
         self.round = 1
+        self.shuffles = 0
         self.in_combat = True
         self.won = None
         self._start_player_turn()
@@ -782,6 +789,8 @@ class SimCombat:
             self.draw_pile, self.discard_pile = self.discard_pile, []
             self.rng.shuffle(self.draw_pile)
             self.shuffles += 1
+            if self.shuffles > MAX_SHUFFLES:
+                raise SimLoopError(f"{self.shuffles} reshuffles in one fight")
         return self.draw_pile.pop() if self.draw_pile else None
 
     def _draw_one(self, hand_draw: bool = False) -> str | None:
