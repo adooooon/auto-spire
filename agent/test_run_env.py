@@ -72,4 +72,20 @@ renv.fight_env.client.exec = boom
 _, _, done, _, info = renv.step(int(np.flatnonzero(renv.action_masks())[0]))
 assert done and info["died_at"] == "Monster" and not info["cleared"]
 
+# MapRunModeEnv: fights chain through generated-map runs; HP carries between fights.
+from run import MapRunModeEnv
+
+menv, rng2 = MapRunModeEnv(run_model=None), np.random.default_rng(1)
+fights = 0
+for _ in range(30):
+    obs, _ = menv.reset()
+    hp_in = menv.client._combat.player_hp
+    assert hp_in == menv.driver.run.hp
+    done = False
+    while not done:
+        obs, _, term, trunc, info = menv.step(int(rng2.choice(np.flatnonzero(menv.action_masks()))))
+        done = term or trunc
+    fights += 1
+assert fights == 30 and menv.driver.run is not None
+
 print("run env checks ok")

@@ -23,13 +23,14 @@ import time
 from collections import Counter
 from multiprocessing import Pool
 
+import gymnasium as gym
 import numpy as np
 from sb3_contrib import MaskablePPO
 
 from client import AutoSpireClient
 from env import BOSS_ENCOUNTERS, ELITE_ENCOUNTERS, NORMAL_ENCOUNTERS, WEAK_ENCOUNTERS, STS2CombatEnv
 from picker import RarityOdds, offer, pick, play_fight
-from run_env import CARD_INDEX, PICK, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RunPolicyEnv
+from run_env import CARD_INDEX, PATH, PICK, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RandomCombat, RunPolicyEnv
 from sim.cards import CARDS, starter_deck
 from sim.engine import SimClient
 
@@ -85,6 +86,54 @@ class RunModeEnv(STS2CombatEnv):
                 self._node += 1
             else:
                 self._node = len(ACT1_PATH)  # run over
+        return obs, reward, terminated, truncated, info
+
+
+class MapRunModeEnv(STS2CombatEnv):
+    """Combat training on generated maps: one fight per episode, with the run policy making every
+    choice between fights, so combat trains on the decks and HP the run policy actually builds."""
+
+    def __init__(self, run_model: str | None = None, **kwargs):
+        super().__init__(client=SimClient(), heal=False, episodes_per_restart=10**9, hp_weight=3.0, **kwargs)
+        if run_model:
+            import torch
+            torch.set_num_threads(1)
+            self.run_model = MaskablePPO.load(run_model, device="cpu")
+        else:
+            self.run_model = RandomCombat(np.random.default_rng())  # random legal run decisions
+        self.driver = RunPolicyEnv()  # only its run logic is used; fights are this env's episodes
+        self.driver.done = True  # start a run on the first reset
+
+    def _next_fight(self) -> str:
+        """Apply run-policy decisions until the next fight, starting a new run when one has ended."""
+        d = self.driver
+        while True:
+            if d.done:
+                d.reset(seed=int(self.np_random.integers(2**31)))
+            action = int(self.run_model.predict(d._obs(), action_masks=d.action_masks(), deterministic=False)[0])
+            if d.decision == "path":
+                encounter = d.enter(action - PATH)
+                if encounter:
+                    return encounter
+            else:
+                d.step(action)
+
+    def reset(self, *, seed=None, options=None):
+        if seed is not None:
+            self.np_random, _ = gym.utils.seeding.np_random(seed)
+        encounter = self._next_fight()
+        run, combat = self.driver.run, self.client._combat
+        combat.player_hp, combat.player_max_hp = run.hp, run.max_hp
+        self.encounters, self.deck = [encounter], list(run.deck)
+        self._episode_count = 1  # never full_restart: HP is synced from the run
+        return super().reset(seed=seed, options=options)
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        if terminated or truncated:
+            run, combat = self.driver.run, self.client._combat
+            run.hp, run.max_hp = combat.player_hp, combat.player_max_hp
+            self.driver.after_fight(bool(info.get("won")) and not truncated)
         return obs, reward, terminated, truncated, info
 
 

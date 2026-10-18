@@ -45,6 +45,8 @@ def main():
     parser.add_argument("--run-policy", action="store_true",
                         help="sim only: train the run policy (run_env.py) over a frozen --combat-model")
     parser.add_argument("--combat-model", default=None, help="combat model zip that plays fights for --run-policy")
+    parser.add_argument("--run-model", default=None,
+                        help="with --run-mode: train combat on generated maps, run decisions by this run policy")
     parser.add_argument("--n-envs", type=int, default=1, help="parallel sim envs (sim backend only)")
     parser.add_argument("--resume", type=str, default=None, help="path to a .zip checkpoint to continue training from")
     args = parser.parse_args()
@@ -64,8 +66,9 @@ def main():
         env = make_vec_env(lambda: RunPolicyEnv(combat_model=args.combat_model), n_envs=args.n_envs,
                            vec_env_cls=SubprocVecEnv if args.n_envs > 1 else None)
     elif sim and args.run_mode:
-        from run import RunModeEnv
-        env = make_vec_env(RunModeEnv, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv if args.n_envs > 1 else None)
+        from run import MapRunModeEnv, RunModeEnv
+        make = (lambda: MapRunModeEnv(run_model=args.run_model)) if args.run_model else RunModeEnv
+        env = make_vec_env(make, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv if args.n_envs > 1 else None)
     elif sim and args.n_envs > 1:
         env = make_vec_env(lambda: STS2CombatEnv(encounter=encounters, client=SimClient(), random_decks=args.random_decks),
                            n_envs=args.n_envs, vec_env_cls=SubprocVecEnv)
