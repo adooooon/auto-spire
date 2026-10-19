@@ -18,7 +18,7 @@ integer math, so 0.7 * 1.5 products don't hit float error). Damage from powers
 Strength/Vulnerable/Weak.
 
 Known simplifications:
-  - No relics (Burning Blood is applied by run.py between fights), potions, or upgrades
+  - No relics (Burning Blood is applied by run.py between fights) or upgrades; 12 of the potions (sim/potions.py)
     (Aggression's upgrade of the card it returns is skipped).
   - Enemy-targeted cards hit the enemy with the given combatId, or the first
     living enemy if none is given (the mod's auto-target,

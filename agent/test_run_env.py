@@ -21,7 +21,7 @@ import numpy as np
 from run_env import CARD_INDEX, N_ACTIONS, OBS_DIM, PICK, REMOVE, SHOP, SHOP_LEAVE, SHOP_REMOVE, RunPolicyEnv
 from sim.act import Shop
 
-assert N_ACTIONS == 103
+assert N_ACTIONS == 113
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -126,5 +126,54 @@ cenv._combat = cenv.client.combat()
 _, r, term, _, info = cenv.step(POTION_ACTION)
 assert term and info["won"] and cenv.client._combat.potions == [None, None, None]
 assert abs(r - (5 * len(alive) / 10 + 5.0 - POTION_COST_HP / 10)) < 1e-6, r
+
+# Run env potions (sub-project 2).
+from run_env import DRINK, POTION_SKIP, POTION_TAKE, SHOP_POTION
+
+# Review focus 3: shop potions need a free slot and a modeled potion.
+renv.reset(seed=6)
+renv.decision, renv.run.gold = "shop", 1000
+renv.run.potions = ["FIRE_POTION", "FIRE_POTION", "FIRE_POTION"]
+renv.run.shop = Shop([None] * 5, [50] * 5, 75, potions=["BLOCK_POTION", "ATTACK_POTION", None], potion_prices=[50, 50, 0])
+assert not renv.action_masks()[SHOP_POTION:SHOP_POTION + 3].any()
+renv.run.potions[1] = None
+assert renv.action_masks()[SHOP_POTION:SHOP_POTION + 3].tolist() == [True, False, False]
+renv.step(SHOP_POTION)
+assert renv.run.potions[1] == "BLOCK_POTION" and renv.decision == "shop"
+# Review focus 3: an unmodeled drop is skipped without a decision; a modeled one asks where it goes.
+renv.decision, renv.offered, renv.run.potion_drop = "pick", ["ARMAMENTS", "HEADBUTT", "BRAND"], "ATTACK_POTION"
+renv.step(PICK + 3)
+assert renv.decision == "path" and renv.run.potion_drop is None
+renv.decision, renv.run.potion_drop = "pick", "WEAK_POTION"
+renv.step(PICK + 3)
+assert renv.decision == "potion"
+assert np.flatnonzero(renv.action_masks()).tolist() == [POTION_TAKE, POTION_TAKE + 1, POTION_TAKE + 2, POTION_SKIP]
+renv.step(POTION_TAKE + 2)  # replaces the Fire Potion in slot 2
+assert renv.run.potions == ["FIRE_POTION", "BLOCK_POTION", "WEAK_POTION"] and renv.decision == "path"
+# Blood Potion between fights: only below max HP; drinking keeps the path decision.
+renv.run.potions, renv.run.hp, renv.run.max_hp = ["BLOOD_POTION", None, None], 80, 80
+assert not renv.action_masks()[DRINK]
+renv.run.hp = 40
+assert renv.action_masks()[DRINK]
+renv.step(DRINK)
+assert renv.run.hp == 56 and renv.run.potions == [None, None, None] and renv.decision == "path"
+
+
+# Review focus 5: potions go into the fight and what's left comes back; uses are counted.
+class PotionFirst:
+    """A combat model that uses a potion whenever one is legal."""
+
+    def predict(self, obs, action_masks, deterministic=True):
+        legal = np.flatnonzero(action_masks)
+        potions = legal[legal >= POTION_ACTION]
+        return (potions[0] if len(potions) else legal[0]), None
+
+
+renv.reset(seed=7)
+renv.combat = PotionFirst()
+renv.run.potions = ["FIRE_POTION", "BLOCK_POTION", None]
+renv.play(renv.run.normals[0])
+held = [p for p in renv.run.potions if p]
+assert renv.used["FIRE_POTION"] == 1 and sum(renv.used.values()) + len(held) == 2, (renv.used, held)
 
 print("run env checks ok")

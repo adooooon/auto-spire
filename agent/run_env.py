@@ -7,33 +7,46 @@ from __future__ import annotations
 
 import random
 import traceback
+from collections import Counter
 
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from env import CARD_IDS, STS2CombatEnv
+from env import CARD_IDS, POTION_ACTION, STS2CombatEnv  # noqa: F401  (POTION_ACTION: tests)
 from picker import play_fight
-from sim.act import BOSSES, SHOP_SLOTS, Run
+from sim.act import BOSSES, SHOP_POTIONS, SHOP_SLOTS, Run
 from sim.cards import CARDS
 from sim.engine import SimClient
 from sim.map import BOSS_ROW, COLS, ROOM_TYPES
+from sim.potions import POTION_IDS, POTION_SLOTS, POTIONS
 
-DECISIONS = ("path", "pick", "shop", "remove")
-# Actions: [path: one per column][pick: 3 cards, skip][shop: one per slot, remove, leave][remove: one per card id, then an unused cancel slot]
+DECISIONS = ("path", "pick", "shop", "remove", "potion")
+HEAD_DECISIONS = DECISIONS[:4]  # the original observation head; "potion" is flagged in the appended block
+# Actions: [path: one per column][pick: 3 cards, skip][shop: one per slot, remove, leave]
+# [remove: one per card id, then an unused cancel slot] -- then, appended for grow.py:
+# [potion: put in slot 0-2, skip][shop: buy potion 0-2][path: drink Blood Potion in slot 0-2]
 PATH = 0
 PICK = PATH + COLS
 SHOP = PICK + 4
 SHOP_REMOVE, SHOP_LEAVE = SHOP + len(SHOP_SLOTS), SHOP + len(SHOP_SLOTS) + 1
 REMOVE = SHOP_LEAVE + 1
-N_ACTIONS = REMOVE + len(CARD_IDS) + 1
+POTION_TAKE = REMOVE + len(CARD_IDS) + 1
+POTION_SKIP = POTION_TAKE + POTION_SLOTS
+SHOP_POTION = POTION_SKIP + 1
+DRINK = SHOP_POTION + SHOP_POTIONS
+N_ACTIONS = DRINK + POTION_SLOTS
 CARD_INDEX = {c: i for i, c in enumerate(CARD_IDS)}
+POTION_INDEX = {p: i for i, p in enumerate(POTION_IDS)}
 FIGHTS = ("Monster", "Elite", "Boss")
 LOOKAHEAD = 5  # map rows shown ahead of the current node
 SLOT_FEATURES = len(CARD_IDS) + 2  # card one-hot, price / 100, affordable
 CELL_FEATURES = len(ROOM_TYPES) + 1  # room type one-hot, reachable from here
-OBS_DIM = (len(DECISIONS) + 5 + len(CARD_IDS) + len(BOSSES) + len(SHOP_SLOTS) * SLOT_FEATURES + 2
-           + LOOKAHEAD * COLS * CELL_FEATURES)
+SHOP_POTION_FEATURES = len(POTION_IDS) + 2  # potion one-hot, price / 100, buyable
+# Appended: potion-decision flag, own slots, the offered potion, the shop's potions.
+POTION_OBS = 1 + POTION_SLOTS * len(POTION_IDS) + len(POTION_IDS) + SHOP_POTIONS * SHOP_POTION_FEATURES
+OBS_DIM = (len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(BOSSES) + len(SHOP_SLOTS) * SLOT_FEATURES + 2
+           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS)
 FLOOR_REWARD, CLEAR_REWARD = 0.1, 1.0
 MAX_DECISIONS = 500  # a run is ~40 decisions; this only stops a broken env
 
@@ -72,6 +85,7 @@ class RunPolicyEnv(gym.Env):
         self.fight_env.client = SimClient(seed=self.run.rng.randrange(2**31))
         self.decision, self.offered, self.room = "path", [], "Ancient"
         self.done, self.cleared, self.steps = False, False, 0
+        self.used: Counter = Counter()  # potion uses this run, by id
         return self._obs(), {}
 
     # --- the pieces MapRunModeEnv (run.py) reuses ------------------------------------------------
@@ -98,18 +112,20 @@ class RunPolicyEnv(gym.Env):
         return FLOOR_REWARD, False
 
     def play(self, encounter: str) -> bool:
-        """One fight with HP, max HP and deck carried in and out. A sim error ends it as a loss."""
+        """One fight with HP, max HP, deck and potions carried in and out. A sim error ends it as a loss."""
         run, env = self.run, self.fight_env
         combat = env.client._combat
         combat.player_hp, combat.player_max_hp = run.hp, run.max_hp
-        env.encounters, env.deck = [encounter], list(run.deck)
+        env.encounters, env.deck, env.potions = [encounter], list(run.deck), list(run.potions)
+        before = Counter(p for p in run.potions if p)
         try:
             won = play_fight(self.combat, env, seed=run.rng.randrange(2**31))[0]
         except Exception:  # noqa: BLE001 - one bad sim state must not kill a 6-env training run
             traceback.print_exc()
             return False
         combat = env.client._combat
-        run.hp, run.max_hp = combat.player_hp, combat.player_max_hp
+        run.hp, run.max_hp, run.potions = combat.player_hp, combat.player_max_hp, list(combat.potions)
+        self.used += before - Counter(p for p in run.potions if p)
         return won
 
     # --- gym API ---------------------------------------------------------------------------------
@@ -119,7 +135,9 @@ class RunPolicyEnv(gym.Env):
         assert self.action_masks()[a], f"illegal action {a} for {self.decision}"
         self.steps += 1
         reward = 0.0
-        if self.decision == "path":
+        if self.decision == "path" and a >= DRINK:
+            self.run.drink(a - DRINK)
+        elif self.decision == "path":
             encounter = self.enter(a - PATH)
             if encounter is None:
                 reward = FLOOR_REWARD
@@ -128,12 +146,23 @@ class RunPolicyEnv(gym.Env):
         elif self.decision == "pick":
             if a - PICK < 3:
                 self.run.deck.append(self.offered[a - PICK])
+            if self.run.potion_drop in POTIONS:
+                self.decision = "potion"
+            else:  # unmodeled drops (and no drop) need no decision
+                self.run.potion_drop, self.decision = None, "path"
+        elif self.decision == "potion":
+            if a == POTION_SKIP:
+                self.run.potion_drop = None
+            else:
+                self.run.take_potion(a - POTION_TAKE)
             self.decision = "path"
         elif self.decision == "shop":
             if a == SHOP_LEAVE:
                 self.decision = "path"
             elif a == SHOP_REMOVE:
                 self.decision = "remove"
+            elif a >= SHOP_POTION:
+                self.run.buy_potion(a - SHOP_POTION)
             else:
                 self.run.buy(a - SHOP)
         else:  # remove
@@ -142,7 +171,9 @@ class RunPolicyEnv(gym.Env):
             self.decision = "shop"
         truncated = not self.done and self.steps >= MAX_DECISIONS
         info = {"floor": self.run.node.row, "cleared": self.cleared, "gold": self.run.gold, "spent": self.run.spent,
-                "died_at": self.room if self.done and not self.cleared else None, "deck": list(self.run.deck)}
+                "died_at": self.room if self.done and not self.cleared else None, "deck": list(self.run.deck),
+                "potions_used": sum(self.used.values()), "potions_held": sum(p is not None for p in self.run.potions),
+                "used": dict(self.used)}
         return self._obs(), reward, self.done, truncated, info
 
     def action_masks(self) -> np.ndarray:
@@ -153,6 +184,8 @@ class RunPolicyEnv(gym.Env):
         elif self.decision == "path":
             for n in run.choices():
                 m[PATH + n.col] = True
+            for i, p in enumerate(run.potions):
+                m[DRINK + i] = p == "BLOOD_POTION" and run.hp < run.max_hp
         elif self.decision == "pick":
             for i, c in enumerate(self.offered):
                 m[PICK + i] = c in CARDS
@@ -162,7 +195,12 @@ class RunPolicyEnv(gym.Env):
             for i, (c, p) in enumerate(zip(s.cards, s.prices)):
                 m[SHOP + i] = c in CARDS and run.gold >= p
             m[SHOP_REMOVE] = not s.removal_used and run.gold >= s.removal_price
+            for k, (p, price) in enumerate(zip(s.potions, s.potion_prices)):
+                m[SHOP_POTION + k] = p in POTIONS and run.gold >= price and None in run.potions
             m[SHOP_LEAVE] = True
+        elif self.decision == "potion":
+            m[POTION_TAKE:POTION_TAKE + POTION_SLOTS] = True
+            m[POTION_SKIP] = True
         else:
             for c in set(run.deck):  # no cancel: shop -> remove -> cancel would let a deterministic policy loop
                 m[REMOVE + CARD_INDEX[c]] = True
@@ -170,7 +208,7 @@ class RunPolicyEnv(gym.Env):
 
     def _obs(self) -> np.ndarray:
         run = self.run
-        head = [float(d == self.decision) for d in DECISIONS]
+        head = [float(d == self.decision) for d in HEAD_DECISIONS]
         head += [run.hp / 80, run.max_hp / 80, run.gold / 100, run.node.row / BOSS_ROW, run.removals / 5]
         deck = np.zeros(len(CARD_IDS))
         for c in run.deck:
@@ -200,4 +238,14 @@ class RunPolicyEnv(gym.Env):
             if 0 <= k < LOOKAHEAD:
                 grid[k, n.col, ROOM_TYPES.index(n.type)] = 1
                 grid[k, n.col, -1] = id(n) in reach
-        return np.concatenate([head, np.minimum(deck, 10), boss, slots.ravel(), removal, grid.ravel()]).astype(np.float32)
+        own = [float(p == pid) for p in run.potions for pid in POTION_IDS]
+        drop = [float(self.decision == "potion" and run.potion_drop == pid) for pid in POTION_IDS]
+        shop_p = np.zeros((SHOP_POTIONS, SHOP_POTION_FEATURES))
+        if self.decision in ("shop", "remove"):
+            for k, (p, price) in enumerate(zip(run.shop.potions, run.shop.potion_prices)):
+                if p in POTION_INDEX:
+                    shop_p[k, POTION_INDEX[p]], shop_p[k, -2] = 1, price / 100
+                    shop_p[k, -1] = run.gold >= price and None in run.potions
+        potion_obs = [float(self.decision == "potion")] + own + drop + list(shop_p.ravel())
+        return np.concatenate([head, np.minimum(deck, 10), boss, slots.ravel(), removal, grid.ravel(),
+                               potion_obs]).astype(np.float32)
