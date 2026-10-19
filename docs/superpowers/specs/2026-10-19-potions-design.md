@@ -114,7 +114,10 @@ The two policies from sub-project 1 stay. Both observation and action spaces gro
 - **Unchanged from sub-project 1:**
   - `SimLoopError` ends a fight as aborted.
   - Exceptions during a fight in `run_env` end the run as a loss.
-- Using a potion from an empty slot, or one the mask forbids, is an assertion error. The mask is the only gate.
+- **Forbidden potion use:**
+  - In combat, using an empty slot or a bad target returns an error result, the same way `SimCombat.play_card` does. The env counts it as an invalid action.
+  - Between fights, the `Run` methods assert.
+  - Either way, the mask is the only gate.
 
 ## Testing
 
