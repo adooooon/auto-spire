@@ -106,4 +106,57 @@ assert run.deck[-1] == card and run.gold == 500 - price and run.shop.cards[slot]
 run.remove("STRIKE_IRONCLAD")
 assert run.deck.count("STRIKE_IRONCLAD") == 4 and run.removals == 1 and run.shop.removal_used
 
+from .act import PotionOdds, Shop, potion_rarity, roll_potions
+from .potions import POTION_POOL
+
+
+class Fixed:
+    """An rng whose random() is a fixed value."""
+
+    def __init__(self, v):
+        self.v = v
+
+    def random(self):
+        return self.v
+
+
+# Potion drops: 0.4 to start, -0.1 after a drop, +0.1 after none; elites +0.125.
+o = PotionOdds()
+assert o.roll(Fixed(0.39)) and abs(o.value - 0.3) < 1e-9
+assert not o.roll(Fixed(0.35)) and abs(o.value - 0.4) < 1e-9
+assert not PotionOdds().roll(Fixed(0.45)) and PotionOdds().roll(Fixed(0.45), elite=True)
+# Rarity: Rare <= 0.10, Uncommon <= 0.35, else Common; multi-potion rolls don't repeat.
+r = random.Random(0)
+rar = Counter(potion_rarity(roll_potions(r)[0]) for _ in range(20000))
+assert 0.62 < rar["COMMON"] / 20000 < 0.68 and 0.22 < rar["UNCOMMON"] / 20000 < 0.28 and 0.08 < rar["RARE"] / 20000 < 0.12, rar
+assert all(len(set(roll_potions(random.Random(i), 3))) == 3 for i in range(200))
+# Shop potions: 3, priced by rarity x U(0.95, 1.05).
+band = {"COMMON": (48, 52), "UNCOMMON": (71, 79), "RARE": (95, 105)}
+for seed in range(200):
+    s = make_shop(random.Random(seed), RarityOdds(), 0)
+    assert len(s.potions) == 3 and len(set(s.potions)) == 3
+    assert all(band[potion_rarity(p)][0] <= c <= band[potion_rarity(p)][1] for p, c in zip(s.potions, s.potion_prices))
+# Run: no potion roll after the boss; drink Blood; buy into a free slot.
+run = Run(random.Random(5))
+assert run.potions == [None, None, None] and run.potion_drop is None
+v = run.potion_odds.value
+run.win("Boss")
+assert run.potion_odds.value == v and run.potion_drop is None
+drops = 0
+for _ in range(400):
+    run.win("Monster")
+    drops += run.potion_drop is not None
+assert 0.4 < drops / 400 < 0.6, drops  # converges on PotionRewardOdds.targetOdds = 0.5
+run.potions, run.hp, run.max_hp = ["BLOOD_POTION", None, None], 40, 83
+run.drink(0)
+assert run.hp == 56 and run.potions == [None, None, None]
+run.shop = Shop([None] * 5, [0] * 5, 75, potions=["FIRE_POTION", "ATTACK_POTION", None], potion_prices=[50, 50, 0])
+run.gold, run.spent, run.potions = 60, 0, ["WEAK_POTION", None, None]
+run.buy_potion(0)
+assert run.potions == ["WEAK_POTION", "FIRE_POTION", None] and run.gold == 10 and run.spent == 50
+assert run.shop.potions[0] is None
+run.potion_drop = "BLOCK_POTION"
+run.take_potion(0)  # replaces (discards) Weak Potion
+assert run.potions[0] == "BLOCK_POTION" and run.potion_drop is None
+
 print("act self-check ok")

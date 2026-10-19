@@ -5,11 +5,12 @@ out. Numbers are from the decompiled source; see docs/game-architecture.md, "Act
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
 from .engine import ENCOUNTERS, PLAYER_MAX_HP
 from .map import ActMap, Node, generate_map
+from .potions import POTION_POOL, POTION_SLOTS, POTIONS
 
 STARTING_GOLD = 99  # Ironclad.StartingGold
 GOLD = {"Monster": (10, 20), "Elite": (35, 45), "Boss": (100, 100)}  # EncounterModel.Min/MaxGoldReward
@@ -19,6 +20,9 @@ CARD_PRICE = {"COMMON": 50, "UNCOMMON": 75, "RARE": 150}  # MerchantCardEntry.Ge
 SHOP_SLOTS = ("Attack", "Attack", "Skill", "Skill", "Power")  # MerchantInventory._coloredCardTypes
 REMOVAL_PRICE, REMOVAL_STEP = 75, 25  # MerchantCardRemovalEntry: +25 per removal used
 NEXT_RARITY = {"COMMON": "UNCOMMON", "UNCOMMON": "RARE", "RARE": "COMMON"}  # GetNextHighestRarityWithWrapping
+POTION_PRICE = {"COMMON": 50, "UNCOMMON": 75, "RARE": 100}  # MerchantPotionEntry.GetCost
+SHOP_POTIONS = 3  # MerchantInventory.PopulatePotionEntries
+BLOOD_POTION_HEAL = 0.2
 
 # The Ironclad pool by rarity. These open a card-choice prompt the sim can't play yet, so they're
 # offered and stocked like any card but can't be picked or bought.
@@ -68,6 +72,37 @@ def offer(rng: random.Random, odds: RarityOdds, elite: bool = False) -> list[str
         out.append(rng.choice([c for c in REWARD_POOLS[odds.roll(rng, elite)] if c not in out]))
     return out
 
+
+
+def potion_rarity(pid: str) -> str:
+    return next(r for r, ids in POTION_POOL.items() if pid in ids)
+
+
+def roll_potions(rng: random.Random, n: int = 1) -> list[str]:
+    """PotionFactory.CreateRandomPotion: per potion Rare <= 0.10, Uncommon <= 0.35, else Common,
+    uniform within the rarity; no repeats within one call."""
+    left = {r: list(ids) for r, ids in POTION_POOL.items()}
+    out: list[str] = []
+    for _ in range(n):
+        x = rng.random()
+        pool = left["RARE" if x <= 0.10 else "UNCOMMON" if x <= 0.35 else "COMMON"]
+        out.append(pool.pop(rng.randrange(len(pool))))
+    return out
+
+
+class PotionOdds:
+    """PotionRewardOdds: a drop when random < chance (+0.25 x 0.5 in elite rooms); the chance starts at
+    0.4 and falls 0.1 after a drop, rises 0.1 after none, so drops converge on half of fights."""
+
+    def __init__(self):
+        self.value = 0.4
+
+    def roll(self, rng, elite: bool = False) -> bool:
+        if rng.random() < self.value + (0.125 if elite else 0.0):
+            self.value -= 0.1
+            return True
+        self.value += 0.1
+        return False
 
 def _grab(rng: random.Random, bag: list[str], pool: tuple[str, ...], last: str | None) -> str:
     """GrabBag.GrabAndRemove via AddWithoutRepeatingTags: avoid the last encounter and its tags."""
@@ -128,11 +163,13 @@ class Shop:
     prices: list[int]
     removal_price: int
     removal_used: bool = False
+    potions: list[str | None] = field(default_factory=lambda: [None] * SHOP_POTIONS)  # None once bought
+    potion_prices: list[int] = field(default_factory=lambda: [0] * SHOP_POTIONS)
 
 
 def make_shop(rng: random.Random, odds: RarityOdds, removals: int) -> Shop:
     """MerchantInventory.PopulateCharacterCardEntries: 5 typed slots, no repeats, one half price.
-    Colorless cards, relics and potions aren't stocked yet."""
+    Colorless cards and relics aren't stocked yet."""
     sale = rng.randrange(len(SHOP_SLOTS))
     cards: list[str | None] = []
     prices: list[int] = []
@@ -146,7 +183,9 @@ def make_shop(rng: random.Random, odds: RarityOdds, removals: int) -> Shop:
         cards.append(rng.choice(pool))
         price = round(CARD_PRICE[rarity] * rng.uniform(0.95, 1.05))  # Mathf.RoundToInt: banker's, like round()
         prices.append(price // 2 if i == sale else price)
-    return Shop(cards, prices, REMOVAL_PRICE + REMOVAL_STEP * removals)
+    potions = roll_potions(rng, SHOP_POTIONS)
+    potion_prices = [round(POTION_PRICE[potion_rarity(p)] * rng.uniform(0.95, 1.05)) for p in potions]
+    return Shop(cards, prices, REMOVAL_PRICE + REMOVAL_STEP * removals, potions=potions, potion_prices=potion_prices)
 
 
 class Run:
@@ -162,6 +201,9 @@ class Run:
         self.card_odds, self.unknown_odds = RarityOdds(), UnknownOdds()
         self.last_room: str | None = None
         self.shop: Shop | None = None
+        self.potions: list[str | None] = [None] * POTION_SLOTS
+        self.potion_odds = PotionOdds()
+        self.potion_drop: str | None = None  # the last fight's potion reward, until taken or skipped
 
     def choices(self) -> list[Node]:
         return sorted(self.node.children, key=lambda n: n.col)
@@ -187,10 +229,14 @@ class Run:
         return queue.pop(0) if queue else self.rng.choice(pool)
 
     def win(self, room: str) -> list[str]:
-        """After a won fight: Burning Blood, gold, and the card offer (none after the boss)."""
+        """After a won fight: Burning Blood, gold, a potion roll (sets potion_drop) and the card offer.
+        After the boss the run ends, so neither the potion nor the card offer is rolled."""
         self.hp = min(self.max_hp, self.hp + BURNING_BLOOD_HEAL)
         self.gold += self.rng.randint(*GOLD[room])
-        return [] if room == "Boss" else offer(self.rng, self.card_odds, room == "Elite")
+        if room == "Boss":
+            return []
+        self.potion_drop = roll_potions(self.rng)[0] if self.potion_odds.roll(self.rng, room == "Elite") else None
+        return offer(self.rng, self.card_odds, room == "Elite")
 
     def buy(self, slot: int) -> None:
         s = self.shop
@@ -209,3 +255,23 @@ class Run:
         self.deck.remove(card)
         self.removals += 1
         s.removal_used = True
+
+    def take_potion(self, slot: int) -> None:
+        """Put potion_drop in `slot`, discarding whatever was there."""
+        assert self.potion_drop in POTIONS, self.potion_drop
+        self.potions[slot], self.potion_drop = self.potion_drop, None
+
+    def buy_potion(self, k: int) -> None:
+        s = self.shop
+        pid, price = s.potions[k], s.potion_prices[k]
+        assert pid in POTIONS and self.gold >= price and None in self.potions, (pid, price, self.gold, self.potions)
+        self.gold -= price
+        self.spent += price
+        self.potions[self.potions.index(None)] = pid
+        s.potions[k] = None
+
+    def drink(self, slot: int) -> None:
+        """Blood Potion between fights (PotionUsage.AnyTime): 20% of max HP, truncated."""
+        assert self.potions[slot] == "BLOOD_POTION", self.potions
+        self.hp = min(self.max_hp, self.hp + int(self.max_hp * BLOOD_POTION_HEAL))
+        self.potions[slot] = None
