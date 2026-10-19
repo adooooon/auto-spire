@@ -137,6 +137,7 @@ class RunPolicyEnv(gym.Env):
         reward = 0.0
         if self.decision == "path" and a >= DRINK:
             self.run.drink(a - DRINK)
+            self.used["BLOOD_POTION"] += 1
         elif self.decision == "path":
             encounter = self.enter(a - PATH)
             if encounter is None:

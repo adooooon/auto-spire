@@ -93,7 +93,7 @@ renv.reset(seed=4)
 renv.decision, renv.run.gold = "shop", 1000
 renv.run.shop = Shop(["SHRUG_IT_OFF", None, None, None, None], [50] * 5, 75)
 renv.step(SHOP_REMOVE)
-assert not renv.action_masks()[N_ACTIONS - 1], "remove has no cancel"
+assert not renv.action_masks()[REMOVE + len(CARD_INDEX)], "remove has no cancel"
 
 # Review fix: train.py refuses flag combinations that would silently train the wrong thing.
 import subprocess
@@ -157,6 +157,7 @@ renv.run.hp = 40
 assert renv.action_masks()[DRINK]
 renv.step(DRINK)
 assert renv.run.hp == 56 and renv.run.potions == [None, None, None] and renv.decision == "path"
+assert renv.used["BLOOD_POTION"] == 1  # drinks between fights count as uses too
 
 
 # Review focus 5: potions go into the fight and what's left comes back; uses are counted.
