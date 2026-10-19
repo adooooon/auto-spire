@@ -5,6 +5,8 @@ Action space: Discrete(MAX_HAND * MAX_ENEMIES + 1)
                   (slot = index into the living-enemy list, sent as its combatId;
                   only AnyEnemy cards use the slot — others are masked to slot 0)
   END_TURN     -> end turn
+  a > END_TURN -> use potion slot (a - POTION_ACTION) // MAX_ENEMIES at enemy slot % MAX_ENEMIES
+                  (sim only: masked off when /combat has no potionSlots, i.e. live)
 
 Observation space: Box(OBS_DIM,) float32 — see _encode() for the layout.
 
@@ -26,6 +28,7 @@ from gymnasium import spaces
 from client import AutoSpireClient
 from sim.cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
 from sim.engine import MONSTERS, SimLoopError
+from sim.potions import POTION_IDS, POTION_SLOTS, POTIONS
 
 MAX_HAND = 10
 MAX_ENEMIES = 4  # SLIMES_NORMAL
@@ -62,7 +65,15 @@ PILE_FEATURES = 3 * len(CARD_IDS)  # per-card counts in draw, discard and exhaus
 # hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, strength, artifact, slippery,
 # plow, weak, mangle, is_alive + identity
 ENEMY_FEATURES = 13 + len(MONSTER_IDS)
-OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES
+# Appended after everything above so grown models keep their old inputs (grow.py):
+# potion slots (one-hot per slot), Dexterity, this-turn Dexterity.
+POTION_FEATURES = POTION_SLOTS * len(POTION_IDS) + 2
+OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES
+POTION_ACTION = END_TURN + 1  # potion actions come after END_TURN, so old action indices are unchanged
+N_ACTIONS = POTION_ACTION + POTION_SLOTS * MAX_ENEMIES
+# ponytail: a fight-level reward can't see that a potion saved now helps a later fight, so each use
+# costs this much HP's worth (x hp_weight). Tune from run.py's potions_used / held_at_death numbers.
+POTION_COST_HP = 5
 
 
 def _encode_card(card: dict) -> list[float]:
@@ -86,6 +97,10 @@ def random_deck(rng: np.random.Generator) -> list[str]:
     pools = [COMMONS, UNCOMMONS, RARES]
     return deck + [str(rng.choice(pools[rng.choice(3, p=[0.6, 0.3, 0.1])])) for _ in range(rng.integers(0, 9))]
 
+
+def random_potions(rng: np.random.Generator) -> list[str]:
+    """0-3 random modeled potions, for random-deck training (so every potion gets practice)."""
+    return [str(rng.choice(POTION_IDS)) for _ in range(rng.integers(0, POTION_SLOTS + 1))]
 
 def _power(entity: dict, name: str) -> int:
     return next((p["amount"] for p in entity.get("powers") or [] if p["name"] == name), 0)
@@ -150,7 +165,11 @@ def _encode(combat: dict) -> np.ndarray:
         else:
             enemy_feats += [0.0] * ENEMY_FEATURES
 
-    return np.array(hand_feats + player_feats + pile_feats + enemy_feats, dtype=np.float32)
+    slots = combat.get("potionSlots") or []
+    potion_feats = [float(i < len(slots) and slots[i] == pid) for i in range(POTION_SLOTS) for pid in POTION_IDS]
+    potion_feats += [_power(player, "DexterityPower") / 5.0, _power(player, "SpeedPotionPower") / 5.0]
+
+    return np.array(hand_feats + player_feats + pile_feats + enemy_feats + potion_feats, dtype=np.float32)
 
 
 def _ready(combat: dict) -> bool:
@@ -185,7 +204,8 @@ class STS2CombatEnv(gym.Env):
         self.heal = heal
         self.hp_weight = hp_weight
         self.deck: list[str] | None = None  # fixed deck (e.g. a run's), overriding random/starter
-        self.action_space = spaces.Discrete(END_TURN + 1)
+        self.potions: list[str | None] | None = None  # fixed starting potions (a run's), overriding random
+        self.action_space = spaces.Discrete(N_ACTIONS)
         self.observation_space = spaces.Box(low=-1.0, high=10.0, shape=(OBS_DIM,), dtype=np.float32)
         self._steps = 0
         self._combat: dict = {}  # last observed state, for action_masks()
@@ -212,6 +232,10 @@ class STS2CombatEnv(gym.Env):
                     self.client.exec("heal 999")
                 # The deck persists across fights in a live run, so set it every episode.
                 self.client.set_deck(self.deck or (random_deck(self.np_random) if self.random_decks else starter_deck()))
+                set_potions = getattr(self.client, "set_potions", None)  # sim only
+                if set_potions:
+                    set_potions(self.potions if self.potions is not None else
+                                random_potions(self.np_random) if self.random_decks else [])
                 self.client.exec(f"fight {self.np_random.choice(self.encounters)}", settle=0.5)
                 if self.heal:
                     self.client.exec("heal 999")
@@ -232,6 +256,7 @@ class STS2CombatEnv(gym.Env):
             prev_enemy_hp = _total_enemy_hp(prev)
             prev_player_hp = _player_hp(prev)
 
+            used_potion = False
             if action < END_TURN:
                 card, slot = divmod(int(action), MAX_ENEMIES)
                 hand = (prev.get("player") or {}).get("hand") or []
@@ -242,8 +267,20 @@ class STS2CombatEnv(gym.Env):
                     result = self.client.play(card)
                 else:  # slot on a non-targeted card, or no enemy in that slot
                     result = {"error": "invalid_target"}
-            else:
+            elif action == END_TURN:
                 result = self.client.end_turn()
+            else:
+                pslot, slot = divmod(int(action) - POTION_ACTION, MAX_ENEMIES)
+                potions = prev.get("potionSlots") or []
+                pid = potions[pslot] if pslot < len(potions) else None
+                enemies = _living(prev)
+                if POTIONS.get(pid) == "enemy" and slot < len(enemies):
+                    result = self.client.exec(f"potion {pslot} {enemies[slot]['combatId']}")
+                elif pid in POTIONS and POTIONS[pid] != "enemy" and slot == 0:
+                    result = self.client.exec(f"potion {pslot}")
+                else:
+                    result = {"error": "invalid_potion"}
+                used_potion = "error" not in result
             invalid = "error" in result
 
             # Poll until it's the player's turn to act again, or combat has
@@ -294,6 +331,8 @@ class STS2CombatEnv(gym.Env):
         reward = (prev_enemy_hp - enemy_hp) / 10.0 - self.hp_weight * (prev_player_hp - player_hp) / 10.0
         if invalid:
             reward -= 0.1
+        if used_potion:
+            reward -= POTION_COST_HP * self.hp_weight / 10.0
         if terminated:
             reward += 5.0 if won else -5.0
         if truncated:
@@ -312,12 +351,16 @@ class STS2CombatEnv(gym.Env):
         the same observation back and repeats it until truncation."""
         hand = (self._combat.get("player") or {}).get("hand") or []
         n_enemies = min(len(_living(self._combat)), MAX_ENEMIES)
-        mask = np.zeros(END_TURN + 1, dtype=bool)
+        mask = np.zeros(N_ACTIONS, dtype=bool)
         for i, c in enumerate(hand[:MAX_HAND]):
             # Cards the sim doesn't model open a choice prompt the mod can't answer (live, Stoke /
             # Infernal Blade can generate them): never play them.
             if c["canPlay"] and c["id"] in CARDS:
                 slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
                 mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True
+        for i, pid in enumerate((self._combat.get("potionSlots") or [])[:POTION_SLOTS]):
+            if pid in POTIONS:  # unmodeled potions and live play (no potionSlots) stay masked
+                slots = n_enemies if POTIONS[pid] == "enemy" else 1
+                mask[POTION_ACTION + i * MAX_ENEMIES:POTION_ACTION + i * MAX_ENEMIES + slots] = True
         mask[END_TURN] = True
         return mask

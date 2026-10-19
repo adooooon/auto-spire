@@ -1,5 +1,5 @@
 """Checks for the combat env's loop guard and the run policy env. Run from agent/: python test_run_env.py"""
-from env import STS2CombatEnv
+from env import END_TURN, STS2CombatEnv
 from sim.engine import SimClient, SimLoopError
 
 # Review focus 1: a sim infinite loop ends the episode as aborted instead of hanging or raising.
@@ -13,7 +13,7 @@ def boom(*args, **kwargs):
 
 
 env.client.end_turn = boom
-_, reward, terminated, truncated, info = env.step(env.action_space.n - 1)  # END_TURN
+_, reward, terminated, truncated, info = env.step(END_TURN)
 assert terminated and not truncated and info.get("aborted") and reward == -1.0, info
 
 import numpy as np
@@ -102,5 +102,29 @@ import sys
 for bad in (["--backend", "sim", "--run-policy"], ["--backend", "sim", "--run-model", "x.zip"], ["--run-policy", "--combat-model", "x.zip"]):
     p = subprocess.run([sys.executable, "train.py", *bad, "--timesteps", "0", "--name", "guard_check"], capture_output=True, text=True)
     assert p.returncode == 2 and "error:" in p.stderr, (bad, p.returncode, p.stderr[-300:])
+
+# Combat env potions (sub-project 2).
+from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, POTION_COST_HP
+from sim.potions import POTION_IDS
+
+cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
+cenv._episode_count = 1
+assert cenv.action_space.n == COMBAT_ACTIONS == END_TURN + 1 + 12 and COMBAT_OBS == 1358 + 38
+# Review focus 1: live play (no potionSlots in /combat) never offers a potion.
+cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
+assert not cenv.action_masks()[POTION_ACTION:].any()
+cenv._combat["potionSlots"] = ["FIRE_POTION", "ATTACK_POTION", "BLOCK_POTION"]
+assert np.flatnonzero(cenv.action_masks()[POTION_ACTION:]).tolist() == [0, 1, 8]  # Fire x2 targets, Block on 0
+# Review focus 2: a potion that ends the fight is a win, minus the use cost.
+cenv.potions = ["EXPLOSIVE_AMPOULE", None, None]
+obs, _ = cenv.reset(seed=0)
+assert obs.shape == (COMBAT_OBS,) and obs[-38 + POTION_IDS.index("EXPLOSIVE_AMPOULE")] == 1
+alive = [e for e in cenv.client._combat.enemies if e.is_alive]
+for e in alive:
+    e.hp = 5
+cenv._combat = cenv.client.combat()
+_, r, term, _, info = cenv.step(POTION_ACTION)
+assert term and info["won"] and cenv.client._combat.potions == [None, None, None]
+assert abs(r - (5 * len(alive) / 10 + 5.0 - POTION_COST_HP / 10)) < 1e-6, r
 
 print("run env checks ok")
