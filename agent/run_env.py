@@ -13,7 +13,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from env import CARD_IDS, POTION_ACTION, STS2CombatEnv  # noqa: F401  (POTION_ACTION: tests)
+from env import CARD_IDS, STS2CombatEnv
 from picker import play_fight
 from sim.act import BOSSES, SHOP_POTIONS, SHOP_SLOTS, Run
 from sim.cards import CARDS
