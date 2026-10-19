@@ -31,6 +31,7 @@ import random
 from dataclasses import dataclass, field
 
 from .cards import CARDS, GENERATED, card_to_dict, starter_deck
+from .potions import POTION_SLOTS, POTIONS
 
 PLAYER_MAX_HP = 80
 PLAYER_MAX_ENERGY = 3
@@ -408,6 +409,9 @@ class SimCombat:
     constrict: int = 0  # player's: takes this much (blockable) damage at the end of their turn
     strength: int = 0  # player's, added to every attack hit
     temp_strength: int = 0  # the part of `strength` that goes away at the end of their turn
+    dexterity: int = 0  # player's, added to card block before Frail (DexterityPower)
+    temp_dexterity: int = 0  # the part of `dexterity` that goes away at the end of their turn (SpeedPotionPower)
+    potions: list = field(default_factory=lambda: [None] * POTION_SLOTS)  # kept across fights; None = empty
     weak: int = 0  # player's: their attacks x0.75
     ringing: bool = False  # player's: only one card play this turn; removed at the end of it
     cards_played: int = 0  # this player turn (SlowPower's counter; RingingPower's check)
@@ -460,6 +464,7 @@ class SimCombat:
         self.shrunk = False
         self.vulnerable = self.frail = self.tangled = self.constrict = 0
         self.strength = self.temp_strength = self.weak = self.cards_played = 0
+        self.dexterity = self.temp_dexterity = 0
         self.ringing = False
         self.pw, self.bonus_damage = {}, {}
         self.crimson_self = self.inferno_self = self.hp_loss_events = 0
@@ -512,6 +517,50 @@ class SimCombat:
         self._play(card_id, target, x)
         self._check_win()
         return {"ok": True, "played": card.title, "index": hand_index}
+
+    def use_potion(self, slot: int, target_id: int | None = None) -> dict:
+        """PotionModel.OnUse for the modeled potions; target_id is an enemy combatId (enemy potions only).
+        Potion damage and Block Potion's block are Unpowered: block absorbs the damage, but Strength,
+        Vulnerable, Weak, Shrink, Dexterity and Frail don't apply (ValuePropExtensions.IsPoweredAttack)."""
+        if not self.in_combat or not self.is_play_phase:
+            return {"error": "not_play_phase"}
+        if not 0 <= slot < len(self.potions) or self.potions[slot] not in POTIONS:
+            return {"error": "invalid_potion", "slot": slot}
+        pid, target = self.potions[slot], None
+        if POTIONS[pid] == "enemy":
+            target = self.enemies[target_id - 1] if target_id and 0 < target_id <= len(self.enemies) else None
+            if target is None or not target.is_alive:
+                return {"error": "invalid_target", "targetId": target_id}
+        self.potions[slot] = None
+        if pid == "BLOCK_POTION":
+            self._gain_block(12)
+        elif pid == "DEXTERITY_POTION":
+            self.dexterity += 2
+        elif pid == "SPEED_POTION":
+            self.dexterity += 5
+            self.temp_dexterity += 5
+        elif pid == "ENERGY_POTION":
+            self._gain_energy(2)
+        elif pid == "STRENGTH_POTION":
+            self.strength += 2
+        elif pid == "FLEX_POTION":
+            self.strength += 5
+            self.temp_strength += 5
+        elif pid == "SWIFT_POTION":
+            self._draw(3)
+        elif pid == "FIRE_POTION":
+            self._damage_enemy(target, 20)
+        elif pid == "EXPLOSIVE_AMPOULE":
+            for e in self._hittable():  # HittableEnemies, read once before the hits
+                self._damage_enemy(e, 10)
+        elif pid == "VULNERABLE_POTION":
+            self._debuff(target, "vulnerable", 3)
+        elif pid == "WEAK_POTION":
+            self._debuff(target, "weak", 3)
+        elif pid == "BLOOD_POTION":
+            self.heal(self.player_max_hp * 20 // 100)  # 20% of max HP, truncated
+        self._check_win()
+        return {"ok": True, "used": pid, "slot": slot}
 
     def _check_win(self) -> None:
         # CombatManager.IsEnding: won once no *primary* enemy (non-minion) is alive.
@@ -769,7 +818,7 @@ class SimCombat:
     def _gain_block(self, amount: int, card: bool = False) -> None:
         """card: a card's own block (Frail, Unmovable apply); other block (powers) is Unpowered."""
         if card:
-            num, den = amount, 1
+            num, den = amount + self.dexterity, 1  # DexterityPower.ModifyBlockAdditive, before Frail
             if self.frail:
                 num, den = num * 3, den * 4
             if self.pw.get("UnmovablePower") and \
@@ -976,6 +1025,8 @@ class SimCombat:
         self.tangled = 0
         self.strength -= self.temp_strength  # TemporaryStrengthPower.AfterSideTurnEnd
         self.temp_strength = 0
+        self.dexterity -= self.temp_dexterity  # SpeedPotionPower (TemporaryDexterityPower)
+        self.temp_dexterity = 0
         for name in TURN_POWERS:
             self.pw.pop(name, None)
         if self._ethereal_exhausts and self.pw.get("DarkEmbracePower"):
@@ -1088,7 +1139,8 @@ class SimCombat:
             "round": self.round,
             "cardsPlayedThisTurn": self.cards_played,
             "currentSide": "Player" if self.is_play_phase else "Enemy",
-            "player": {
+            "potionSlots": list(self.potions),  # sim only: the live /combat has no slots, so env masks potions off
+              "player": {
                 "hp": self.player_hp,
                 "maxHp": self.player_max_hp,
                 "block": self.player_block,
@@ -1105,6 +1157,7 @@ class SimCombat:
                     ("FrailPower", self.frail), ("TangledPower", self.tangled),
                     ("ConstrictPower", self.constrict), ("StrengthPower", self.strength),
                     ("SetupStrikePower", self.temp_strength), ("WeakPower", self.weak),
+                    ("DexterityPower", self.dexterity), ("SpeedPotionPower", self.temp_dexterity),
                     ("RingingPower", int(self.ringing))) if a] +
                 [{"id": n.upper(), "name": n, "type": "Buff", "amount": a} for n, a in self.pw.items()],
                 "relics": [],
@@ -1127,6 +1180,9 @@ class SimClient:
 
     def set_deck(self, deck: list[str]) -> None:
         self._deck = list(deck)
+
+    def set_potions(self, potions: list) -> None:
+        self._combat.potions = (list(potions) + [None] * POTION_SLOTS)[:POTION_SLOTS]
 
     def ping(self) -> bool:
         return True
@@ -1154,6 +1210,8 @@ class SimClient:
             return self._combat.play_card(int(parts[1]), int(parts[2]) if len(parts) > 2 else None)
         if verb == "end":
             return self._combat.end_turn()
+        if verb == "potion":
+            return self._combat.use_potion(int(parts[1]), int(parts[2]) if len(parts) > 2 else None)
         return {"error": "unknown_command", "cmd": cmd}
 
     def play(self, hand_index: int, target_id: int | None = None) -> dict:

@@ -501,6 +501,40 @@ Ported to the sim in `agent/sim/map.py` and `agent/sim/act.py`.
   - **Card removal:** once per shop, 75 + 25 per removal used this run.
 - **Rest site:** heals 30% of max HP (`HealRestSiteOption`).
 
+## Potions
+
+Ported to the sim in `agent/sim/potions.py` and `SimCombat.use_potion`; drops and shops in `agent/sim/act.py`.
+
+- **Pools:** `SharedPotionPool` plus the character's pool. Ironclad's is `Ironclad4Epoch.Potions` (Blood Potion, Ashwater, Soldier's Stew) once that epoch is revealed. Each rarity has 16 potions across the two pools.
+- **Damage and block types:** potion damage and Block Potion's block are `ValueProp.Unpowered` ("damage from relics, potions, and powers").
+  - Strength, Vulnerable, Weak, Shrink and Slow only modify `IsPoweredAttack` damage (Move and not Unpowered).
+  - Dexterity and Frail only modify `IsPoweredCardOrMonsterMoveBlock` block.
+  - So potion damage is flat, block still absorbs it, and Block Potion gives exactly 12.
+- **Direct-effect Commons:**
+  - Block 12
+  - Dexterity +2
+  - Speed +5 Dexterity this turn (`SpeedPotionPower`)
+  - Energy +2
+  - Strength +2
+  - Flex +5 Strength this turn (`FlexPotionPower`)
+  - Swift: draw 3
+  - Fire: 20 damage
+  - Explosive Ampoule: 10 to each `HittableEnemies`
+  - Vulnerable 3
+  - Weak 3
+  - Blood (Ironclad): heal 20% of max HP, `PotionUsage.AnyTime`, so it also works between fights. The rest are `CombatOnly`.
+- **Card-choice Commons:** Attack, Skill, Power and Colorless Potion pick 1 of 3 generated cards.
+- **Healing truncates:** `Creature.SetCurrentHpInternal` casts to int, so 20% of 83 heals 16.
+- **Dexterity** (`DexterityPower.ModifyBlockAdditive`) adds before Frail's ×0.75 (`ModifyBlockMultiplicative`).
+- **Drops** (`PotionRewardOdds`):
+  - The chance starts at 0.4. A roll succeeds when a random number is below the chance (plus 0.25 × 0.5 in elite rooms).
+  - Success lowers the chance by 0.1; failure raises it by 0.1.
+  - Monster, Elite and Boss rewards each roll (`RewardsSet.RollForPotionAndAddTo`).
+- **Rarity** (`PotionFactory.CreateRandomPotion`): a random float ≤ 0.10 is Rare, ≤ 0.35 Uncommon, otherwise Common. The potion is then uniform within that rarity, and multi-potion rolls don't repeat.
+- **Shop** (`MerchantInventory.PopulatePotionEntries`):
+  - 3 random potions, priced 50 / 75 / 100 by rarity × U(0.95, 1.05), rounded (`MerchantPotionEntry.GetCost`).
+  - A potion can only be bought into a free slot.
+
 ## File structure
 
 ### PCK contents

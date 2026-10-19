@@ -364,7 +364,7 @@ from env import ENCOUNTER_GROUPS  # noqa: E402
 assert set(ENCOUNTER_GROUPS["act1"]) == set(ENCOUNTERS), "env encounter groups out of sync with the sim"
 
 # Env: every masked-legal action is accepted by the sim (no invalid actions).
-from env import STS2CombatEnv  # noqa: E402
+from env import END_TURN, STS2CombatEnv  # noqa: E402
 
 env = STS2CombatEnv(encounter=list(ENCOUNTERS), client=SimClient(seed=4), random_decks=True)
 for _ in range(100):
@@ -379,7 +379,7 @@ env = STS2CombatEnv(encounter="OVERGROWTH_CRAWLERS", client=SimClient(seed=1))
 env.reset()
 done = False
 while not done:
-    _, r, term, trunc, info = env.step(env.action_space.n - 1)  # only ever end turn
+    _, r, term, trunc, info = env.step(END_TURN)  # only ever end turn
     done = term or trunc
 assert term and info["won"] is False and info["player_hp"] == 0 and r < 0, (info, r)
 # A reshuffle loop (like Pillage under Ringing + Hellraiser was) raises instead of hanging.
@@ -393,4 +393,87 @@ except SimLoopError:
     pass
 c.fight("NIBBITS_WEAK")
 assert c.shuffles == 0  # the cap is per fight
+# Potions (sim/potions.py; effects from Models/Potions/*.OnUse). Potion damage and Block Potion's
+# block are Unpowered: block absorbs the damage, but Strength/Vulnerable/Weak/Dexterity/Frail don't apply.
+from .potions import POTION_POOL, POTIONS
+
+assert len(POTIONS) == 12 and all(p in POTION_POOL["COMMON"] for p in POTIONS)
+assert all(len(v) == 16 for v in POTION_POOL.values())
+
+
+def potion(pid, hand=("DEFEND_IRONCLAD",), encounter="MAWLER_NORMAL"):
+    c = solo(list(hand), encounter)
+    c.potions = [pid, None, None]
+    return c
+
+
+c = potion("BLOCK_POTION")
+c.frail, c.dexterity = 2, 3
+assert c.use_potion(0)["ok"] and c.player_block == 12 and c.potions == [None, None, None]
+c = potion("DEXTERITY_POTION")
+c.use_potion(0)
+c.play_card(0)
+assert c.player_block == 5 + 2
+c = potion("DEXTERITY_POTION")
+c.use_potion(0)
+c.frail = 1
+c.play_card(0)
+assert c.player_block == (5 + 2) * 3 // 4  # Dexterity (additive) before Frail (multiplicative)
+c = potion("SPEED_POTION")
+c.use_potion(0)
+c.play_card(0)
+assert c.player_block == 10 and c.dexterity == 5
+c.end_turn()
+assert c.dexterity == 0 and c.temp_dexterity == 0
+c = potion("ENERGY_POTION")
+e0 = c.energy
+c.use_potion(0)
+assert c.energy == e0 + 2
+c = potion("STRENGTH_POTION")
+c.use_potion(0)
+c.end_turn()
+assert c.strength == 2
+c = potion("FLEX_POTION")
+c.use_potion(0)
+assert c.strength == 5
+c.end_turn()
+assert c.strength == 0
+c = potion("SWIFT_POTION", hand=())
+c.use_potion(0)
+assert len(c.hand) == 3
+c = potion("FIRE_POTION")
+m = c.enemies[0]
+m.block, m.vulnerable, hp = 5, 2, m.hp
+c.strength, c.weak = 3, 1
+assert c.use_potion(0, 1)["ok"] and hp - m.hp == 15 and m.block == 0
+c = potion("FIRE_POTION")
+assert "error" in c.use_potion(0) and c.potions[0] == "FIRE_POTION"  # an enemy potion needs a target
+c = potion("EXPLOSIVE_AMPOULE", encounter="SLIMES_NORMAL")
+before = [(e.hp, e.block) for e in c.enemies]
+c.use_potion(0)
+assert [e.hp for e in c.enemies[:len(before)]] == [max(0, h - max(0, 10 - b)) for h, b in before]
+c = potion("VULNERABLE_POTION")
+c.use_potion(0, 1)
+assert c.enemies[0].vulnerable == 3
+c = potion("WEAK_POTION")
+c.use_potion(0, 1)
+assert c.enemies[0].weak == 3
+c = potion("BLOOD_POTION")
+c.player_hp, c.player_max_hp = 40, 83
+c.use_potion(0)
+assert c.player_hp == 40 + 16  # 20% of max HP, truncated (Creature.SetCurrentHpInternal)
+# Review focus 2: a potion that kills the last enemy wins the fight.
+c = potion("FIRE_POTION")
+c.enemies[0].hp = 15
+c.use_potion(0, 1)
+assert c.won and not c.in_combat
+c = potion(None)
+assert "error" in c.use_potion(0)
+# The client sets potions; they survive fight() and show up as potionSlots.
+s = SimClient(seed=0)
+s.set_potions(["FIRE_POTION"])
+s.exec("fight NIBBITS_WEAK")
+assert s.combat()["potionSlots"] == ["FIRE_POTION", None, None]
+nib = s.combat()["enemies"][0]["combatId"]
+assert s.exec(f"potion 0 {nib}")["ok"] and s.combat()["potionSlots"] == [None, None, None]
 print("sim self-check ok")
