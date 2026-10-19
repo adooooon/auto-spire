@@ -574,6 +574,35 @@ The sim models the whole Ironclad pool: 34 Uncommons and 24 Rares (84 cards with
   - Picks: Setup Strike, Anger, Dismantle, Stomp, Rage, Evil Eye, Uppercut, Tremble, Rampage; it skipped the last offer.
   - v7b had 39 and 21 HP after the elites and reached the boss at 42. v9 left both elites above 65 HP.
 
+### 2026-10-18: Generated maps, shops and a run policy
+
+Sim runs now play on generated Act 1 maps (`agent/sim/map.py`) with gold, shops (5 Ironclad cards and card removal), "?" rooms and the real encounter queue (`agent/sim/act.py`). The game rules are in `docs/game-architecture.md`, "Act 1 runs".
+- **Placeholders:** events, treasure and Neow are empty rooms until the relic and event sub-projects. So a "?" room is usually free, and elites drop no relic.
+- **Map pruning** (`MapPathPruning`) is skipped, because it needs every path enumerated. Room counts still match the generator's queues.
+- **Run policy** (`agent/run_env.py`): MaskablePPO over the path, card pick, shop and removal decisions, 103 actions. Fights inside it are played by a frozen combat model.
+  - Trained with `train.py --run-policy --combat-model <zip>`: 6 envs, 256×256, 3M decisions (about 2 hours).
+  - Combat was then retrained on the runs it builds: `--run-mode --run-model <zip>`, resumed from v9 for 15M steps, giving v10.
+- **Sim guard:** a fight that reshuffles 1,000 times raises `SimLoopError` and ends the episode as aborted, instead of hanging training the way Pillage did.
+
+**Results**, the same 500 generated maps per row, picker N = 16. The baseline uses a random path, the MC picker, and removes a Strike whenever it can afford to.
+
+| Combat | Choices | Clear | Avg floor (of 16) | Gold spent | Died: boss / elite / monster |
+|---|---|---|---|---|---|
+| v9 | baseline | 15.4% | 14.4 | 59 | 261 / 101 / 61 |
+| v9 | run policy v1 | 40.6% | 15.5 | 99 | 249 / 27 / 21 |
+| v10 | baseline | 18.4% | 14.5 | 58 | 245 / 91 / 72 |
+| v10 | run policy v1 | 47.6% | 15.7 | 100 | 228 / 15 / 19 |
+| v10 | run policy v2 (+3M on v10) | **51.8%** | 15.6 | 104 | 202 / 22 / 17 |
+
+- **What v1 learned** (60 runs each, per run, compared with the baseline):
+  - It fights half as many elites (0.58 vs 1.08) and visits more rest sites (2.95 vs 1.9).
+  - It spends its gold on about 2 shop cards per run and never removes a card.
+  - It takes nearly every offer: 27 skips against the baseline's 91.
+  - The decks end at 18.8 cards against 15.1.
+  - Avoiding elites is partly a sim artifact while elites give no relic.
+- **Rounds:** v2's gain over v1 (+4 points, about 2 standard errors) was half of v10's, so the rounds stopped there. The relic, potion and event sub-projects change the env and will need another round anyway.
+- **On the fixed route** (150 runs, picker): v10 wins 9.04 of 11 fights and clears 12.7%, against v9's 9.03 and 8.7%. It reaches the boss about as often (55% vs 59%) and beats it more often.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.
