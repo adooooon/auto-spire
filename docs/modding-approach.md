@@ -603,6 +603,42 @@ Sim runs now play on generated Act 1 maps (`agent/sim/map.py`) with gold, shops 
 - **Rounds:** v2's gain over v1 (+4 points, about 2 standard errors) was half of v10's, so the rounds stopped there. The relic, potion and event sub-projects change the env and will need another round anyway.
 - **On the fixed route** (150 runs, picker): v10 wins 9.04 of 11 fights and clears 12.7%, against v9's 9.03 and 8.7%. It reaches the boss about as often (55% vs 59%) and beats it more often.
 
+### 2026-10-19: Potions
+
+The sim now models 12 Act 1 potions: drops, shop potions, 3 slots, drinking in combat, and Blood Potion between fights. These are in the sim only. The rules are in `docs/game-architecture.md`, "Potions".
+- **Growing the networks** (`agent/grow.py`): potions add observation inputs and actions. `grow.py` copies a trained MaskablePPO into the larger spaces and zero-initializes the new weights. So a grown model starts out as its parent on potion-free states.
+  - Combat went from 1358 to 1396 inputs and from 41 to 53 actions.
+  - The run policy went from 808 to 899 inputs and from 103 to 113 actions.
+- **Training:**
+  - **Phase A:** combat v10p, grown from v10, trained 10M steps on Act 1 fights with random decks and random potions, giving v11a.
+  - **Phase B:** v11a trained 15M steps on real runs (`--run-mode`, run policy v2p), giving v11.
+  - **Run policy v3:** v2p trained 3M decisions with v11 fighting.
+  - Each used 6 envs and a 256×256 network. `POTION_COST_HP` stayed at 5, since runs rarely die holding potions.
+
+**Results**, the same 500 generated maps per row, picker N = 16, run policy choices. Potions columns are per run. "Held" is potions still held at death.
+
+| Combat | Run policy | Clear | Avg floor | Gold spent | Potions used | Held | Died: boss / elite / monster |
+|---|---|---|---|---|---|---|---|
+| v10 | v2 (no potions) | 51.8% | 15.6 | 104 | — | — | 202 / 22 / 17 |
+| v10p | v2p | 55.0% | 15.7 | 106 | 1.78 | 0.00 | 197 / 15 / 13 |
+| v11 | v2p | 60.6% | 15.7 | 107 | 1.38 | 0.02 | 167 / 15 / 15 |
+| v11 | v3 | **66.6%** | 15.7 | 112 | 2.12 | 0.09 | 142 / 11 / 14 |
+
+- **v10p + v2p** drinks potions through untrained zero-logit actions, so it drinks nearly at random. Even that adds 3 points.
+- **v11** drinks fewer potions than v10p but gains 6 points. So it learned when to drink them.
+- **v3** buys and keeps more potions (2.12 per run) and adds 6 more points. Most of the gain is fewer boss deaths.
+- **Most-used potions** with v11 + v3 (number drunk over 500 runs): Energy 113, Blood 109, Strength 101, Weak 97, Flex 90, Fire 86, Vulnerable 86, Block 85, Explosive Ampoule 85, Dexterity 83, Speed 73, Swift 50.
+- **Bosses** with v11, 200 fights each, random decks, 0 or 2 random potions:
+
+| Boss | 0 potions | 2 potions |
+|---|---|---|
+| Vantom | 9% | 29% |
+| Ceremonial Beast | 15% | 36% |
+| The Kin | 8% | 21% |
+
+  These are low because the random decks are weaker than decks built over a run. They still show 2 potions roughly double or triple the win rate.
+- **Rounds:** v3 still gained 6 points, so another round (combat on v3 runs, then a run policy v4) may help. It is not run yet.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.
