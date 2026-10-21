@@ -623,6 +623,8 @@ The sim now models 12 Act 1 potions: drops, shop potions, 3 slots, drinking in c
 | v10p | v2p | 55.0% | 15.7 | 106 | 1.78 | 0.00 | 197 / 15 / 13 |
 | v11 | v2p | 60.6% | 15.7 | 107 | 1.38 | 0.02 | 167 / 15 / 15 |
 | v11 | v3 | **66.6%** | 15.7 | 112 | 2.12 | 0.09 | 142 / 11 / 14 |
+| v12 (+15M on v3 runs) | v3 | 66.2% | 15.7 | 112 | 2.17 | 0.04 | 142 / 17 / 10 |
+| v12 | v4 (+3M on v12) | 65.2% | 15.8 | 106 | 2.21 | 0.01 | 151 / 11 / 12 |
 
 - **v10p + v2p** drinks potions through untrained zero-logit actions, so it drinks nearly at random. Even that adds 3 points.
 - **v11** drinks fewer potions than v10p but gains 6 points. So it learned when to drink them.
@@ -637,7 +639,7 @@ The sim now models 12 Act 1 potions: drops, shop potions, 3 slots, drinking in c
 | The Kin | 8% | 21% |
 
   These are low because the random decks are weaker than decks built over a run. They still show 2 potions roughly double or triple the win rate.
-- **Rounds:** v3 still gained 6 points, so another round (combat on v3 runs, then a run policy v4) may help. It is not run yet.
+- **Rounds:** a second round (v12, then v4) gained nothing. Both rows are within about 1 point of 66.6%, while one standard error is about 2 points. So the rounds stopped, and v11 + v3 is the model to keep.
 
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
