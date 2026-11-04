@@ -55,8 +55,9 @@ class RarityOdds:
     def __init__(self):
         self.offset = -0.05
 
-    def roll(self, rng: random.Random, elite: bool = False) -> str:
-        r, rare = rng.random(), (0.10 if elite else 0.03) + self.offset
+    def roll(self, rng: random.Random, elite: bool = False, boss: bool = False) -> str:
+        """boss: CardRarityOddsType.BossEncounter, always Rare (r < 1), so the offset resets."""
+        r, rare = rng.random(), 1.0 if boss else (0.10 if elite else 0.03) + self.offset
         if r < rare:
             self.offset = -0.05
             return "RARE"
@@ -69,11 +70,11 @@ class RarityOdds:
         return "RARE" if r < rare else "UNCOMMON" if r < rare + 0.37 else "COMMON"
 
 
-def offer(rng: random.Random, odds: RarityOdds, elite: bool = False) -> list[str]:
+def offer(rng: random.Random, odds: RarityOdds, elite: bool = False, boss: bool = False) -> list[str]:
     """CardFactory.CreateForReward: 3 cards, no repeats."""
     out: list[str] = []
     for _ in range(3):
-        out.append(rng.choice([c for c in REWARD_POOLS[odds.roll(rng, elite)] if c not in out]))
+        out.append(rng.choice([c for c in REWARD_POOLS[odds.roll(rng, elite, boss)] if c not in out]))
     return out
 
 
@@ -101,8 +102,9 @@ class PotionOdds:
     def __init__(self):
         self.value = 0.4
 
-    def roll(self, rng, elite: bool = False) -> bool:
-        if rng.random() < self.value + (0.125 if elite else 0.0):
+    def roll(self, rng, elite: bool = False, force: bool = False) -> bool:
+        """force: White Beast Statue (ShouldForcePotionReward); the random is still drawn."""
+        if rng.random() < self.value + (0.125 if elite else 0.0) or force:
             self.value -= 0.1
             return True
         self.value += 0.1
@@ -208,6 +210,27 @@ class Shop:
     potion_prices: list[int] = field(default_factory=lambda: [0] * SHOP_POTIONS)
 
 
+def stock_card(rng: random.Random, odds: RarityOdds, ctype: str, taken: list) -> tuple[str, int]:
+    """One card slot (MerchantCardEntry.Populate): a card of `ctype` not in `taken`, and its full price."""
+    rarity = odds.roll_shop(rng)
+    for _ in range(3):  # CardFactory.GetNextAllowedRarity
+        pool = [c for c in REWARD_POOLS[rarity] if card_type(c) == ctype and c not in taken]
+        if pool:
+            break
+        rarity = NEXT_RARITY[rarity]
+    card = rng.choice(pool)
+    return card, round(CARD_PRICE[rarity] * rng.uniform(0.95, 1.05))  # Mathf.RoundToInt: banker's, like round()
+
+
+def stock_relic(rng: random.Random, bags: RelicBags, rarity: str) -> tuple[str, int]:
+    relic = bags.pull("player", rarity, True, lambda x: x not in NOT_IN_SHOPS)
+    return relic, round(RELIC_PRICE[relic_rarity(relic)] * rng.uniform(0.85, 1.15))
+
+
+def potion_price(rng: random.Random, pid: str) -> int:
+    return round(POTION_PRICE[potion_rarity(pid)] * rng.uniform(0.95, 1.05))
+
+
 def make_shop(rng: random.Random, odds: RarityOdds, removals: int, bags: RelicBags) -> Shop:
     """MerchantInventory.PopulateCharacterCardEntries: 5 typed slots, no repeats, one half price.
     Then 3 relics (two rolled, one SHOP, pulled from the back of the player bag) and 3 potions.
@@ -216,20 +239,17 @@ def make_shop(rng: random.Random, odds: RarityOdds, removals: int, bags: RelicBa
     cards: list[str | None] = []
     prices: list[int] = []
     for i, ctype in enumerate(SHOP_SLOTS):
-        rarity = odds.roll_shop(rng)
-        for _ in range(3):  # CardFactory.GetNextAllowedRarity
-            pool = [c for c in REWARD_POOLS[rarity] if card_type(c) == ctype and c not in cards]
-            if pool:
-                break
-            rarity = NEXT_RARITY[rarity]
-        cards.append(rng.choice(pool))
-        price = round(CARD_PRICE[rarity] * rng.uniform(0.95, 1.05))  # Mathf.RoundToInt: banker's, like round()
+        card, price = stock_card(rng, odds, ctype, cards)
+        cards.append(card)
         prices.append(price // 2 if i == sale else price)
     rarities = [roll_relic_rarity(rng), roll_relic_rarity(rng), "SHOP"]
-    relics = [bags.pull("player", r, True, lambda x: x not in NOT_IN_SHOPS) for r in rarities]
-    relic_prices = [round(RELIC_PRICE[relic_rarity(x)] * rng.uniform(0.85, 1.15)) for x in relics]
+    relics, relic_prices = [], []
+    for r in rarities:
+        relic, price = stock_relic(rng, bags, r)
+        relics.append(relic)
+        relic_prices.append(price)
     potions = roll_potions(rng, SHOP_POTIONS)
-    potion_prices = [round(POTION_PRICE[potion_rarity(p)] * rng.uniform(0.95, 1.05)) for p in potions]
+    potion_prices = [potion_price(rng, p) for p in potions]
     return Shop(cards, prices, REMOVAL_PRICE + REMOVAL_STEP * removals, relics=relics, relic_prices=relic_prices,
                 potions=potions, potion_prices=potion_prices)
 
@@ -253,7 +273,51 @@ class Run:
         self.shop: Shop | None = None
         self.potions: list[str | None] = [None] * POTION_SLOTS
         self.potion_odds = PotionOdds()
-        self.potion_drop: str | None = None  # the last fight's potion reward, until taken or skipped
+        self.potion_drop: str | None = None  # the potion next_reward last surfaced, until taken or skipped
+        self.pending: list[tuple[str, object]] = []  # ("cards", offer) | ("potion", pid), in order
+
+    def gain_gold(self, amount: int) -> None:
+        """PlayerCmd.GainGold: Bowler Hat first, truncated; then Dragon Fruit."""
+        if "BOWLER_HAT" in self.relics:
+            amount = amount * 5 // 4
+        if amount <= 0:
+            return
+        self.gold += amount
+        if "DRAGON_FRUIT" in self.relics:
+            self.gain_max_hp(1)
+
+    def gain_max_hp(self, amount: int) -> None:
+        self.max_hp += amount
+        self.hp += amount
+
+    def heal(self, amount: int) -> None:
+        self.hp = min(self.max_hp, self.hp + amount)
+
+    def add_card(self, card: str) -> None:
+        self.deck.append(card)
+        if "LUCKY_FYSH" in self.relics:
+            self.gain_gold(15)
+        if "BOOK_OF_FIVE_RINGS" in self.relics:
+            n = self.relic_state["book_of_five_rings"] = self.relic_state.get("book_of_five_rings", 0) + 1
+            if n % 5 == 0:
+                self.heal(20)
+
+    def price(self, raw: int) -> int:
+        """MerchantEntry.Cost: the discounts multiply, then truncate."""
+        pct = (50 if "MEMBERSHIP_CARD" in self.relics else 100) * (80 if "THE_COURIER" in self.relics else 100) // 100
+        return raw * pct // 100
+
+    def next_reward(self) -> tuple[str, object] | None:
+        """Pop pending until something needs a decision. An unmodeled potion is used up and skipped."""
+        while self.pending:
+            kind, what = self.pending.pop(0)
+            if kind == "cards":
+                return kind, what
+            if what in POTIONS:
+                self.potion_drop = what
+                return kind, what
+            self.potion_drop = None
+        return None
 
     def choices(self) -> list[Node]:
         return sorted(self.node.children, key=lambda n: n.col)
@@ -264,16 +328,29 @@ class Run:
         room = node.type
         if room == "Unknown":  # RunManager.BuildRoomTypeBlacklist
             no_shop = self.last_room == "Shop" or (node.children and all(c.type == "Shop" for c in node.children))
-            room = self.unknown_odds.roll(self.rng, {"Shop"} if no_shop else set())
+            block = {"Shop"} if no_shop else set()
+            if "JUZU_BRACELET" in self.relics:
+                block.add("Monster")
+            room = self.unknown_odds.roll(self.rng, block)
         self.node, self.last_room = node, room
         if room == "RestSite":
-            self.hp = min(self.max_hp, self.hp + int(self.max_hp * REST_HEAL))
+            if "ETERNAL_FEATHER" in self.relics:  # AfterRoomEntered, before the rest option is chosen
+                self.heal(3 * (len(self.deck) // 5))
+            if "VENERABLE_TEA_SET" in self.relics:
+                self.relic_state["tea_set"] = 1
+            if "TINY_MAILBOX" in self.relics:
+                self.pending += [("potion", roll_potions(self.rng)[0]) for _ in range(2)]
+            self.heal(int(self.max_hp * REST_HEAL) + (15 if "REGAL_PILLOW" in self.relics else 0))
         elif room == "Shop":
+            if "MEAL_TICKET" in self.relics:
+                self.heal(15)
             self.shop = make_shop(self.rng, self.card_odds, self.removals, self.bags)
         elif room == "Treasure":
             # OneOffSynchronizer.cs:133: NextInt(42, 53), upper bound exclusive
             self.obtain(self.bags.pull("shared", roll_relic_rarity(self.rng)), "treasure")
-            self.gold += self.rng.randint(42, 52)
+            self.gain_gold(self.rng.randint(42, 52))
+        if node.type == "Unknown" and "PLANISPHERE" in self.relics:
+            self.heal(5)
         return room
 
     def encounter(self, room: str) -> str:
@@ -285,29 +362,43 @@ class Run:
     def win(self, room: str) -> list[str]:
         """After a won fight: Burning Blood, gold, a potion roll (sets potion_drop) and the card offer.
         After the boss the run ends, so neither the potion nor the card offer is rolled."""
-        self.hp = min(self.max_hp, self.hp + BURNING_BLOOD_HEAL)
-        self.gold += self.rng.randint(*GOLD[room])
+        self.heal(BURNING_BLOOD_HEAL)
+        self.gain_gold(self.rng.randint(*GOLD[room]))
+        if "AMETHYST_AUBERGINE" in self.relics:
+            self.gain_gold(15)
         if room == "Boss":
             return []
         if room == "Elite":
             self.obtain(self.bags.pull("player", roll_relic_rarity(self.rng)), "elite")
-        self.potion_drop = roll_potions(self.rng)[0] if self.potion_odds.roll(self.rng, room == "Elite") else None
-        return offer(self.rng, self.card_odds, room == "Elite")
+        force = "WHITE_BEAST_STATUE" in self.relics
+        potion = roll_potions(self.rng)[0] if self.potion_odds.roll(self.rng, room == "Elite", force) else None
+        offered = offer(self.rng, self.card_odds, room == "Elite")
+        if room == "Monster" and "PRAYER_WHEEL" in self.relics:
+            self.pending.append(("cards", offer(self.rng, self.card_odds)))
+        if room == "Elite" and "WHITE_STAR" in self.relics:
+            self.pending.append(("cards", offer(self.rng, self.card_odds, boss=True)))
+        if potion:
+            self.pending.append(("potion", potion))
+        return offered
 
     def buy(self, slot: int) -> None:
         s = self.shop
-        card, price = s.cards[slot], s.prices[slot]
+        card, price = s.cards[slot], self.price(s.prices[slot])
         assert card in CARDS and self.gold >= price, (card, price, self.gold)
         self.gold -= price
         self.spent += price
-        self.deck.append(card)
+        self.add_card(card)
         s.cards[slot] = None
+        if "THE_COURIER" in self.relics:  # RestockAfterPurchase: same type, not on sale
+            s.cards[slot], s.prices[slot] = stock_card(self.rng, self.card_odds, SHOP_SLOTS[slot],
+                                                       [c for i, c in enumerate(s.cards) if i != slot and c])
 
     def remove(self, card: str) -> None:
         s = self.shop
-        assert not s.removal_used and self.gold >= s.removal_price and card in self.deck
-        self.gold -= s.removal_price
-        self.spent += s.removal_price
+        price = self.price(s.removal_price)
+        assert not s.removal_used and self.gold >= price and card in self.deck
+        self.gold -= price
+        self.spent += price
         self.deck.remove(card)
         self.removals += 1
         s.removal_used = True
@@ -319,26 +410,47 @@ class Run:
 
     def buy_potion(self, k: int) -> None:
         s = self.shop
-        pid, price = s.potions[k], s.potion_prices[k]
+        pid, price = s.potions[k], self.price(s.potion_prices[k])
         assert pid in POTIONS and self.gold >= price and None in self.potions, (pid, price, self.gold, self.potions)
         self.gold -= price
         self.spent += price
         self.potions[self.potions.index(None)] = pid
         s.potions[k] = None
+        if "THE_COURIER" in self.relics:
+            s.potions[k] = roll_potions(self.rng)[0]
+            s.potion_prices[k] = potion_price(self.rng, s.potions[k])
 
     def obtain(self, relic: str, source: str) -> None:
-        """ponytail: stub, no effects yet."""
         self.relics.add(relic)
         self.relic_log.append((relic, source))
+        if relic == "STRAWBERRY":
+            self.gain_max_hp(7)
+        elif relic == "PEAR":
+            self.gain_max_hp(10)
+        elif relic == "MANGO":
+            self.gain_max_hp(14)
+        elif relic == "LEES_WAFFLE":
+            self.gain_max_hp(7)
+            self.heal(self.max_hp)
+        elif relic == "OLD_COIN":
+            self.gain_gold(300)
+        elif relic == "POTION_BELT":
+            self.potions += [None] * 2
+        elif relic == "ORRERY":
+            self.pending += [("cards", offer(self.rng, self.card_odds)) for _ in range(5)]
+        elif relic == "CAULDRON":
+            self.pending += [("potion", roll_potions(self.rng)[0]) for _ in range(5)]
 
     def buy_relic(self, k: int) -> None:
         s = self.shop
-        relic, price = s.relics[k], s.relic_prices[k]
+        relic, price = s.relics[k], self.price(s.relic_prices[k])  # before obtain: Membership Card doesn't discount itself
         assert relic in RELICS and self.gold >= price, (relic, price, self.gold)
         self.gold -= price
         self.spent += price
-        self.obtain(relic, "shop")
         s.relics[k] = None
+        if "THE_COURIER" in self.relics:
+            s.relics[k], s.relic_prices[k] = stock_relic(self.rng, self.bags, roll_relic_rarity(self.rng))
+        self.obtain(relic, "shop")
 
     def drink(self, slot: int) -> None:
         """Blood Potion between fights (PotionUsage.AnyTime): 20% of max HP, truncated."""

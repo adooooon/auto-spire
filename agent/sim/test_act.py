@@ -145,7 +145,8 @@ assert run.potion_odds.value == v and run.potion_drop is None
 drops = 0
 for _ in range(400):
     run.win("Monster")
-    drops += run.potion_drop is not None
+    drops += any(k == "potion" for k, _ in run.pending)
+    run.pending.clear()
 assert 0.4 < drops / 400 < 0.6, drops  # converges on PotionRewardOdds.targetOdds = 0.5
 run.potions, run.hp, run.max_hp = ["BLOOD_POTION", None, None], 40, 83
 run.drink(0)
@@ -217,5 +218,160 @@ for seed in range(20):
     r, m = random.Random(seed), Run(random.Random(seed))
     mp = generate_map(r)
     assert m.normals == encounter_queue(r)[0] and [n.type for n in m.map.nodes()] == [n.type for n in mp.nodes()]
+
+
+
+# ---- Task 6: run-level relics, price, reward queue ----
+from .act import offer, REWARD_POOLS
+from .map import Node
+
+
+def fresh(*relics, seed=1):
+    r = Run(random.Random(seed))
+    r.relics |= set(relics)
+    return r
+
+
+def room_of(run, kind):
+    n = next(n for n in run.map.nodes() if n.type == kind)
+    run.node = n.parents[0]
+    return n
+
+
+# obtain effects
+for rel, mx in (("STRAWBERRY", 87), ("PEAR", 90), ("MANGO", 94)):
+    r = fresh(); r.obtain(rel, "treasure")
+    assert (r.hp, r.max_hp) == (mx, mx), rel
+r = fresh(); r.hp = 40; r.obtain("LEES_WAFFLE", "shop")
+assert (r.hp, r.max_hp) == (87, 87)
+r = fresh(); r.gold = 99; r.obtain("OLD_COIN", "elite"); assert r.gold == 399
+r = fresh("DRAGON_FRUIT"); r.obtain("OLD_COIN", "elite"); assert r.max_hp == 81 and r.hp == 81  # chain through gain_gold
+r = fresh(); r.potions[1] = "FIRE_POTION"; r.obtain("POTION_BELT", "shop")
+assert r.potions == [None, "FIRE_POTION", None, None, None]
+r = fresh(); r.obtain("ORRERY", "shop")
+assert [k for k, _ in r.pending] == ["cards"] * 5 and all(len(o) == 3 for _, o in r.pending)
+r = fresh(); r.obtain("CAULDRON", "shop")
+assert [k for k, _ in r.pending] == ["potion"] * 5
+
+# win: Aubergine every fight room, Prayer Wheel Monster only, White Star Elite only
+for room in ("Monster", "Elite", "Boss"):
+    a, b = fresh(seed=4), fresh("AMETHYST_AUBERGINE", seed=4)
+    a.gold = b.gold = 0
+    a.win(room); b.win(room)
+    assert b.gold == a.gold + 15, room
+r = fresh("PRAYER_WHEEL"); r.win("Monster"); assert sum(k == "cards" for k, _ in r.pending) == 1
+for room in ("Elite", "Boss"):
+    r = fresh("PRAYER_WHEEL"); r.win(room); assert not any(k == "cards" for k, _ in r.pending), room
+r = fresh("WHITE_STAR"); r.win("Monster"); assert not any(k == "cards" for k, _ in r.pending)
+r = fresh("WHITE_STAR"); r.win("Boss"); assert r.pending == []
+r = fresh("WHITE_STAR"); r.win("Elite")
+extra = [o for k, o in r.pending if k == "cards"]
+assert len(extra) == 1 and all(c in REWARD_POOLS["RARE"] for c in extra[0]) and r.card_odds.offset == -0.05
+r = fresh("WHITE_STAR"); r.card_odds.offset = 0.2
+offer(random.Random(0), r.card_odds, boss=True); assert r.card_odds.offset == -0.05
+# White Beast Statue: potion every fight, odds still fall 0.1
+r = fresh("WHITE_BEAST_STATUE")
+for _ in range(20):
+    r.win("Monster")
+assert sum(k == "potion" for k, _ in r.pending) == 20 and abs(r.potion_odds.value - (0.4 - 2.0)) < 1e-9
+o = PotionOdds(); assert o.roll(Fixed(0.99), force=True) and abs(o.value - 0.3) < 1e-9
+
+# gold
+r = fresh("BOWLER_HAT"); r.gold = 0; r.gain_gold(15); assert r.gold == 18
+r = fresh("BOWLER_HAT"); r.gold = 0; r.gain_gold(10); assert r.gold == 12
+r = fresh("DRAGON_FRUIT"); r.gain_gold(5); r.gain_gold(5); assert (r.hp, r.max_hp) == (82, 82)
+r = fresh("BOWLER_HAT", "LUCKY_FYSH"); r.gold = 0; r.add_card("BASH"); assert r.gold == 18
+r = fresh("LUCKY_FYSH"); r.gold = 0; r.add_card("BASH"); assert r.gold == 15 and r.deck[-1] == "BASH"
+r.shop = Shop(["BASH"] + [None] * 4, [10] * 5, 75); r.gold = 100; r.buy(0); assert r.gold == 100 - 10 + 15
+r = fresh("BOOK_OF_FIVE_RINGS"); r.hp = 30
+for i in range(4):
+    r.add_card("BASH")
+assert r.hp == 30 and r.relic_state["book_of_five_rings"] == 4
+r.add_card("BASH"); assert r.hp == 50
+r = fresh("REGAL_PILLOW", seed=2); r.hp = 70; rest = room_of(r, "RestSite"); r.enter(rest); assert r.hp == 80  # capped
+r = fresh(); r.relic_state.clear(); r.add_card("BASH"); assert r.relic_state == {}  # not held: no state
+
+# enter
+def visit(run, kind):
+    """Enter a fresh `kind` node (a childless one, so the no-shop rule stays out of the way)."""
+    n = Node(0, 2, kind)
+    run.node = Node(0, 1, "Monster")
+    run.node.children.append(n)
+    return run.enter(n)
+
+
+r = fresh("JUZU_BRACELET")
+seen = Counter()
+for i in range(500):
+    r.unknown_odds, r.last_room = UnknownOdds(), None
+    seen[visit(r, "Unknown")] += 1
+assert "Monster" not in seen and len(seen) > 1, seen
+assert any(visit(fresh(seed=i), "Unknown") == "Monster" for i in range(500))  # without Juzu it can roll Monster
+r = fresh("PLANISPHERE")
+for i in range(40):  # whatever the room rolls, +5
+    r.hp = 50; r.last_room = None
+    room = visit(r, "Unknown")
+    assert r.hp == 55 or (room == "Treasure" and r.hp > 55), (room, r.hp)  # a treasure relic may add max HP
+r.hp = 50; visit(r, "Monster"); assert r.hp == 50
+r = fresh("MEAL_TICKET"); r.hp = 50; r.enter(room_of(r, "Shop")); assert r.hp == 65
+r = fresh("MEAL_TICKET"); r.hp = 50; r.enter(room_of(r, "RestSite")); assert r.hp == 50 + 24
+r = fresh("REGAL_PILLOW"); r.hp = 1; r.enter(room_of(r, "RestSite")); assert r.hp == 1 + 24 + 15
+r = fresh("ETERNAL_FEATHER"); r.hp = 1; r.enter(room_of(r, "RestSite")); assert r.hp == 1 + 6 + 24  # deck of 10
+r = fresh("ETERNAL_FEATHER"); r.hp = 1; r.enter(room_of(r, "Shop")); assert r.hp == 1
+r = fresh("TINY_MAILBOX"); r.enter(room_of(r, "RestSite")); assert [k for k, _ in r.pending] == ["potion"] * 2
+r = fresh("TINY_MAILBOX"); r.enter(room_of(r, "Shop")); assert r.pending == []
+r = fresh("VENERABLE_TEA_SET"); r.enter(room_of(r, "RestSite")); assert r.relic_state["tea_set"] == 1
+r = fresh("VENERABLE_TEA_SET"); r.enter(room_of(r, "Shop")); assert "tea_set" not in r.relic_state
+r = fresh("DRAGON_FRUIT"); r.gold = 0; r.enter(room_of(r, "Treasure"))
+assert r.max_hp == 81 and 42 <= r.gold <= 52
+
+# price
+r = fresh()
+assert r.price(200) == 200
+r.relics = {"MEMBERSHIP_CARD"}; assert r.price(200) == 100 and r.price(175) == 87
+r.relics = {"THE_COURIER"}; assert r.price(200) == 160 and r.price(175) == 140
+r.relics = {"MEMBERSHIP_CARD", "THE_COURIER"}; assert r.price(200) == 80 and r.price(175) == 70 and r.price(99) == 39
+r = fresh(); r.shop = Shop([None] * 5, [0] * 5, 75, relics=["MEMBERSHIP_CARD", "ANCHOR", None], relic_prices=[200, 175, 0])
+r.gold = 300; r.buy_relic(0); assert r.gold == 100 and r.spent == 200  # full price for itself
+assert r.price(r.shop.relic_prices[1]) == 87
+# every charge goes through price
+r = fresh("MEMBERSHIP_CARD"); r.deck.append("STRIKE_IRONCLAD")
+r.shop = Shop(["BASH"] + [None] * 4, [100] * 5, 75, potions=["FIRE_POTION", None, None], potion_prices=[50, 0, 0])
+r.gold = 1000
+r.buy(0); r.buy_potion(0); r.remove("STRIKE_IRONCLAD")
+assert r.gold == 1000 - 50 - 25 - 37 and r.spent == 112
+
+# Courier restock
+r = fresh("THE_COURIER", seed=6)
+r.shop = make_shop(random.Random(6), r.card_odds, 0, r.bags); r.gold = 9999
+old = list(r.shop.cards)
+k = next(i for i, c in enumerate(old) if c in CARDS)
+r.buy(k)
+assert r.shop.cards[k] is not None and card_type(r.shop.cards[k]) == SHOP_SLOTS[k]
+assert r.shop.cards[k] not in old[:k] + old[k + 1:] and r.shop.prices[k] >= 47 and len(set(r.shop.cards)) == 5
+r.buy_potion(1)
+assert r.shop.potions[1] is not None
+r.buy_relic(0)
+assert r.shop.relics[0] is not None and r.shop.relic_prices[0] > 0 and r.shop.relics[0] not in r.relics
+r.remove("STRIKE_IRONCLAD"); assert r.shop.removal_used
+r = fresh(seed=6)  # no Courier: slots stay empty
+r.shop = make_shop(random.Random(6), r.card_odds, 0, r.bags); r.gold = 9999
+k = next(i for i, c in enumerate(r.shop.cards) if c in CARDS)
+r.buy(k); r.buy_potion(1); r.buy_relic(0)
+assert r.shop.cards[k] is None and r.shop.potions[1] is None and r.shop.relics[0] is None
+
+# reward queue
+r = fresh()
+assert r.next_reward() is None
+r.pending = [("cards", ["A"]), ("potion", "NOT_A_REAL_POTION"), ("potion", "FIRE_POTION"), ("cards", ["B"])]
+assert r.next_reward() == ("cards", ["A"]) and r.potion_drop is None
+assert r.next_reward() == ("potion", "FIRE_POTION") and r.potion_drop == "FIRE_POTION"
+r.potion_drop = None
+assert r.next_reward() == ("cards", ["B"]) and r.next_reward() is None
+r.pending = [("potion", "NOT_A_REAL_POTION")]
+assert r.next_reward() is None and r.potion_drop is None and r.pending == []
+r = fresh(); r.win("Boss"); assert r.pending == []
+for seed in range(50):
+    r = fresh(seed=seed); r.win("Monster"); assert len(r.pending) <= 1 and all(k == "potion" for k, _ in r.pending)
 
 print("act self-check ok")
