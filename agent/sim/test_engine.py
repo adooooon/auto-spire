@@ -476,4 +476,34 @@ s.exec("fight NIBBITS_WEAK")
 assert s.combat()["potionSlots"] == ["FIRE_POTION", None, None]
 nib = s.combat()["enemies"][0]["combatId"]
 assert s.exec(f"potion 0 {nib}")["ok"] and s.combat()["potionSlots"] == [None, None, None]
+# Golden pin: relic-less fights must never change (relic code must not leak into them).
+import hashlib  # noqa: E402
+
+from .cards import COMMONS, RARES, UNCOMMONS, starter_deck  # noqa: E402
+from .potions import POTION_IDS  # noqa: E402
+
+
+def _no_relic_trace() -> str:
+    """Every fight state on seeded random play. Any change here means relic code leaked into relic-less fights."""
+    h = hashlib.sha256()
+    for seed in range(66):
+        rng = random.Random(seed)
+        c = SimCombat(rng=random.Random(seed))
+        c.potions = [rng.choice(POTION_IDS), None, rng.choice(POTION_IDS)]
+        c.fight(ENCOUNTERS[seed % len(ENCOUNTERS)], starter_deck() + rng.choices(COMMONS + UNCOMMONS + RARES, k=6))
+        for _ in range(300):
+            if not c.in_combat:
+                break
+            playable = [i for i, x in enumerate(c.hand) if c.can_play(x)]
+            try:
+                if rng.random() < 0.05:
+                    c.use_potion(rng.randrange(3), 1)  # an empty slot or dead target just returns an error
+                c.play_card(rng.choice(playable)) if playable and rng.random() < 0.8 else c.end_turn()
+            except SimLoopError:
+                break
+            h.update(repr((c.player_hp, c.player_block, c.energy, c.hand, c.round, [e.hp for e in c.enemies])).encode())
+    return h.hexdigest()
+
+
+assert _no_relic_trace() == "b373260410a683476a810544b86c91c65e3e3b3061ff8fe2763770e7baa63d93"
 print("sim self-check ok")
