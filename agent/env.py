@@ -28,7 +28,8 @@ from gymnasium import spaces
 from client import AutoSpireClient
 from sim.cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
 from sim.engine import MONSTERS, SimLoopError
-from sim.potions import POTION_IDS, POTION_SLOTS, POTIONS
+from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
+from sim.relics import RELIC_IDS
 
 MAX_HAND = 10
 MAX_ENEMIES = 4  # SLIMES_NORMAL
@@ -68,9 +69,14 @@ ENEMY_FEATURES = 13 + len(MONSTER_IDS)
 # Appended after everything above so grown models keep their old inputs (grow.py):
 # potion slots (one-hot per slot), Dexterity, this-turn Dexterity.
 POTION_FEATURES = POTION_SLOTS * len(POTION_IDS) + 2
-OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES
+RELIC_COUNTERS = (("pen_nib", 10), ("nunchaku", 10), ("tuning_fork", 10), ("happy_flower", 3), ("pendulum", 3),
+                  ("joss_paper", 5), ("lizard_used", 1), ("tea_set", 1))
+RELIC_POWERS = (("ThornsPower", 5), ("VigorPower", 10), ("SelfFormingClayPower", 5))
+# Appended after POTION_FEATURES: slots 3-4 one-hot, relic multi-hot, counters, this turn's Attacks and Skills mod 3, powers.
+RELIC_FEATURES = (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS) + len(RELIC_IDS) + len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS)
+OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES + RELIC_FEATURES
 POTION_ACTION = END_TURN + 1  # potion actions come after END_TURN, so old action indices are unchanged
-N_ACTIONS = POTION_ACTION + POTION_SLOTS * MAX_ENEMIES
+N_ACTIONS = POTION_ACTION + MAX_POTION_SLOTS * MAX_ENEMIES  # slots 3-4 extend the potion block, which is last
 # ponytail: a fight-level reward can't see that a potion saved now helps a later fight, so each use
 # costs this much HP's worth (x hp_weight). Tune from run.py's potions_used / held_at_death numbers.
 POTION_COST_HP = 5
@@ -98,9 +104,17 @@ def random_deck(rng: np.random.Generator) -> list[str]:
     return deck + [str(rng.choice(pools[rng.choice(3, p=[0.6, 0.3, 0.1])])) for _ in range(rng.integers(0, 9))]
 
 
-def random_potions(rng: np.random.Generator) -> list[str]:
-    """0-3 random modeled potions, for random-deck training (so every potion gets practice)."""
-    return [str(rng.choice(POTION_IDS)) for _ in range(rng.integers(0, POTION_SLOTS + 1))]
+def random_potions(rng: np.random.Generator, slots: int = POTION_SLOTS) -> list[str]:
+    """0-slots random modeled potions, for random-deck training (so every potion gets practice)."""
+    return [str(rng.choice(POTION_IDS)) for _ in range(rng.integers(0, slots + 1))]
+
+
+def random_relics(rng: np.random.Generator) -> tuple[set[str], dict[str, int]]:
+    """0-6 random modeled relics with random carried counters, so timing relics get practice at every count."""
+    held = {str(r) for r in rng.choice(RELIC_IDS, rng.integers(0, 7), replace=False)}
+    owner = {"lizard_used": "LIZARD_TAIL", "tea_set": "VENERABLE_TEA_SET"}
+    return held, {k: int(rng.integers(0, n + 1)) if n > 1 else int(rng.integers(0, 2)) for k, n in RELIC_COUNTERS
+                  if owner.get(k, k.upper()) in held}
 
 def _power(entity: dict, name: str) -> int:
     return next((p["amount"] for p in entity.get("powers") or [] if p["name"] == name), 0)
@@ -169,7 +183,15 @@ def _encode(combat: dict) -> np.ndarray:
     potion_feats = [float(i < len(slots) and slots[i] == pid) for i in range(POTION_SLOTS) for pid in POTION_IDS]
     potion_feats += [_power(player, "DexterityPower") / 5.0, _power(player, "SpeedPotionPower") / 5.0]
 
-    return np.array(hand_feats + player_feats + pile_feats + enemy_feats + potion_feats, dtype=np.float32)
+    held = set(combat.get("simRelics") or [])
+    ctr = combat.get("relicCounters") or {}
+    relic_feats = [float(i < len(slots) and slots[i] == pid) for i in range(POTION_SLOTS, MAX_POTION_SLOTS) for pid in POTION_IDS]
+    relic_feats += [float(r in held) for r in RELIC_IDS]
+    relic_feats += [ctr.get(k, 0) / n for k, n in RELIC_COUNTERS]
+    relic_feats += [ctr.get("attacks", 0) % 3 / 3.0, ctr.get("skills", 0) % 3 / 3.0]
+    relic_feats += [_power(player, name) / n for name, n in RELIC_POWERS]
+
+    return np.array(hand_feats + player_feats + pile_feats + enemy_feats + potion_feats + relic_feats, dtype=np.float32)
 
 
 def _ready(combat: dict) -> bool:
@@ -204,6 +226,8 @@ class STS2CombatEnv(gym.Env):
         self.heal = heal
         self.hp_weight = hp_weight
         self.deck: list[str] | None = None  # fixed deck (e.g. a run's), overriding random/starter
+        self.relics: set[str] | None = None  # fixed starting relics (a run's), overriding random
+        self.relic_state: dict | None = None
         self.potions: list[str | None] | None = None  # fixed starting potions (a run's), overriding random
         self.action_space = spaces.Discrete(N_ACTIONS)
         self.observation_space = spaces.Box(low=-1.0, high=10.0, shape=(OBS_DIM,), dtype=np.float32)
@@ -232,10 +256,16 @@ class STS2CombatEnv(gym.Env):
                     self.client.exec("heal 999")
                 # The deck persists across fights in a live run, so set it every episode.
                 self.client.set_deck(self.deck or (random_deck(self.np_random) if self.random_decks else starter_deck()))
+                set_relics = getattr(self.client, "set_relics", None)  # sim only; before set_potions (Potion Belt)
+                relics, state = (self.relics, self.relic_state) if self.relics is not None else (
+                    random_relics(self.np_random) if self.random_decks else (set(), {}))
+                if set_relics:
+                    set_relics(relics, state if state is not None else {})
                 set_potions = getattr(self.client, "set_potions", None)  # sim only
                 if set_potions:
                     set_potions(self.potions if self.potions is not None else
-                                random_potions(self.np_random) if self.random_decks else [])
+                                random_potions(self.np_random, MAX_POTION_SLOTS if "POTION_BELT" in relics else POTION_SLOTS)
+                                if self.random_decks else [])
                 self.client.exec(f"fight {self.np_random.choice(self.encounters)}", settle=0.5)
                 if self.heal:
                     self.client.exec("heal 999")
@@ -358,7 +388,7 @@ class STS2CombatEnv(gym.Env):
             if c["canPlay"] and c["id"] in CARDS:
                 slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
                 mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True
-        for i, pid in enumerate((self._combat.get("potionSlots") or [])[:POTION_SLOTS]):
+        for i, pid in enumerate((self._combat.get("potionSlots") or [])[:MAX_POTION_SLOTS]):
             if pid in POTIONS:  # unmodeled potions and live play (no potionSlots) stay masked
                 slots = n_enemies if POTIONS[pid] == "enemy" else 1
                 mask[POTION_ACTION + i * MAX_ENEMIES:POTION_ACTION + i * MAX_ENEMIES + slots] = True

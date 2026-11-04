@@ -1492,6 +1492,8 @@ class SimCombat:
             "round": self.round,
             "cardsPlayedThisTurn": self.cards_played,
             "currentSide": "Player" if self.is_play_phase else "Enemy",
+            "simRelics": sorted(self.relics),  # sim only; player.relics is filled by the live game
+            "relicCounters": {**self.relic_state, "attacks": self.attacks_done, "skills": self.skills_done},
             "potionSlots": list(self.potions),  # sim only: the live /combat has no slots, so env masks potions off
               "player": {
                 "hp": self.player_hp,

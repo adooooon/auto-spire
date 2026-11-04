@@ -1,5 +1,8 @@
 """Checks for the combat env's loop guard and the run policy env. Run from agent/: python test_run_env.py"""
 from env import END_TURN, STS2CombatEnv
+from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
+from sim.relics import RELIC_IDS
+assert COMBAT_OBS == 1530 and COMBAT_ACTIONS == 61
 from sim.engine import SimClient, SimLoopError
 
 # Review focus 1: a sim infinite loop ends the episode as aborted instead of hanging or raising.
@@ -17,6 +20,29 @@ _, reward, terminated, truncated, info = env.step(END_TURN)
 assert terminated and not truncated and info.get("aborted") and reward == -1.0, info
 
 import numpy as np
+
+# Relics: live /combat has no sim keys, so every appended feature is zero.
+env = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=0), heal=False, episodes_per_restart=10**9)
+env._episode_count = 1
+env.relics, env.relic_state, env.potions = {"VAJRA", "POTION_BELT"}, {"pen_nib": 3}, ["BLOCK_POTION"] * 5
+obs, _ = env.reset(seed=0)
+live = {k: v for k, v in env._combat.items() if k not in ("simRelics", "relicCounters", "potionSlots")}
+assert not _encode(live)[1396:].any()
+assert obs[1396:].any() and obs.max() <= 10
+assert env.action_masks()[POTION_ACTION + 4 * MAX_ENEMIES]
+env._combat = live
+assert not env.action_masks()[POTION_ACTION:].any()
+env.relics = {"VAJRA"}
+env._combat = None
+env.reset(seed=0)
+assert not env.action_masks()[POTION_ACTION + 4 * MAX_ENEMIES:].any()
+rng = np.random.default_rng(0)
+seen = set()
+for i in range(5000):
+    r, st = random_relics(rng)
+    assert len(r) <= 6 and r <= set(RELIC_IDS)
+    seen |= r
+assert seen == set(RELIC_IDS)
 
 from run_env import CARD_INDEX, N_ACTIONS, OBS_DIM, PICK, REMOVE, SHOP, SHOP_LEAVE, SHOP_REMOVE, RunPolicyEnv
 from sim.act import Shop
@@ -109,7 +135,7 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == END_TURN + 1 + 12 and COMBAT_OBS == 1358 + 38
+assert cenv.action_space.n == COMBAT_ACTIONS == END_TURN + 1 + 20 and COMBAT_OBS == 1530
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()
@@ -118,7 +144,7 @@ assert np.flatnonzero(cenv.action_masks()[POTION_ACTION:]).tolist() == [0, 1, 8]
 # Review focus 2: a potion that ends the fight is a win, minus the use cost.
 cenv.potions = ["EXPLOSIVE_AMPOULE", None, None]
 obs, _ = cenv.reset(seed=0)
-assert obs.shape == (COMBAT_OBS,) and obs[-38 + POTION_IDS.index("EXPLOSIVE_AMPOULE")] == 1
+assert obs.shape == (COMBAT_OBS,) and obs[1358 + POTION_IDS.index("EXPLOSIVE_AMPOULE")] == 1
 alive = [e for e in cenv.client._combat.enemies if e.is_alive]
 for e in alive:
     e.hp = 5
