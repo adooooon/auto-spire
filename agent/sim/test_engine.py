@@ -1008,4 +1008,103 @@ assert c.strength == 3
 c.end_turn()
 assert c.strength == 0
 
+# --- Task 2 fix round 1 ---
+def big(c, hp=500):
+    for e in c.enemies:
+        e.hp = e.max_hp = hp
+        e.block = 0
+    return c
+
+
+# UNCEASING_TOP: any play or potion (autoplay too) outside a card effect with an empty hand draws 1.
+c = rc("UNCEASING_TOP")
+c.hand, c.potions = [], ["BLOCK_POTION", None, None]
+c.use_potion(0)  # the hand was already empty and stays empty: the source still checks
+assert len(c.hand) == 1
+c = rc()
+c.hand, c.potions = [], ["BLOCK_POTION", None, None]
+c.use_potion(0)
+assert c.hand == []
+c = big(rc("UNCEASING_TOP"))  # Hellraiser: the drawn Strike autoplays, the hand is empty again, so it draws again
+c.pw["HellraiserPower"] = 1
+c.hand, c.draw_pile = [D], [D, S]
+c.play_card(0)
+assert c.hand == [D] and c.draw_pile == []
+c = big(rc("UNCEASING_TOP"))  # Havoc's nested autoplay doesn't check; Havoc's own end does
+c.hand, c.draw_pile, c.energy = ["HAVOC"], [D, D, S], 3
+c.play_card(0)
+assert c.hand == [D] and c.exhaust_pile == [S] and c.draw_pile == [D]
+base = rc("UNCEASING_TOP")  # Stampede plays the last Attack in AutoPostPlay: draws 1 (then 5 next turn)
+base.pw["StampedePower"], base.hand = 1, [S]
+n = len(base.draw_pile)
+base.end_turn()
+assert len(base.draw_pile) == n - 6
+c = rc()
+c.pw["StampedePower"], c.hand = 1, [S]
+c.end_turn()
+assert len(c.draw_pile) == n - 5
+# INTIMIDATING_HELMET: every play of a repeated card, and autoplays by their cost.
+c = hand(rc("INTIMIDATING_HELMET"), B)
+c.pw["OneTwoPunchPower"] = 1
+c.play_card(0, 1)
+assert c.player_block == 8
+c = big(rc("INTIMIDATING_HELMET"))
+c.hand, c.draw_pile, c.energy = ["HAVOC"], [B], 3
+c.play_card(0)
+assert c.player_block == 4 and c.exhaust_pile == [B]
+# BURNING_STICKS: Fiend Fire / Stoke exhaust a snapshot of the hand, not the copy.
+c = big(rc("BURNING_STICKS", "JOSS_PAPER", "CHARONS_ASHES"))
+c.hand, c.energy = ["FIEND_FIRE", D, D], 3
+hp = c.enemies[0].hp
+c.play_card(0, 1)
+assert c.hand == [D] and c.exhaust_pile.count(D) == 2
+assert c.relic_state["joss_paper"] == 3 and hp - c.enemies[0].hp == 14 + 3 * 3  # 2 hits of 7, 3 Charon hits
+c = rc("BURNING_STICKS")
+c.hand, c.energy = ["STOKE", D, D], 3
+c.play_card(0)
+assert c.exhaust_pile.count(D) == 2 and len(c.hand) == 3 and D in c.hand  # 2 generated + the Sticks copy
+# CHARONS_ASHES: a lethal exhaust only makes the fight "ending"; the rest of the card and the counters still run.
+st = {"joss_paper": 4}
+c = hand(rc("CHARONS_ASHES", "JOSS_PAPER", state=st), D)
+c.enemies[0].hp = 3
+c._exhaust(D)
+assert c.in_combat and st["joss_paper"] == 0 and len(c.hand) == 1  # wrapped, no draw
+c._check_win()
+assert c.won
+st = {"tuning_fork": 3}
+c = hand(rc("CHARONS_ASHES", "TUNING_FORK", state=st), "TRUE_GRIT", D, energy=3)
+c.enemies[0].hp = 3
+c.play_card(0)
+assert c.won and st["tuning_fork"] == 4
+st = {"joss_paper": 0}
+c = hand(rc("CHARONS_ASHES", "JOSS_PAPER", state=st), "SECOND_WIND", D, D, D, energy=3)
+c.enemies[0].hp = 3
+c.play_card(0)
+assert c.won and st["joss_paper"] == 1  # the later exhausts no-op
+# THRASH eats a Strike: Strike Dummy counts for the eaten card, Pen Nib doubles it when Thrash is the 9th Attack.
+c = big(rc("STRIKE_DUMMY"))
+c.hand, c.energy = ["THRASH", S], 3
+c.play_card(0, 1)
+assert c.bonus_damage["THRASH"] == 9
+c = big(rc("PEN_NIB", state={"pen_nib": 8}))
+c.hand, c.energy = ["THRASH", S], 3
+c.play_card(0, 1)
+assert c.bonus_damage["THRASH"] == 12
+c = big(rc("PEN_NIB", state={"pen_nib": 7}))
+c.hand, c.energy = ["THRASH", S], 3
+c.play_card(0, 1)
+assert c.bonus_damage["THRASH"] == 6
+# Nested autoplays keep the outer card: Pen Nib on Fiend Fire, Vambrace on Second Wind.
+c = big(rc("PEN_NIB", state={"pen_nib": 9}))
+c.pw.update(DarkEmbracePower=1, HellraiserPower=1)
+c.hand, c.draw_pile, c.energy = ["FIEND_FIRE", D], [D, S], 3
+hp = c.enemies[0].hp
+c.play_card(0, 1)
+assert hp - c.enemies[0].hp == 14 + 6  # Fiend Fire doubled, the Strike it drew not
+c = big(rc("VAMBRACE"))
+c.pw.update(DarkEmbracePower=1, HellraiserPower=1)
+c.hand, c.draw_pile, c.energy = ["SECOND_WIND", D, D], [S, S], 3
+c.play_card(0)
+assert c.player_block == 20
+
 print("sim self-check ok")

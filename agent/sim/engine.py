@@ -452,7 +452,10 @@ class SimCombat:
     # ponytail: per card id, not per copy (Rampage/Thrash grow per instance; two copies share here).
     bonus_damage: dict[str, int] = field(default_factory=dict)
     shuffles: int = 0  # discard -> draw reshuffles (sim.validate: draws after one are random)
-    _play_id: int = 0
+    _play_id: int = 0  # the card play being resolved; restored after a nested autoplay
+    _play_seq: int = 0  # last id handed out, so nested plays never reuse one
+    _effect_depth: int = 0  # CombatManager's card/potion effect depth (Unceasing Top's empty-hand check)
+    _post_play: bool = False  # AutoPostPlay: Stampede / Howl autoplays at the end of the turn
     _rupture: int | None = None  # Strength owed for HP lost to the card being played (RupturePower)
     _ethereal_exhausts: int = 0  # Dark Embrace draws for these after the hand flush
 
@@ -545,15 +548,8 @@ class SimCombat:
         if card_id in self.free_cards:
             self.free_cards.remove(card_id)
         self.hand.pop(hand_index)
-        if "INTIMIDATING_HELMET" in self.relics and spent >= 2:  # BeforeCardPlayed
-            self._gain_block(4)
-            self._check_win()  # Juggernaut
-        if self.in_combat:
-            self._play(card_id, target, x)
-            self._check_win()
-        # AfterHandEmptied. ponytail: checked after the play, not as the last card leaves the hand.
-        if self.in_combat and not self.hand and "UNCEASING_TOP" in self.relics:
-            self._draw(1)
+        self._play(card_id, target, x, energy_value=spent)
+        self._check_win()
         return {"ok": True, "played": card.title, "index": hand_index}
 
     def use_potion(self, slot: int, target_id: int | None = None) -> dict:
@@ -570,6 +566,7 @@ class SimCombat:
             if target is None or not target.is_alive:
                 return {"error": "invalid_target", "targetId": target_id}
         self.potions[slot] = None
+        self._effect_depth += 1
         if pid == "BLOCK_POTION":
             self._gain_block(12)
         elif pid == "DEXTERITY_POTION":
@@ -597,6 +594,7 @@ class SimCombat:
             self._debuff(target, "weak", 3, card=False)
         elif pid == "BLOOD_POTION":
             self.heal(self.player_max_hp * 20 // 100)  # 20% of max HP, truncated
+        self._effect_depth -= 1
         # AfterPotionUsed. ponytail: relic order assumed Reptile Trinket, then Belt Buckle.
         # ponytail: no mid-fight potion gain yet, so "applied" is implied by holding one at the start.
         if "REPTILE_TRINKET" in self.relics and self.in_combat:
@@ -605,6 +603,7 @@ class SimCombat:
         if "BELT_BUCKLE" in self.relics and not any(self.potions):
             self.dexterity += 2
         self._check_win()
+        self._check_empty_hand()  # after AfterPotionUsed
         return {"ok": True, "used": pid, "slot": slot}
 
     def _check_win(self) -> None:
@@ -612,7 +611,8 @@ class SimCombat:
         if self.in_combat and not any(e.is_alive and not (e.defn.illusion or e.defn.minion) for e in self.enemies):
             self._end_combat(won=True)
 
-    def _play(self, card_id: str, target: _Enemy | None, x: int = 0, force_exhaust: bool = False) -> None:
+    def _play(self, card_id: str, target: _Enemy | None, x: int = 0, force_exhaust: bool = False,
+              energy_value: int | None = None) -> None:
         """CardModel.OnPlayWrapper: the card is "in play" (in no pile) until its result pile."""
         card = CARDS[card_id]
         attack = card.type == "Attack"
@@ -621,8 +621,15 @@ class SimCombat:
             plays = 2
             self._decrement("OneTwoPunchPower")
         for _ in range(plays):
-            self._play_id += 1
-            # BeforeCardPlayed
+            self._play_seq += 1
+            mine = self._play_id = self._play_seq
+            # BeforeCardPlayed. Intimidating Helmet reads the card's energy value (an autoplay spends 0 but costs its cost).
+            if "INTIMIDATING_HELMET" in self.relics and \
+                    (x if card.x_cost else self.cost(card_id) if energy_value is None else energy_value) >= 2:
+                self._gain_block(4)
+                self._check_win()  # Juggernaut
+                if not self.in_combat:
+                    return
             if attack:
                 self._decrement("FreeAttackPower")
                 self.attack_plays += 1
@@ -631,7 +638,12 @@ class SimCombat:
                     if not self.relic_state["pen_nib"]:
                         self.rt["pen_play"] = self._play_id
             outer, self._rupture = self._rupture, 0
-            self._resolve(card_id, target, x)
+            self._effect_depth += 1
+            try:
+                self._resolve(card_id, target, x)
+            finally:
+                self._effect_depth -= 1
+            self._play_id = mine
             owed, self._rupture = self._rupture, outer
             if not self.in_combat:
                 return
@@ -654,12 +666,19 @@ class SimCombat:
             self._check_win()
             if not self.in_combat:
                 return
-        if card.type == "Power":
-            return  # PileType.None: removed from combat
-        if card.exhaust or force_exhaust:
-            self._exhaust(card_id)
-        else:
-            self.discard_pile.append(card_id)
+        if card.type != "Power":  # Powers: PileType.None, removed from combat
+            if card.exhaust or force_exhaust:
+                self._exhaust(card_id)
+            else:
+                self.discard_pile.append(card_id)
+        self._check_empty_hand()
+
+    def _check_empty_hand(self) -> None:
+        """CombatManager.CheckForEmptyHand -> Unceasing Top: after a card play or potion (autoplays too) that isn't
+        nested in another effect, if the hand is empty (not "just became"), in the Play or AutoPostPlay phase."""
+        if "UNCEASING_TOP" in self.relics and self.in_combat and not self._effect_depth and not self.hand \
+                and (self.is_play_phase or self._post_play):
+            self._draw(1)
 
     def _after_card_relics(self, card) -> None:
         """AfterCardPlayed relics (the counters in attacks_done etc. are already bumped).
@@ -723,7 +742,9 @@ class SimCombat:
                 self.discard_pile.append(card_id)
             return
         target = self.rng.choice(hittable) if c.target_type == "AnyEnemy" else None
+        outer = self._play_id
         self._play(card_id, target, self.energy, force_exhaust)
+        self._play_id = outer  # Pen Nib / Vambrace / Lamp keep the outer card
 
     def _resolve(self, card_id: str, target: _Enemy | None, x: int) -> None:
         """A card's OnPlay: the generic fields in the order documented in cards.py, or _special."""
@@ -808,7 +829,11 @@ class SimCombat:
                     e = CARDS[eaten]
                     base = 6 + 3 * len(self.exhaust_pile) if eaten == "ASHEN_STRIKE" else \
                         e.damage + self.bonus_damage.get(eaten, 0)
-                    gain = player_attack_damage(base + self.strength, False, self.shrunk, self.weak > 0)
+                    # Hook.ModifyDamage with the eaten card as source: Strike Dummy, and Pen Nib if it's the 9th Attack.
+                    base += 3 if "STRIKE_DUMMY" in self.relics and e.strike else 0
+                    gain = player_attack_damage(base + self.strength, False, self.shrunk, self.weak > 0,
+                                                mult=2 if "PEN_NIB" in self.relics and
+                                                self.relic_state.get("pen_nib") == 9 else 1)
                     self.bonus_damage[cid] = self.bonus_damage.get(cid, 0) + gain
                     self._exhaust(eaten)
         elif cid == "SPITE":
@@ -821,8 +846,9 @@ class SimCombat:
                 self.heal(3)
         elif cid == "FIEND_FIRE":
             n = len(self.hand)
-            while self.hand:
-                self._exhaust(self.hand.pop(0))
+            for c in list(self.hand):  # a snapshot: cards added meanwhile (Burning Sticks) stay
+                self.hand.remove(c)
+                self._exhaust(c)
             self._hit(card, target, 7, n)
         elif cid == "MANGLE":
             self._hit(card, target, 15)
@@ -864,8 +890,9 @@ class SimCombat:
             self.hand = ["GIANT_ROCK" if CARDS[c].type == "Attack" else c for c in self.hand]
         elif cid == "STOKE":
             n = len(self.hand)
-            while self.hand:
-                self._exhaust(self.hand.pop(0))
+            for c in list(self.hand):
+                self.hand.remove(c)
+                self._exhaust(c)
             for _ in range(n):  # CardFactory.GetForCombat: uniform, repeats allowed
                 self._add_to_hand(self.rng.choice(GENERATED))
         else:
@@ -997,7 +1024,13 @@ class SimCombat:
         """A generated card: to hand, or the discard pile if the hand is full (CardPileCmd)."""
         (self.hand if len(self.hand) < MAX_HAND_SIZE else self.discard_pile).append(card_id)
 
+    def _ending(self) -> bool:
+        """CombatManager.IsOverOrEnding: no primary enemy left (the sim ends the fight at the next _check_win)."""
+        return not self.in_combat or not any(e.is_alive and not (e.defn.illusion or e.defn.minion) for e in self.enemies)
+
     def _exhaust(self, card_id: str, ethereal: bool = False) -> None:
+        if self._ending():  # CardCmd.Exhaust no-ops once the fight is ending
+            return
         self.exhaust_pile.append(card_id)
         self.exhausted_this_turn = True
         if self.pw.get("FeelNoPainPower"):
@@ -1011,22 +1044,24 @@ class SimCombat:
             self._gain_energy(2)
         # ponytail: relic order assumed Charon's Ashes, Joss Paper, Burning Sticks.
         R = self.relics
-        if "CHARONS_ASHES" in R:
-            self._damage_all(3)
+        if "CHARONS_ASHES" in R:  # a lethal hit only makes the fight "ending": the rest of the card still runs
+            for e in self._hittable():
+                self._damage_enemy(e, 3)
         if "JOSS_PAPER" in R:
             if ethereal:
                 self.rt["joss_eth"] = self.rt.get("joss_eth", 0) + 1  # counted at turn end
             else:
                 self.relic_state["joss_paper"] = self.relic_state.get("joss_paper", 0) + 1
                 self._joss_draw()
-        if "BURNING_STICKS" in R and not self.rt.get("sticks") and CARDS[card_id].type == "Skill" and self.in_combat:
+        if "BURNING_STICKS" in R and not self.rt.get("sticks") and CARDS[card_id].type == "Skill" and not self._ending():
             self.rt["sticks"] = 1
             self._add_to_hand(card_id)
 
     def _joss_draw(self) -> None:
         n = self.relic_state.get("joss_paper", 0)
-        if n >= 5 and self.in_combat:
-            self._draw(n // 5)
+        if n >= 5:
+            if not self._ending():
+                self._draw(n // 5)
             self.relic_state["joss_paper"] = n % 5
 
     # --- damage ----------------------------------------------------------------------------------
@@ -1216,6 +1251,7 @@ class SimCombat:
         self.is_play_phase = False
         # AutoPostPlay phase: Stampede plays random Attacks from hand; Howl from Beyond plays itself
         # from the exhaust pile. ponytail: hook order assumed Stampede first.
+        self._post_play = True
         for _ in range(self.pw.get("StampedePower", 0)):
             attacks = [i for i, c in enumerate(self.hand) if CARDS[c].type == "Attack" and CARDS[c].cost >= 0]
             if attacks and self.in_combat:
@@ -1223,6 +1259,7 @@ class SimCombat:
         while "HOWL_FROM_BEYOND" in self.exhaust_pile and self.in_combat:
             self.exhaust_pile.remove("HOWL_FROM_BEYOND")
             self._autoplay("HOWL_FROM_BEYOND")
+        self._post_play = False
         if not self.in_combat:
             return {"ok": True}
         # BeforeTurnEnd: Plating (BeforeSideTurnEndEarly).
@@ -1232,7 +1269,8 @@ class SimCombat:
         for c in [c for c in self.hand if CARDS[c].ethereal]:
             self.hand.remove(c)
             self._exhaust(c, ethereal=True)
-        if not self.in_combat:  # Charon's Ashes
+        self._check_win()  # Charon's Ashes
+        if not self.in_combat:
             return {"ok": True}
         for c in self.hand:
             if CARDS[c].end_turn_damage:
