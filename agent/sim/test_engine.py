@@ -1107,4 +1107,17 @@ c.hand, c.draw_pile, c.energy = ["SECOND_WIND", D, D], [S, S], 3
 c.play_card(0)
 assert c.player_block == 20
 
+# A lethal Charon exhaust at an autoplayed card's result pile: later autoplays of untargeted cards no-op.
+for setup in ("stampede", "cascade"):
+    st = {"nunchaku": 0, "pen_nib": 0}
+    c = rc("CHARONS_ASHES", "NUNCHAKU", "PEN_NIB", state=st)
+    c.enemies[0].hp, c.enemies[0].block = 3, 10  # Molten Fist's 10 is absorbed, Charon's 3 kills
+    if setup == "stampede":  # then Howl from Beyond (AllEnemies) from the exhaust pile
+        c.pw["StampedePower"], c.hand, c.exhaust_pile = 1, ["MOLTEN_FIST"], ["HOWL_FROM_BEYOND"]
+        c.end_turn()
+    else:
+        c.hand, c.draw_pile, c.energy = ["CASCADE"], ["HOWL_FROM_BEYOND", "MOLTEN_FIST"], 2
+        c.play_card(0)
+    assert c.won and st == {"nunchaku": 1, "pen_nib": 1}, (setup, st)
+
 print("sim self-check ok")

@@ -730,6 +730,8 @@ class SimCombat:
 
     def _autoplay(self, card_id: str, force_exhaust: bool = False) -> None:
         """CardCmd.AutoPlay of a card already taken out of its pile: free, random target, X = energy."""
+        if self._ending():  # CardCmd.AutoPlay returns at once once the fight is over or ending
+            return
         c = CARDS[card_id]
         hittable = self._hittable()
         if (c.cost < 0 and not c.x_cost) or (self.ringing and self.cards_played) or \
