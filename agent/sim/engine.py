@@ -18,7 +18,7 @@ integer math, so 0.7 * 1.5 products don't hit float error). Damage from powers
 Strength/Vulnerable/Weak.
 
 Known simplifications:
-  - No relics (Burning Blood is applied by run.py between fights) or upgrades; 12 of the potions (sim/potions.py)
+  - Relics are modeled in sim/relics.py (Burning Blood is applied by run.py between fights); no upgrades; 12 of the potions (sim/potions.py)
     (Aggression's upgrade of the card it returns is skipped).
   - Enemy-targeted cards hit the enemy with the given combatId, or the first
     living enemy if none is given (the mod's auto-target,
@@ -465,6 +465,18 @@ class SimCombat:
 
     def heal(self, amount: int) -> None:
         self.player_hp = min(self.player_max_hp, self.player_hp + amount)
+        self._red_skull()
+
+    def _red_skull(self) -> None:
+        """RedSkull.AfterCurrentHpChanged: +3 Strength while hp <= half of max, taken back above it."""
+        if "RED_SKULL" in self.relics and self.in_combat:
+            low = 2 * self.player_hp <= self.player_max_hp
+            if low != bool(self.rt.get("skull")):
+                self.rt["skull"] = low
+                self._gain_strength(3 if low else -3)
+
+    def _is_ethereal(self, card_id: str) -> bool:
+        return CARDS[card_id].ethereal or ("GHOST_SEED" in self.relics and card_id in ("STRIKE_IRONCLAD", "DEFEND_IRONCLAD"))
 
     def fight(self, encounter: str, deck: list[str] | None = None) -> None:
         self.enemies = []
@@ -493,6 +505,8 @@ class SimCombat:
         elite, boss = encounter.endswith("_ELITE"), encounter.endswith("_BOSS")
         if "GORGET" in R:
             self._apply_power("PlatingPower", 4)
+        if "BRONZE_SCALES" in R:
+            self._apply_power("ThornsPower", 3)
         if "ODDLY_SMOOTH_STONE" in R:
             self.dexterity += 1
         if "VAJRA" in R:
@@ -505,6 +519,7 @@ class SimCombat:
             self.heal(25)
         if "BELT_BUCKLE" in R and not any(self.potions):
             self.dexterity += 2
+        self._red_skull()
         self._start_player_turn()
 
     # --- cards -----------------------------------------------------------------------------------
@@ -1104,14 +1119,41 @@ class SimCombat:
 
     def _lose_hp(self, amount: int, from_card: bool = False) -> None:
         """Unblocked HP loss: card self-damage (Unblockable), or the part of a hit block didn't stop."""
+        R = self.relics
+        if amount <= 0:
+            return
+        # ModifyHpLostAfterOsty. ponytail: relic order assumed Tungsten Rod, then Beating Remnant.
+        if "TUNGSTEN_ROD" in R:
+            amount -= 1
+        if "BEATING_REMNANT" in R:
+            amount = min(amount, 20 - self.rt.get("remnant", 0))
         if amount <= 0:
             return
         self.player_hp -= amount
         self.hp_loss_events += 1
         if self.player_hp <= 0:
             self.player_hp = 0
+            # Kill -> ShouldDieLate: Lizard Tail heals instead. AfterDamageReceived (relics, Rupture ...) is
+            # skipped for a lethal hit either way.
+            if "LIZARD_TAIL" in R and not self.relic_state.get("lizard_used"):
+                self.relic_state["lizard_used"] = 1
+                self.player_hp = max(1, self.player_max_hp * 50 // 100)
+                self.hp_lost_this_turn |= self.side == "Player"
+                self._red_skull()
+                return
             self._end_combat(won=False)
             return
+        self._red_skull()
+        # AfterDamageReceived. ponytail: the game runs powers (Rupture, Inferno) before relics; here the relics
+        # that don't care about the side go first, Demon Tongue (player's side only) last.
+        if "CENTENNIAL_PUZZLE" in R and not self.rt.get("puzzle"):
+            self.rt["puzzle"] = 1
+            if not self._ending():  # CardPileCmd.Draw no-ops once the fight is ending
+                self._draw(3)
+        if "SELF_FORMING_CLAY" in R:
+            self._apply_power("SelfFormingClayPower", 3)
+        if "BEATING_REMNANT" in R:
+            self.rt["remnant"] = self.rt.get("remnant", 0) + amount
         if self.side != "Player":
             return
         self.hp_lost_this_turn = True
@@ -1124,12 +1166,19 @@ class SimCombat:
             for e in self._hittable():
                 self._damage_enemy(e, self.pw["InfernoPower"])
             self._check_win()
+        if "DEMON_TONGUE" in R and self.in_combat and not self.rt.get("tongue"):
+            self.rt["tongue"] = 1
+            self.heal(amount)
 
     def _damage_player(self, dmg: int, dealer: _Enemy | None = None) -> None:
         """Blockable damage; dealer = a monster's attack (powered), which Flame Barrier answers."""
+        if dealer and self.pw.get("ThornsPower"):  # BeforeDamageReceived: before block; a kill doesn't stop the hit
+            self._damage_enemy(dealer, self.pw["ThornsPower"])
         absorbed = min(self.player_block, dmg)
         self.player_block -= absorbed
         self._lose_hp(dmg - absorbed)
+        if dealer and self.in_combat:
+            self._check_win()  # a Thorns kill ends the fight once the hit has landed
         if dealer and self.in_combat and self.pw.get("FlameBarrierPower") and dealer.is_alive:
             self._damage_enemy(dealer, self.pw["FlameBarrierPower"])
             self._check_win()
@@ -1145,6 +1194,8 @@ class SimCombat:
         self.in_combat = False
         self.is_play_phase = False
         self.won = won
+        if won and "MEAT_ON_THE_BONE" in self.relics and self.player_hp <= self.player_max_hp // 2:
+            self.heal(12)  # AfterCombatVictoryEarly
 
     # --- turns -----------------------------------------------------------------------------------
 
@@ -1152,6 +1203,8 @@ class SimCombat:
         """CombatManager.StartTurn + SetupPlayerTurn for the player side."""
         self.side = "Player"
         self.cards_last, self.cards_done = self.cards_done, 0  # Pocketwatch.BeforeSideTurnStart
+        self.rt.pop("remnant", None)  # Beating Remnant, Demon Tongue: BeforeSideTurnStart
+        self.rt.pop("tongue", None)
         self.exhausted_this_turn = self.hp_lost_this_turn = False
         self.attack_plays, self.block_plays, self.free_cards = 0, [], []
         self.attacks_done = self.skills_done = self.powers_done = 0
@@ -1167,7 +1220,9 @@ class SimCombat:
         # block-clear preventer before Sturdy Clamp.
         if self.round > 1 and not self.pw.get("BarricadePower"):
             self.player_block = min(self.player_block, 10) if "STURDY_CLAMP" in R else 0
-        # AfterBlockCleared (unconditional, so Barricade doesn't skip it)
+        # AfterBlockCleared (unconditional, so Barricade doesn't skip it); powers before relics
+        if self.pw.get("SelfFormingClayPower"):
+            self._gain_block(self.pw.pop("SelfFormingClayPower"))
         if "HORN_CLEAT" in R and self.round == 2:
             self._gain_block(14)
         if "CAPTAINS_WHEEL" in R and self.round == 3:
@@ -1264,11 +1319,29 @@ class SimCombat:
         self._post_play = False
         if not self.in_combat:
             return {"ok": True}
-        # BeforeTurnEnd: Plating (BeforeSideTurnEndEarly).
+        # BeforeTurnEnd: Orichalcum reads block first (BeforeSideTurnEndVeryEarly), then Plating (Early),
+        # then the BeforeSideTurnEnd relics.
+        R = self.relics
+        orichalcum = "ORICHALCUM" in R and self.player_block <= 0
         if self.pw.get("PlatingPower"):
             self._gain_block(self.pw["PlatingPower"])
+        # ponytail: relic order assumed Orichalcum, Cloak Clasp, Ripple Basin, Screaming Flagon, Stone Calendar.
+        if orichalcum:
+            self._gain_block(6)
+        if "CLOAK_CLASP" in R:
+            self._gain_block(len(self.hand))
+        if "RIPPLE_BASIN" in R and not self.attacks_done:
+            self._gain_block(4)
+        if "SCREAMING_FLAGON" in R and not self.hand:
+            self._damage_all(20)
+            if not self.in_combat:
+                return {"ok": True}
+        if "STONE_CALENDAR" in R and self.round == 7:
+            self._damage_all(52)
+            if not self.in_combat:
+                return {"ok": True}
         # DoTurnEnd: Ethereal cards exhaust, then turn-end-in-hand effects (Infection).
-        for c in [c for c in self.hand if CARDS[c].ethereal]:
+        for c in [c for c in self.hand if self._is_ethereal(c)]:
             self.hand.remove(c)
             self._exhaust(c, ethereal=True)
         self._check_win()  # Charon's Ashes
@@ -1279,8 +1352,9 @@ class SimCombat:
                 self._damage_player(CARDS[c].end_turn_damage)
                 if not self.in_combat:
                     return {"ok": True}
-        self.discard_pile += self.hand  # hand flush
-        self.hand = []
+        if not ("RINGING_TRIANGLE" in R and self.round == 1):  # ShouldFlush; otherwise the whole hand is kept
+            self.discard_pile += self.hand  # hand flush
+            self.hand = []
         self.ringing = False
         self.attacks_last = self.attacks_done  # AfterSideTurnEnd (Art of War)
         self.cards_played = 0  # SlowPower resets at the start of the enemy turn
@@ -1300,9 +1374,15 @@ class SimCombat:
         if self._ethereal_exhausts and self.pw.get("DarkEmbracePower"):
             self._draw(self.pw["DarkEmbracePower"] * self._ethereal_exhausts)
         self._ethereal_exhausts = 0
+        # ponytail: relic order assumed Joss Paper, then Parrying Shield (so a lethal Shield can't drop Joss's count).
         if "JOSS_PAPER" in self.relics:  # AfterSideTurnEnd: the Ethereal exhausts count now
             self.relic_state["joss_paper"] = self.relic_state.get("joss_paper", 0) + self.rt.pop("joss_eth", 0)
             self._joss_draw()
+        if "PARRYING_SHIELD" in R and self.player_block >= 10 and self._hittable():
+            self._damage_enemy(self.rng.choice(self._hittable()), 6)
+            self._check_win()
+            if not self.in_combat:
+                return {"ok": True}
         self._run_enemy_turn()
         return {"ok": True}
 

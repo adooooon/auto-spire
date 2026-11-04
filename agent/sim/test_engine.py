@@ -1120,4 +1120,246 @@ for setup in ("stampede", "cascade"):
         c.play_card(0)
     assert c.won and st == {"nunchaku": 1, "pen_nib": 1}, (setup, st)
 
+# --- Task 3: damage-taken, HP and end-of-turn relics ---
+def hurt(c, dmg, hits=1, dealer=True):
+    """An enemy-side hit (powered when dealer is set), then back to the player's side."""
+    side, c.side = c.side, "Enemy"
+    for _ in range(hits):
+        c._damage_player(dmg, dealer=c.enemies[0] if dealer else None)
+    c.side = side
+
+
+def eot(c):
+    """End the turn without running the enemy's, so end-of-turn block and damage can be read."""
+    c._run_enemy_turn = lambda: None
+    c.end_turn()
+    return c
+
+
+def win(c):
+    c.enemies[0].hp = 0
+    c._check_win()
+    return c
+
+
+# BRONZE_SCALES: Thorns 3 per powered monster hit (2-hit Claw = 6 back); Constrict, Infection, self-damage deal none.
+c = big(rc("BRONZE_SCALES", enc="MAWLER_NORMAL"))
+assert c.pw["ThornsPower"] == 3 and c.enemies[0].move == "CLAW_MOVE"
+c.end_turn()
+assert c.enemies[0].max_hp - c.enemies[0].hp == 6 and c.player_hp == 72
+c = big(rc("BRONZE_SCALES"))
+c.constrict, c.hand = 3, ["INFECTION"]
+eot(c)
+c._lose_hp(2, from_card=True)
+hurt(c, 3, dealer=False)
+assert c.enemies[0].hp == c.enemies[0].max_hp and c.player_hp == 80 - 3 - 3 - 2 - 3
+c.fight("NIBBITS_WEAK")  # the power is rebuilt, not stacked
+assert c.pw["ThornsPower"] == 3
+c = rc("BRONZE_SCALES")  # a Thorns kill doesn't stop the hit; the fight ends after it
+c.enemies[0].hp = 3
+hurt(c, 5)
+assert c.player_hp == 75 and c.won and not c.in_combat
+assert "ThornsPower" not in rc().pw
+
+# CENTENNIAL_PUZZLE: first unblocked HP loss each fight draws 3; a fully blocked hit and the second loss don't.
+c = rc("CENTENNIAL_PUZZLE")
+c.player_block = 5
+hurt(c, 5)
+assert len(c.hand) == 5
+c._lose_hp(1, from_card=True)
+assert len(c.hand) == 8
+hurt(c, 1)
+assert len(c.hand) == 8
+c.fight("NIBBITS_WEAK", ["DEFEND_IRONCLAD"] * 20)  # next fight, same relic
+c._lose_hp(1)
+assert len(c.hand) == 8
+
+# SELF_FORMING_CLAY: +3 per HP loss (any source); the next block clear grants it once.
+c = rc("SELF_FORMING_CLAY")
+c.player_block = 5
+hurt(c, 5)
+assert "SelfFormingClayPower" not in c.pw
+c._lose_hp(1, from_card=True)
+hurt(c, 1)
+assert c.pw["SelfFormingClayPower"] == 6
+c.player_block = 100
+c.end_turn()
+assert c.player_block == 6 and "SelfFormingClayPower" not in c.pw
+c.player_block = 100
+c.end_turn()
+assert c.player_block == 0
+
+# DEMON_TONGUE: the first HP loss each player-side turn is healed back; an enemy-side hit never is.
+c = rc("DEMON_TONGUE", hp=50)
+hand(c, "BLOODLETTING", "BLOODLETTING")
+c.play_card(0)
+assert c.player_hp == 50
+c.play_card(0)
+assert c.player_hp == 47
+c.player_block = 100
+c.end_turn()
+assert c.player_hp == 47
+hurt(c, 4)
+assert c.player_hp == 43  # enemy side: not healed, and it doesn't use up the turn's heal
+c._lose_hp(3, from_card=True)
+assert c.player_hp == 43  # new turn, first loss: net 0
+
+# TUNGSTEN_ROD: -1 per HP loss (floor 0); a 1-damage loss triggers nothing at all.
+c = rc("TUNGSTEN_ROD", "CENTENNIAL_PUZZLE", "SELF_FORMING_CLAY", "DEMON_TONGUE")
+n = c.hp_loss_events
+c.player_hp = 50
+c._lose_hp(1, from_card=True)
+hurt(c, 1, hits=8)
+assert c.player_hp == 50 and len(c.hand) == 5 and c.hp_loss_events == n and not c.hp_lost_this_turn
+assert not c.pw.get("SelfFormingClayPower")
+hurt(c, 6)
+assert c.player_hp == 45 and c.hp_loss_events == n + 1 and len(c.hand) == 8
+
+# BEATING_REMNANT: at most 20 HP lost per turn cycle (enemy hits count), resets at the next player turn.
+c = rc("BEATING_REMNANT")
+c._lose_hp(26, from_card=True)
+assert c.player_hp == 60
+c._lose_hp(5)
+assert c.player_hp == 60
+c.player_block = 100
+c.end_turn()
+c._lose_hp(15)
+hurt(c, 15)
+assert c.player_hp == 60 - 20
+c = rc("BEATING_REMNANT", "TUNGSTEN_ROD")  # Tungsten first: 26 -> 25 -> capped to 20
+c._lose_hp(26)
+assert c.player_hp == 60 and c.rt["remnant"] == 20
+
+# LIZARD_TAIL: a lethal hit once per run leaves max_hp // 2; AfterDamageReceived relics don't see it.
+st = {}
+c = rc("LIZARD_TAIL", "CENTENNIAL_PUZZLE", "SELF_FORMING_CLAY", "DEMON_TONGUE", state=st, hp=1)
+hurt(c, 5)
+assert c.player_hp == 40 and c.in_combat and st["lizard_used"] == 1
+assert len(c.hand) == 5 and not c.pw.get("SelfFormingClayPower")
+c.player_hp = 1
+hurt(c, 5)
+assert c.player_hp == 0 and not c.in_combat and c.won is False
+c = rc("LIZARD_TAIL", state=st, hp=1)  # the flag carries into the next fight
+c._lose_hp(3, from_card=True)
+assert not c.in_combat
+c = rc("LIZARD_TAIL", state={}, hp=3)  # card self-damage too; 81 max -> 40
+c.player_max_hp = 81
+c._lose_hp(3, from_card=True)
+assert c.player_hp == 40 and c.in_combat
+c = rc("LIZARD_TAIL", hp=5)  # only when lethal
+hurt(c, 3)
+assert c.player_hp == 2 and "lizard_used" not in c.relic_state
+
+# RED_SKULL: +3 Strength while 2 * hp <= max_hp; no stacking, follows heal and loss, rebuilt each fight.
+assert rc("RED_SKULL", hp=40).strength == 3 and rc("RED_SKULL", hp=41).strength == 0
+c = rc("RED_SKULL", hp=41)
+c.heal(1)
+assert c.strength == 0
+c._lose_hp(2)
+assert c.player_hp == 40 and c.strength == 3
+c._lose_hp(5)
+c.heal(1)
+assert c.player_hp == 36 and c.strength == 3
+c.heal(5)
+assert c.player_hp == 41 and c.strength == 0
+c._lose_hp(1)
+assert c.strength == 3
+c.fight("NIBBITS_WEAK")  # same hp, new fight: 3, not 6
+assert c.strength == 3
+c = rc("RED_SKULL", "LIZARD_TAIL", hp=1)
+c._lose_hp(1)
+assert c.strength == 3 and c.player_hp == 40
+c = rc("RED_SKULL", "RUINED_HELMET", hp=40)  # the first positive Strength gain is doubled (PowerCmd.Apply)
+assert c.strength == 6
+c.heal(5)
+assert c.strength == 3
+
+# MEAT_ON_THE_BONE: a win at hp <= max_hp // 2 heals 12; not above it, not on a loss.
+assert win(rc("MEAT_ON_THE_BONE", hp=40)).player_hp == 52
+assert win(rc("MEAT_ON_THE_BONE", hp=41)).player_hp == 41
+c = rc("MEAT_ON_THE_BONE", hp=40)
+c.player_max_hp = 81
+assert win(c).player_hp == 52
+assert win(rc("MEAT_ON_THE_BONE", hp=36)).player_hp == 48
+c = rc("MEAT_ON_THE_BONE", hp=40)
+c._end_combat(won=False)
+assert c.player_hp == 40
+assert win(rc(hp=40)).player_hp == 40
+
+# End of turn: Orichalcum reads block before Plating (Gorget); 6 only at 0 block.
+assert eot(rc("ORICHALCUM", "GORGET")).player_block == 10
+c = rc("ORICHALCUM", "GORGET")
+c.player_block = 1
+assert eot(c).player_block == 1 + 4
+# CLOAK_CLASP: 1 block per card in hand.
+assert eot(rc("CLOAK_CLASP")).player_block == 5
+c = rc("CLOAK_CLASP")
+c.hand = []
+assert eot(c).player_block == 0
+# RIPPLE_BASIN: 4 block if no Attack was played this turn, per turn.
+assert eot(rc("RIPPLE_BASIN")).player_block == 4
+c = hand(rc("RIPPLE_BASIN"), S, D)
+c.play_card(0, 1)
+assert eot(c).player_block == 0
+c = hand(rc("RIPPLE_BASIN"), D, S)
+c.play_card(1, 1)
+c.end_turn()
+assert c.round == 2 and eot(c).player_block == 4  # turn 2 had no Attack: the counter reset
+# SCREAMING_FLAGON: 20 to all enemies at end of turn with an empty hand only.
+c = big(rc("SCREAMING_FLAGON", enc="RUBY_RAIDERS_NORMAL"))
+assert len(c.enemies) > 1
+c.hand = []
+eot(c)
+assert all(e.hp == 480 for e in c.enemies)
+assert eot(big(rc("SCREAMING_FLAGON"))).enemies[0].hp == 500
+c = rc("SCREAMING_FLAGON")  # lethal: the enemy turn doesn't run
+c.hand = []
+c.enemies[0].hp = 20
+c.end_turn()
+assert c.won and c.player_hp == 80 and c.round == 1
+# STONE_CALENDAR: 52 to all enemies at the end of turn 7 only.
+for r, d in ((6, 0), (7, 52), (8, 0)):
+    c = big(rc("STONE_CALENDAR"))
+    c.round = r
+    assert eot(c).enemies[0].hp == 500 - d, r
+c = rc("STONE_CALENDAR", "SCREAMING_FLAGON", "CLOAK_CLASP", "PARRYING_SHIELD")
+c.round, c.hand = 7, []
+c.enemies[0].hp = 52
+c.end_turn()
+assert c.won and c.round == 7 and c.player_hp == 80
+# PARRYING_SHIELD: block >= 10 after the side's turn: 6 to a random enemy.
+for b, d in ((10, 6), (9, 0)):
+    c = big(rc("PARRYING_SHIELD"))
+    c.player_block = b
+    assert eot(c).enemies[0].hp == 500 - d, b
+c = big(rc("PARRYING_SHIELD"))  # ponytail order: Constrict (a power) hits first and drops 10 below the line
+c.player_block, c.constrict = 10, 3
+assert eot(c).enemies[0].hp == 500
+st = {}
+c = rc("PARRYING_SHIELD", "JOSS_PAPER", state=st)  # lethal: Joss's Ethereal count is already banked
+c.hand, c.player_block = ["DAZED", D], 10
+c.enemies[0].hp = 6
+c.end_turn()
+assert c.won and c.player_hp == 80 and st["joss_paper"] == 1
+# RINGING_TRIANGLE: turn 1's hand is held (draw tops it up to 10), later turns flush.
+c = rc("RINGING_TRIANGLE")
+old = list(c.hand) + [B, B]
+c.hand = list(old)
+c.end_turn()
+assert c.round == 2 and c.hand[:7] == old and len(c.hand) == 10
+c.end_turn()
+assert len(c.hand) == 5
+c = rc()
+c.end_turn()
+assert len(c.hand) == 5 and c.round == 2
+# GHOST_SEED: basic Strike / Defend are Ethereal; Bash and other Strike-tagged cards aren't.
+c = hand(rc("GHOST_SEED"), S, D, B, "POMMEL_STRIKE")
+eot(c)
+assert c.exhaust_pile == [S, D] and c.discard_pile == [B, "POMMEL_STRIKE"]
+c = hand(rc(), S, D)
+eot(c)
+assert c.exhaust_pile == [] and c._is_ethereal("DAZED") and not c._is_ethereal(S)
+c = rc("GHOST_SEED")
+assert c._is_ethereal(S) and c._is_ethereal(D) and not c._is_ethereal(B)
+
 print("sim self-check ok")
