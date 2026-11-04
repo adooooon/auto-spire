@@ -347,12 +347,13 @@ def pick_move(spec: str | Branch, log: list[str], rng: random.Random) -> str:
 
 
 def player_attack_damage(base: int, target_vulnerable: bool, shrunk: bool, weak: bool = False,
-                         slow_cards: int | None = None, cruelty: int = 0) -> int:
+                         slow_cards: int | None = None, cruelty: int = 0, mult: int = 1) -> int:
     """floor(base * (1.5 + cruelty%)[target Vulnerable] * 0.7[Shrink] * 0.75[Weak] * (1 + 0.1n)[target
     Slow, n cards played this turn]) in exact integer math (Hook.ModifyDamage multiplies decimals, then
-    truncates). Cruelty raises the Vulnerable multiplier by its amount in percent (CrueltyPower)."""
+    truncates). Cruelty raises the Vulnerable multiplier by its amount in percent (CrueltyPower).
+    mult: Pen Nib's x2, applied with the other multipliers."""
     num = base * ((150 + cruelty) if target_vulnerable else 100) * (7 if shrunk else 10) * (3 if weak else 4)
-    num *= 10 + (slow_cards or 0)
+    num *= (10 + (slow_cards or 0)) * mult
     return max(0, num // (100 * 10 * 4 * 10))
 
 
@@ -539,12 +540,20 @@ class SimCombat:
                 return {"error": "invalid_target", "targetId": target_id}
 
         x = self.energy if card.x_cost else 0
-        self.energy -= x if card.x_cost else self.cost(card_id)
+        spent = x if card.x_cost else self.cost(card_id)
+        self.energy -= spent
         if card_id in self.free_cards:
             self.free_cards.remove(card_id)
         self.hand.pop(hand_index)
-        self._play(card_id, target, x)
-        self._check_win()
+        if "INTIMIDATING_HELMET" in self.relics and spent >= 2:  # BeforeCardPlayed
+            self._gain_block(4)
+            self._check_win()  # Juggernaut
+        if self.in_combat:
+            self._play(card_id, target, x)
+            self._check_win()
+        # AfterHandEmptied. ponytail: checked after the play, not as the last card leaves the hand.
+        if self.in_combat and not self.hand and "UNCEASING_TOP" in self.relics:
+            self._draw(1)
         return {"ok": True, "played": card.title, "index": hand_index}
 
     def use_potion(self, slot: int, target_id: int | None = None) -> dict:
@@ -583,12 +592,16 @@ class SimCombat:
             for e in self._hittable():  # HittableEnemies, read once before the hits
                 self._damage_enemy(e, 10)
         elif pid == "VULNERABLE_POTION":
-            self._debuff(target, "vulnerable", 3)
+            self._debuff(target, "vulnerable", 3, card=False)
         elif pid == "WEAK_POTION":
-            self._debuff(target, "weak", 3)
+            self._debuff(target, "weak", 3, card=False)
         elif pid == "BLOOD_POTION":
             self.heal(self.player_max_hp * 20 // 100)  # 20% of max HP, truncated
-        # AfterPotionUsed. ponytail: no mid-fight potion gain yet, so "applied" is implied by holding one at the start.
+        # AfterPotionUsed. ponytail: relic order assumed Reptile Trinket, then Belt Buckle.
+        # ponytail: no mid-fight potion gain yet, so "applied" is implied by holding one at the start.
+        if "REPTILE_TRINKET" in self.relics and self.in_combat:
+            self._gain_strength(3)
+            self.temp_strength += 3  # ponytail: Ruined Helmet doubles the gain, not this (TemporaryStrengthPower takes back its own amount)
         if "BELT_BUCKLE" in self.relics and not any(self.potions):
             self.dexterity += 2
         self._check_win()
@@ -613,6 +626,10 @@ class SimCombat:
             if attack:
                 self._decrement("FreeAttackPower")
                 self.attack_plays += 1
+                if "PEN_NIB" in self.relics:  # counts every attack play; the 10th is doubled
+                    self.relic_state["pen_nib"] = (self.relic_state.get("pen_nib", 0) + 1) % 10
+                    if not self.relic_state["pen_nib"]:
+                        self.rt["pen_play"] = self._play_id
             outer, self._rupture = self._rupture, 0
             self._resolve(card_id, target, x)
             owed, self._rupture = self._rupture, outer
@@ -633,6 +650,7 @@ class SimCombat:
                 for _ in range(self.pw["JugglingPower"]):
                     self._add_to_hand(card_id)  # CreateClone
             self._gain_strength(owed)
+            self._after_card_relics(card)
             self._check_win()
             if not self.in_combat:
                 return
@@ -642,6 +660,54 @@ class SimCombat:
             self._exhaust(card_id)
         else:
             self.discard_pile.append(card_id)
+
+    def _after_card_relics(self, card) -> None:
+        """AfterCardPlayed relics (the counters in attacks_done etc. are already bumped).
+        ponytail: relic order assumed as written here, after the powers; the game's is the player's relic list order."""
+        R, st, rt = self.relics, self.relic_state, self.rt
+        if card.type == "Attack":
+            if "NUNCHAKU" in R:
+                st["nunchaku"] = (st.get("nunchaku", 0) + 1) % 10
+                if not st["nunchaku"]:
+                    self._gain_energy(1)
+            third = self.attacks_done % 3 == 0
+            if "ORNAMENTAL_FAN" in R and third:
+                self._gain_block(4)
+            if "KUNAI" in R and third:
+                self.dexterity += 1
+            if "SHURIKEN" in R and third:
+                self._gain_strength(1)
+            if "KUSARIGAMA" in R and third and self._hittable():
+                self._damage_enemy(self.rng.choice(self._hittable()), 6)
+                self._check_win()
+        elif card.type == "Skill":
+            if "TUNING_FORK" in R:
+                st["tuning_fork"] = st.get("tuning_fork", 0) + 1
+                if st["tuning_fork"] >= 10:
+                    self._gain_block(7)
+                    st["tuning_fork"] -= 10
+            if "LETTER_OPENER" in R and self.skills_done % 3 == 0:
+                self._damage_all(5)
+        elif card.type == "Power":
+            if "PERMAFROST" in R and not rt.get("permafrost"):
+                rt["permafrost"] = 1
+                self._gain_block(7)
+            if "GAME_PIECE" in R and self.in_combat:
+                self._draw(1)
+            if "MUMMIFIED_HAND" in R and self.hand:
+                # Source fallback order: costed (base and now) -> costed now -> costed base -> any.
+                tiers = [[c for c in self.hand if CARDS[c].cost > 0 and self.cost(c) > 0],
+                         [c for c in self.hand if self.cost(c) > 0],
+                         [c for c in self.hand if CARDS[c].cost > 0], self.hand]
+                pick = next(t for t in tiers if t)
+                self.free_cards.append(self.rng.choice(pick))  # ponytail: free per card id, not per copy
+        if not self.in_combat:
+            return
+        if "RAINBOW_RING" in R and rt.get("rainbow") != self.round and \
+                self.attacks_done and self.skills_done and self.powers_done:
+            rt["rainbow"] = self.round  # once a turn
+            self._gain_strength(1)
+            self.dexterity += 1
 
     def _autoplay(self, card_id: str, force_exhaust: bool = False) -> None:
         """CardCmd.AutoPlay of a card already taken out of its pile: free, random target, X = energy."""
@@ -662,6 +728,8 @@ class SimCombat:
     def _resolve(self, card_id: str, target: _Enemy | None, x: int) -> None:
         """A card's OnPlay: the generic fields in the order documented in cards.py, or _special."""
         card = CARDS[card_id]
+        if card.x_cost and "CHEMICAL_X" in self.relics:  # ModifyXValue
+            x += 2
         if card.special:
             self._special(card_id, target, x)
         else:
@@ -804,6 +872,10 @@ class SimCombat:
             raise KeyError(f"no special logic for {cid}")
 
     def _hit(self, card, target: _Enemy | None, base: int, hits: int = 1) -> None:
+        # Vigor and Strike Dummy add to the base like Strength; Pen Nib doubles the attack it fires on.
+        base += self.pw.get("VigorPower", 0) + (3 if "STRIKE_DUMMY" in self.relics and card.strike else 0)
+        mult = 2 if self.rt.get("pen_play") == self._play_id else 1
+        cruelty = self.pw.get("CrueltyPower", 0) + (25 if "PAPER_PHROG" in self.relics else 0)
         for _ in range(hits):
             if card.target_type == "AllEnemies":
                 targets = self._hittable()
@@ -814,9 +886,10 @@ class SimCombat:
             for t in targets:
                 self._damage_enemy(t, player_attack_damage(
                     base + self.strength, t.vulnerable > 0, self.shrunk, self.weak > 0,
-                    self.cards_played if t.defn.slow else None, self.pw.get("CrueltyPower", 0)))
+                    self.cards_played if t.defn.slow else None, cruelty, mult))
             if not self.in_combat:
                 return
+        self.pw.pop("VigorPower", None)  # AfterAttack: Vigor is spent by the attack
 
     def _apply_power(self, name: str, amount: int) -> None:
         if name == "StrengthPower":
@@ -837,8 +910,14 @@ class SimCombat:
     def _hittable(self) -> list[_Enemy]:
         return [e for e in self.enemies if e.is_alive]
 
-    def _debuff(self, e: _Enemy, name: str, amount: int) -> None:
-        """Vulnerable / Weak / Mangle on an enemy. ArtifactPower negates it and spends a charge."""
+    def _debuff(self, e: _Enemy, name: str, amount: int, card: bool = True) -> None:
+        """Vulnerable / Weak / Mangle on an enemy. ArtifactPower negates it and spends a charge.
+        card: applied by a card (Unsettling Lamp); potions and relics pass False."""
+        if card and "UNSETTLING_LAMP" in self.relics:
+            # The first card to apply a debuff doubles all its debuffs, even one Artifact then negates
+            # (BeforePowerAmountChanged runs first). ponytail: "that card" = the play id, so a nested autoplay isn't it.
+            if self.rt.setdefault("lamp", self._play_id) == self._play_id:
+                amount *= 2
         if e.artifact:
             e.artifact -= 1
             return
@@ -851,6 +930,9 @@ class SimCombat:
             self._draw(self.pw["ViciousPower"])
 
     def _gain_strength(self, amount: int) -> None:
+        if amount > 0 and "RUINED_HELMET" in self.relics and not self.rt.get("helmet"):
+            self.rt["helmet"] = 1  # TryModifyPowerAmountReceived: the first positive gain is doubled
+            amount *= 2
         self.strength += amount
 
     def _damage_all(self, amount: int) -> None:
@@ -872,6 +954,8 @@ class SimCombat:
             if self.pw.get("UnmovablePower") and \
                     len([p for p in self.block_plays if p != self._play_id]) < self.pw["UnmovablePower"]:
                 num *= 2
+            if "VAMBRACE" in self.relics and num > 0 and self.rt.setdefault("vambrace", self._play_id) == self._play_id:
+                num *= 2  # the first card to gain block doubles all of its block
             amount = num // den
             if self._play_id not in self.block_plays:
                 self.block_plays.append(self._play_id)
@@ -886,6 +970,8 @@ class SimCombat:
             self.draw_pile, self.discard_pile = self.discard_pile, []
             self.rng.shuffle(self.draw_pile)
             self.shuffles += 1
+            if "THE_ABACUS" in self.relics:
+                self._gain_block(6)
             if self.shuffles > MAX_SHUFFLES:
                 raise SimLoopError(f"{self.shuffles} reshuffles in one fight")
         return self.draw_pile.pop() if self.draw_pile else None
@@ -923,6 +1009,25 @@ class SimCombat:
                 self._draw(self.pw["DarkEmbracePower"])
         if card_id == "DRUM_OF_BATTLE":  # its AfterCardExhausted
             self._gain_energy(2)
+        # ponytail: relic order assumed Charon's Ashes, Joss Paper, Burning Sticks.
+        R = self.relics
+        if "CHARONS_ASHES" in R:
+            self._damage_all(3)
+        if "JOSS_PAPER" in R:
+            if ethereal:
+                self.rt["joss_eth"] = self.rt.get("joss_eth", 0) + 1  # counted at turn end
+            else:
+                self.relic_state["joss_paper"] = self.relic_state.get("joss_paper", 0) + 1
+                self._joss_draw()
+        if "BURNING_STICKS" in R and not self.rt.get("sticks") and CARDS[card_id].type == "Skill" and self.in_combat:
+            self.rt["sticks"] = 1
+            self._add_to_hand(card_id)
+
+    def _joss_draw(self) -> None:
+        n = self.relic_state.get("joss_paper", 0)
+        if n >= 5 and self.in_combat:
+            self._draw(n // 5)
+            self.relic_state["joss_paper"] = n % 5
 
     # --- damage ----------------------------------------------------------------------------------
 
@@ -933,7 +1038,11 @@ class SimCombat:
         if e.slippery and hp_loss >= 1:  # SlipperyPower: cap at 1, spend a stack
             hp_loss = 1
             e.slippery -= 1
+        was_alive = e.hp > 0
         e.hp = max(0, e.hp - hp_loss)
+        if was_alive and e.hp == 0 and "GREMLIN_HORN" in self.relics:  # AfterDeath: minions and illusions too
+            self._gain_energy(1)
+            self._draw(1)
         if e.is_alive:
             # PlowPower.AfterDamageReceived: at or below its Plow amount, lose all Strength (and its
             # temporary Strength powers) and get stunned (STUNNED, then BEAST_CRY_MOVE: phase 2).
@@ -1014,9 +1123,9 @@ class SimCombat:
         if self.round <= 1:
             for e in self._hittable():
                 if "BAG_OF_MARBLES" in R:
-                    self._debuff(e, "vulnerable", 1)
+                    self._debuff(e, "vulnerable", 1, card=False)
                 if "RED_MASK" in R:
-                    self._debuff(e, "weak", 1)
+                    self._debuff(e, "weak", 1, card=False)
         # Creature.AfterTurnStart: block clears, except on turn 1. ponytail: Barricade assumed to be the
         # block-clear preventer before Sturdy Clamp.
         if self.round > 1 and not self.pw.get("BarricadePower"):
@@ -1077,13 +1186,15 @@ class SimCombat:
         self._check_win()
         if not self.in_combat:
             return
-        # AfterSideTurnStart. ponytail: relic order assumed Lantern, Candelabra, Chandelier, Happy Flower, Bread, Brimstone.
+        # AfterSideTurnStart. ponytail: relic order assumed Lantern, Candelabra, Chandelier, Akabeko, Happy Flower, Bread, Brimstone.
         if "LANTERN" in R and self.round <= 1:
             self._gain_energy(1)
         if "CANDELABRA" in R and self.round == 2:
             self._gain_energy(2)
         if "CHANDELIER" in R and self.round == 3:
             self._gain_energy(3)
+        if "AKABEKO" in R and self.round <= 1:
+            self._apply_power("VigorPower", 8)
         if "HAPPY_FLOWER" in R:
             st["happy_flower"] = (st.get("happy_flower", 0) + 1) % 3
             if not st["happy_flower"]:
@@ -1121,6 +1232,8 @@ class SimCombat:
         for c in [c for c in self.hand if CARDS[c].ethereal]:
             self.hand.remove(c)
             self._exhaust(c, ethereal=True)
+        if not self.in_combat:  # Charon's Ashes
+            return {"ok": True}
         for c in self.hand:
             if CARDS[c].end_turn_damage:
                 self._damage_player(CARDS[c].end_turn_damage)
@@ -1147,6 +1260,9 @@ class SimCombat:
         if self._ethereal_exhausts and self.pw.get("DarkEmbracePower"):
             self._draw(self.pw["DarkEmbracePower"] * self._ethereal_exhausts)
         self._ethereal_exhausts = 0
+        if "JOSS_PAPER" in self.relics:  # AfterSideTurnEnd: the Ethereal exhausts count now
+            self.relic_state["joss_paper"] = self.relic_state.get("joss_paper", 0) + self.rt.pop("joss_eth", 0)
+            self._joss_draw()
         self._run_enemy_turn()
         return {"ok": True}
 

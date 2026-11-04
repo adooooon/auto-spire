@@ -747,4 +747,265 @@ assert st["happy_flower"] == 0
 s.exec("newrun")
 assert s._combat.relics == set()
 
+# --- Task 2: card-play, damage-dealt and exhaust relics ---
+S, D, B = "STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH"
+
+
+def hand(c, *cards, energy=10):
+    c.hand, c.energy = list(cards), energy
+    return c
+
+
+def dealt(c, i=0):
+    """Damage the enemy took from the next play_card(i)."""
+    e = c.enemies[0]
+    hp = e.hp + e.block
+    c.play_card(i, 1)
+    return hp - e.hp - e.block
+
+
+# PEN_NIB: the 10th Attack hits x2, the state wraps and carries into the next fight; a Skill doesn't count.
+st = {"pen_nib": 8}
+c = hand(rc("PEN_NIB", state=st), D, S, S, S)
+c.enemies[0].hp = c.enemies[0].max_hp = 500
+c.play_card(0)
+assert st["pen_nib"] == 8
+assert dealt(c) == 6 and st["pen_nib"] == 9
+assert dealt(c) == 12 and st["pen_nib"] == 0
+assert dealt(c) == 6 and st["pen_nib"] == 1
+c2 = rc("PEN_NIB", state=st)
+assert st["pen_nib"] == 1
+# STRIKE_DUMMY: +3 on Strikes only.
+c = hand(rc("STRIKE_DUMMY"), S, B)
+assert dealt(c) == 9 and dealt(c) == 8
+# PAPER_PHROG: Vulnerable x1.75.
+c = hand(rc("PAPER_PHROG"), S)
+c.enemies[0].vulnerable = 2
+assert dealt(c) == 10
+# AKABEKO: Vigor 8 on turn 1 only; every hit of one Attack, then spent.
+c = hand(rc("AKABEKO"), "TWIN_STRIKE", S, S)
+assert c.pw["VigorPower"] == 8
+e = c.enemies[0]
+e.hp = e.max_hp = 500
+assert dealt(c) == 26 and "VigorPower" not in c.pw and dealt(c) == 6
+c.end_turn()
+assert "VigorPower" not in c.pw
+# CHEMICAL_X: X + 2.
+c = hand(rc("CHEMICAL_X"), "WHIRLWIND", energy=3)
+e = c.enemies[0]
+e.hp = e.max_hp = 500
+hp = e.hp + e.block
+c.play_card(0)
+assert c.energy == 0 and hp - e.hp - e.block == 25
+# INTIMIDATING_HELMET: +4 block only when 2+ energy was spent.
+c = hand(rc("INTIMIDATING_HELMET"), B, S)
+c.play_card(0, 1)
+assert c.player_block == 4
+c.play_card(0, 1)
+assert c.player_block == 4
+# NUNCHAKU: every 10th Attack +1 energy; Skills don't count; carried.
+st = {"nunchaku": 8}
+c = hand(rc("NUNCHAKU", state=st), D, S, S, energy=3)
+c.play_card(0)
+assert st["nunchaku"] == 8
+c.play_card(0, 1)
+assert (c.energy, st["nunchaku"]) == (1, 9)
+c.play_card(0, 1)
+assert (c.energy, st["nunchaku"]) == (1, 0)  # 1 - 1 + 1
+assert rc("NUNCHAKU", state=st).relic_state["nunchaku"] == 0
+# TUNING_FORK: 10th Skill +7 block, -10; Attacks don't count.
+st = {"tuning_fork": 9}
+c = hand(rc("TUNING_FORK", state=st), S, D)
+c.play_card(0, 1)
+assert st["tuning_fork"] == 9
+c.play_card(0)
+assert c.player_block == 12 and st["tuning_fork"] == 0
+# KUSARIGAMA: each 3rd Attack 6 to a random enemy; Skills don't count; resets next turn.
+c = hand(rc("KUSARIGAMA"), S, S, D, S, S, S, S)
+c.enemies[0].hp = c.enemies[0].max_hp = 500
+assert [dealt(c) for _ in range(2)] == [6, 6]
+c.play_card(0)
+assert dealt(c) == 12 and dealt(c) == 6  # third Attack: 6 + 6, the fourth: 6
+c.end_turn()
+hand(c, S, S, S)
+assert [dealt(c) for _ in range(3)] == [6, 6, 12]
+# LETTER_OPENER: each 3rd Skill 5 to all; Attacks don't count.
+c = hand(rc("LETTER_OPENER", enc="SLIMES_WEAK"), D, S, D, D)
+for e in c.enemies:
+    e.hp = e.max_hp = 500
+    e.block = 0
+c.play_card(0), c.play_card(0, 1), c.play_card(0)  # Skill, Attack, Skill: two Skills so far
+assert [e.hp for e in c.enemies] == [494] + [500] * (len(c.enemies) - 1)
+hp = [e.hp for e in c.enemies]
+c.play_card(0)  # the third Skill
+assert [h - e.hp for h, e in zip(hp, c.enemies)] == [5] * len(hp)
+# ORNAMENTAL_FAN / KUNAI / SHURIKEN: each 3rd Attack.
+c = hand(rc("ORNAMENTAL_FAN", "KUNAI", "SHURIKEN"), S, S, D, S)
+c.enemies[0].hp = c.enemies[0].max_hp = 500
+c.play_card(0, 1), c.play_card(0, 1), c.play_card(0)
+assert (c.player_block, c.dexterity, c.strength) == (5, 0, 0)  # Defend 5, nothing yet
+c.play_card(0, 1)
+assert (c.player_block, c.dexterity, c.strength) == (9, 1, 1)
+c.end_turn()
+hand(c, S, S, S)
+for _ in range(2):
+    c.play_card(0, 1)
+assert (c.dexterity, c.strength) == (1, 1)  # the count reset
+c.play_card(0, 1)
+assert (c.dexterity, c.strength) == (2, 2)
+# RAINBOW_RING: once a turn, when Attack, Skill and Power have all been played.
+c = hand(rc("RAINBOW_RING"), S, D, "INFLAME", S, D, "INFLAME")
+c.enemies[0].hp = c.enemies[0].max_hp = 500
+c.play_card(0, 1), c.play_card(0)
+assert (c.strength, c.dexterity) == (0, 0)
+c.play_card(0)
+assert (c.strength, c.dexterity) == (3, 1)  # Inflame's 2 + the ring's 1
+c.play_card(0, 1), c.play_card(0), c.play_card(0)
+assert (c.strength, c.dexterity) == (5, 1)  # not again this turn
+c.end_turn()
+hand(c, S, D, "INFLAME")
+for _ in range(3):
+    c.play_card(0, 1) if c.hand[0] == S else c.play_card(0)
+assert (c.strength, c.dexterity) == (8, 2)
+# PERMAFROST: the first Power each fight.
+c = hand(rc("PERMAFROST"), "INFLAME", "INFLAME")
+c.play_card(0)
+assert c.player_block == 7
+c.play_card(0)
+assert c.player_block == 7
+c = hand(rc("PERMAFROST"), "INFLAME")
+c.play_card(0)
+assert c.player_block == 7
+# GAME_PIECE: a Power draws 1; a Skill doesn't.
+c = hand(rc("GAME_PIECE"), D, "INFLAME")
+c.play_card(0)
+assert len(c.hand) == 1
+c.play_card(0)
+assert len(c.hand) == 1
+# MUMMIFIED_HAND: a Power makes a costed hand card free; falls back to a free one.
+c = hand(rc("MUMMIFIED_HAND"), "INFLAME", B)
+c.play_card(0)
+assert c.cost(B) == 0
+c = hand(rc("MUMMIFIED_HAND"), "INFLAME", D)
+c.play_card(0)
+assert c.cost(D) == 0
+# VAMBRACE: the first card to gain block doubles all of it, after Frail; the second doesn't.
+c = hand(rc("VAMBRACE"), S, D, D)
+c.play_card(0, 1)
+c.play_card(0)
+assert c.player_block == 10
+c.play_card(0)
+assert c.player_block == 15
+c = hand(rc("VAMBRACE"), D)
+c.frail = 1
+c.play_card(0)
+assert c.player_block == 7  # 5 * 3/4 * 2 = 7.5
+c = hand(rc("VAMBRACE"), "EVIL_EYE", D)  # two block gains from one card both double
+c.exhausted_this_turn = True
+c.play_card(0)
+assert c.player_block == 32
+# UNSETTLING_LAMP: the first card applying a debuff doubles it; a potion doesn't trigger it.
+c = hand(rc("UNSETTLING_LAMP"), B, B, B)
+c.potions = ["WEAK_POTION", None, None]
+c.use_potion(0, 1)
+assert c.enemies[0].weak == 3
+c.enemies[0].hp = c.enemies[0].max_hp = 500
+c.play_card(0, 1)
+assert c.enemies[0].vulnerable == 4
+c.play_card(0, 1)
+assert c.enemies[0].vulnerable == 6
+# UNCEASING_TOP: an emptied hand after a play draws 1; not at end of turn.
+c = hand(rc("UNCEASING_TOP"), D, D)
+c.play_card(0)
+assert len(c.hand) == 1
+c.play_card(0)
+assert len(c.hand) == 1
+c.end_turn()
+assert len(c.hand) == 5
+# RUINED_HELMET: the first positive Strength gain each fight doubles; Vajra 1 -> 2, later gains don't.
+c = rc("RUINED_HELMET", "VAJRA")
+assert c.strength == 2
+c._gain_strength(3)
+assert c.strength == 5
+c._gain_strength(0)
+assert c.strength == 5
+c = rc("RUINED_HELMET")
+c._gain_strength(0)
+c._gain_strength(-2)
+assert c.strength == -2
+c._gain_strength(1)
+assert c.strength == 0  # -2 + 2
+assert rc("RUINED_HELMET").rt == {} and rc("RUINED_HELMET")._gain_strength(1) is None
+# ...and temporary Strength: the doubled gain stays, only the temp amount is taken back (TemporaryStrengthPower).
+c = rc("RUINED_HELMET")
+c.potions = ["FLEX_POTION", None, None]
+c.use_potion(0)
+assert c.strength == 10
+c.end_turn()
+assert c.strength == 5
+# GREMLIN_HORN: any enemy dying gives +1 energy and a card.
+c = hand(rc("GREMLIN_HORN"), S, D, D, energy=3)
+c.enemies[0].hp = 1
+c.play_card(0, 1)
+assert c.won
+c = rc("GREMLIN_HORN", enc="SLIMES_WEAK")
+c.hand, c.energy = [S, D, D], 3
+c.enemies[0].hp, c.enemies[0].block = 1, 0
+c.play_card(0, 1)
+assert c.energy == 3 and len(c.hand) == 3 and not c.won
+c.energy = 3
+c.enemies[1].hp = 100
+c.play_card(0)
+assert c.energy == 2
+# THE_ABACUS: a reshuffle gives 6 block.
+c = rc("THE_ABACUS")
+c.draw_pile, c.discard_pile = [], [D, D]
+c._draw(1)
+assert c.player_block == 6
+c._draw(1)
+assert c.player_block == 6
+# CHARONS_ASHES: every exhaust (Ethereal too) hits every enemy for 3.
+c = hand(rc("CHARONS_ASHES", enc="SLIMES_WEAK"), "TRUE_GRIT", D, energy=3)
+hp = [e.hp + e.block for e in c.enemies]
+c._exhaust(D)
+assert [h - e.hp - e.block for h, e in zip(hp, c.enemies)] == [3] * len(hp)
+c = rc("CHARONS_ASHES")
+c.hand = ["DAZED"]
+hp = c.enemies[0].hp + c.enemies[0].block
+c.end_turn()
+assert hp - c.enemies[0].hp - c.enemies[0].block == 3
+# JOSS_PAPER: the 5th exhaust draws; Ethereal ones count at turn end; carried.
+st = {"joss_paper": 4}
+c = hand(rc("JOSS_PAPER", state=st), D)
+c.draw_pile = [S] * 5
+c._exhaust(D)
+assert len(c.hand) == 2 and st["joss_paper"] == 0
+c._exhaust(D)
+assert len(c.hand) == 2 and st["joss_paper"] == 1
+assert rc("JOSS_PAPER", state=st).relic_state["joss_paper"] == 1
+st = {"joss_paper": 4}
+c = rc("JOSS_PAPER", state=st)
+c.hand = ["DAZED"]
+c.end_turn()
+assert st["joss_paper"] == 0 and len(c.hand) == 5 + 1  # the Ethereal Dazed counted, drew 1, then 5
+# BURNING_STICKS: the first exhausted Skill each fight leaves a copy in hand; Attacks don't.
+c = hand(rc("BURNING_STICKS"), D)
+c._exhaust(S)
+assert c.hand == [D]
+c._exhaust(D)
+assert c.hand == [D, D]
+c._exhaust(D)
+assert c.hand == [D, D]
+c = rc("BURNING_STICKS")
+c.hand = []
+c._exhaust(D)
+assert c.hand == [D]
+# REPTILE_TRINKET: a potion gives 3 Strength until the end of the turn.
+c = rc("REPTILE_TRINKET")
+c.potions = ["BLOCK_POTION", None, None]
+c.use_potion(0)
+assert c.strength == 3
+c.end_turn()
+assert c.strength == 0
+
 print("sim self-check ok")
