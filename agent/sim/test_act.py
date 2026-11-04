@@ -54,7 +54,7 @@ g = Counter(gaussian_int(random.Random(i), 7, 1, 6, 7) for i in range(2000))
 assert set(g) == {6, 7} and g[7] > g[6]  # Overgrowth rest count: N(7, 1) clamped to 6-7
 
 from .act import (BOSSES, ELITES, NORMALS, SHOP_SLOTS, STARTING_GOLD, TAGS, WEAK, RarityOdds, Run, UnknownOdds,
-                  card_type, encounter_queue, make_shop)
+                  card_type, encounter_queue, make_shop, RelicBags)
 from .cards import CARDS
 
 # Encounter queue: 3 weak then 12 regular, no back-to-back repeats or shared tags where avoidable.
@@ -78,7 +78,7 @@ assert u.roll(random.Random(1), {"Shop"}) in ("Monster", "Treasure", "Event") an
 
 # Shop: 5 slots of the right types, no duplicates, prices by rarity with jitter, one half-price.
 for seed in range(200):
-    s = make_shop(random.Random(seed), RarityOdds(), removals=2)
+    s = make_shop(random.Random(seed), RarityOdds(), 2, RelicBags(random.Random(seed)))
     assert len(s.cards) == len(SHOP_SLOTS) and len(set(s.cards)) == len(s.cards)
     assert [card_type(c) for c in s.cards] == list(SHOP_SLOTS)
     assert s.removal_price == 75 + 25 * 2 and not s.removal_used
@@ -97,7 +97,7 @@ rest = next(n for n in run.map.nodes() if n.type == "RestSite")
 run.node = rest.parents[0]
 run.enter(rest)
 assert run.hp == 40 + 27  # 30% of the new max
-run.shop = make_shop(random.Random(0), RarityOdds(), 0)
+run.shop = make_shop(random.Random(0), RarityOdds(), 0, RelicBags(random.Random(0)))
 run.gold = 500
 slot = next(i for i, c in enumerate(run.shop.cards) if c in CARDS)
 card, price = run.shop.cards[slot], run.shop.prices[slot]
@@ -133,7 +133,7 @@ assert all(len(set(roll_potions(random.Random(i), 3))) == 3 for i in range(200))
 # Shop potions: 3, priced by rarity x U(0.95, 1.05).
 band = {"COMMON": (48, 52), "UNCOMMON": (71, 79), "RARE": (95, 105)}
 for seed in range(200):
-    s = make_shop(random.Random(seed), RarityOdds(), 0)
+    s = make_shop(random.Random(seed), RarityOdds(), 0, RelicBags(random.Random(seed)))
     assert len(s.potions) == 3 and len(set(s.potions)) == 3
     assert all(band[potion_rarity(p)][0] <= c <= band[potion_rarity(p)][1] for p, c in zip(s.potions, s.potion_prices))
 # Run: no potion roll after the boss; drink Blood; buy into a free slot.
@@ -158,5 +158,56 @@ assert run.shop.potions[0] is None
 run.potion_drop = "BLOCK_POTION"
 run.take_potion(0)  # replaces (discards) Weak Potion
 assert run.potions[0] == "BLOCK_POTION" and run.potion_drop is None
+
+# Relics: rarity roll, bags, shop stock, buying, elite and treasure drops.
+from .act import roll_relic_rarity
+from .relics import NOT_IN_SHOPS, NOT_MODELED, RELIC_POOL, RELICS, relic_rarity
+
+rng = random.Random(0)
+rolls = Counter(roll_relic_rarity(rng) for _ in range(20000))
+assert abs(rolls["COMMON"] / 20000 - 0.50) < 0.02 and abs(rolls["UNCOMMON"] / 20000 - 0.33) < 0.02
+assert abs(rolls["RARE"] / 20000 - 0.17) < 0.02
+bags, seen = RelicBags(random.Random(1)), []
+for i in range(122):
+    seen.append(bags.pull("player" if i % 2 else "shared", "SHOP", from_back=i % 3 == 0))
+assert len(set(seen)) == 122 and set(seen) == {r for ids in RELIC_POOL.values() for r in ids}
+assert [relic_rarity(r) for r in seen[:26]] == ["SHOP"] * 26 and relic_rarity(seen[26]) == "COMMON"
+# A rarity falls through when nothing in it passes the filter, not only when empty.
+assert relic_rarity(RelicBags(random.Random(2)).pull("player", "SHOP", allowed=lambda r: relic_rarity(r) == "RARE")) == "RARE"
+band = {"COMMON": (149, 201), "UNCOMMON": (191, 259), "RARE": (234, 316), "SHOP": (170, 230)}
+stocked = set()
+for seed in range(200):
+    s = make_shop(random.Random(seed), RarityOdds(), 0, RelicBags(random.Random(seed + 1)))
+    assert not set(s.relics) & NOT_IN_SHOPS and len(set(s.relics)) == 3 and relic_rarity(s.relics[2]) == "SHOP"
+    assert all(band[relic_rarity(r)][0] <= p <= band[relic_rarity(r)][1] for r, p in zip(s.relics, s.relic_prices))
+    stocked |= set(s.relics)
+assert stocked & NOT_MODELED
+run = Run(random.Random(9))
+run.shop = Shop([None] * 5, [0] * 5, 75, relics=["ANCHOR", "WHETSTONE", None], relic_prices=[175, 175, 0])
+run.gold = 174
+for k, g in ((0, 174), (1, 500)):  # too poor; unmodeled
+    run.gold = g
+    try:
+        run.buy_relic(k)
+        raise SystemExit("illegal buy allowed")
+    except AssertionError:
+        pass
+run.gold = 200
+run.buy_relic(0)
+assert run.gold == 25 and run.spent == 175 and run.shop.relics[0] is None and run.relic_log == [("ANCHOR", "shop")]
+run = Run(random.Random(10))
+run.win("Monster"); run.win("Boss")
+assert run.relic_log == []
+run.win("Elite")
+assert len(run.relic_log) == 1 and run.relic_log[0][1] == "elite" and run.relics == {run.relic_log[0][0]}
+t = next(n for n in run.map.nodes() if n.type == "Treasure")
+run.node, run.gold = t.parents[0], 0
+run.enter(t)
+assert run.relic_log[-1][1] == "treasure" and len(run.relic_log) == 2 and 42 <= run.gold <= 52
+# The bags don't touch a seed's map or encounter queue.
+for seed in range(20):
+    r, m = random.Random(seed), Run(random.Random(seed))
+    mp = generate_map(r)
+    assert m.normals == encounter_queue(r)[0] and [n.type for n in m.map.nodes()] == [n.type for n in mp.nodes()]
 
 print("act self-check ok")

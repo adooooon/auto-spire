@@ -11,6 +11,7 @@ from .cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
 from .engine import ENCOUNTERS, PLAYER_MAX_HP
 from .map import ActMap, Node, generate_map
 from .potions import POTION_POOL, POTION_SLOTS, POTIONS
+from .relics import NOT_IN_SHOPS, RELIC_POOL, RELICS, relic_rarity
 
 STARTING_GOLD = 99  # Ironclad.StartingGold
 GOLD = {"Monster": (10, 20), "Elite": (35, 45), "Boss": (100, 100)}  # EncounterModel.Min/MaxGoldReward
@@ -23,6 +24,9 @@ NEXT_RARITY = {"COMMON": "UNCOMMON", "UNCOMMON": "RARE", "RARE": "COMMON"}  # Ge
 POTION_PRICE = {"COMMON": 50, "UNCOMMON": 75, "RARE": 100}  # MerchantPotionEntry.GetCost
 SHOP_POTIONS = 3  # MerchantInventory.PopulatePotionEntries
 BLOOD_POTION_HEAL = 0.2
+RELIC_PRICE = {"COMMON": 175, "UNCOMMON": 225, "RARE": 275, "SHOP": 200}  # RelicModel.MerchantCost
+SHOP_RELICS = 3  # MerchantInventory.PopulateRelicEntries: two rolled, then one SHOP
+FALL_THROUGH = ("SHOP", "COMMON", "UNCOMMON", "RARE")  # RelicGrabBag.GetAvailableDeque
 
 # The Ironclad pool by rarity. These open a card-choice prompt the sim can't play yet, so they're
 # offered and stocked like any card but can't be picked or bought.
@@ -157,19 +161,56 @@ class UnknownOdds:
         return room
 
 
+def roll_relic_rarity(rng: random.Random) -> str:
+    """RelicFactory.RollRarity."""
+    x = rng.random()
+    return "COMMON" if x < 0.5 else "UNCOMMON" if x < 0.83 else "RARE"
+
+
+class RelicBags:
+    """RelicGrabBag: a player bag and a shared (treasure) bag, each a shuffled list per rarity. A pulled
+    relic leaves both. A rarity with nothing that passes `allowed` falls through SHOP -> COMMON ->
+    UNCOMMON -> RARE. Unmodeled relics are in the bags too, so the odds stay honest."""
+
+    def __init__(self, rng: random.Random):
+        self.bags = {}
+        for bag in ("player", "shared"):
+            self.bags[bag] = {r: list(ids) for r, ids in RELIC_POOL.items()}
+            for ids in self.bags[bag].values():
+                rng.shuffle(ids)
+
+    def pull(self, bag: str, rarity: str, from_back: bool = False, allowed=None) -> str:
+        allowed = allowed or (lambda r: True)
+        for rar in FALL_THROUGH[FALL_THROUGH.index(rarity):]:
+            ids = [r for r in self.bags[bag][rar] if allowed(r)]
+            if ids:
+                break
+        else:
+            raise AssertionError("relic bag drained")  # Act 1 can't use up 122
+        relic = ids[-1 if from_back else 0]
+        for b in self.bags.values():
+            for l in b.values():
+                if relic in l:
+                    l.remove(relic)
+        return relic
+
+
 @dataclass
 class Shop:
     cards: list[str | None]  # one per SHOP_SLOTS entry; None once bought
     prices: list[int]
     removal_price: int
     removal_used: bool = False
+    relics: list[str | None] = field(default_factory=lambda: [None] * SHOP_RELICS)  # None once bought
+    relic_prices: list[int] = field(default_factory=lambda: [0] * SHOP_RELICS)
     potions: list[str | None] = field(default_factory=lambda: [None] * SHOP_POTIONS)  # None once bought
     potion_prices: list[int] = field(default_factory=lambda: [0] * SHOP_POTIONS)
 
 
-def make_shop(rng: random.Random, odds: RarityOdds, removals: int) -> Shop:
+def make_shop(rng: random.Random, odds: RarityOdds, removals: int, bags: RelicBags) -> Shop:
     """MerchantInventory.PopulateCharacterCardEntries: 5 typed slots, no repeats, one half price.
-    Colorless cards and relics aren't stocked yet."""
+    Then 3 relics (two rolled, one SHOP, pulled from the back of the player bag) and 3 potions.
+    Colorless cards aren't stocked yet."""
     sale = rng.randrange(len(SHOP_SLOTS))
     cards: list[str | None] = []
     prices: list[int] = []
@@ -183,9 +224,13 @@ def make_shop(rng: random.Random, odds: RarityOdds, removals: int) -> Shop:
         cards.append(rng.choice(pool))
         price = round(CARD_PRICE[rarity] * rng.uniform(0.95, 1.05))  # Mathf.RoundToInt: banker's, like round()
         prices.append(price // 2 if i == sale else price)
+    rarities = [roll_relic_rarity(rng), roll_relic_rarity(rng), "SHOP"]
+    relics = [bags.pull("player", r, True, lambda x: x not in NOT_IN_SHOPS) for r in rarities]
+    relic_prices = [round(RELIC_PRICE[relic_rarity(x)] * rng.uniform(0.85, 1.15)) for x in relics]
     potions = roll_potions(rng, SHOP_POTIONS)
     potion_prices = [round(POTION_PRICE[potion_rarity(p)] * rng.uniform(0.95, 1.05)) for p in potions]
-    return Shop(cards, prices, REMOVAL_PRICE + REMOVAL_STEP * removals, potions=potions, potion_prices=potion_prices)
+    return Shop(cards, prices, REMOVAL_PRICE + REMOVAL_STEP * removals, relics=relics, relic_prices=relic_prices,
+                potions=potions, potion_prices=potion_prices)
 
 
 class Run:
@@ -195,6 +240,10 @@ class Run:
         self.rng = rng
         self.map: ActMap = generate_map(rng)
         self.normals, self.elites, self.boss = encounter_queue(rng)
+        self.bags = RelicBags(rng)  # after the map and queue, so a seed keeps its map
+        self.relics: set[str] = set()
+        self.relic_state: dict[str, int] = {}  # carried into the fight env
+        self.relic_log: list[tuple[str, str]] = []  # (id, "elite" | "treasure" | "shop")
         self.node: Node = self.map.start
         self.hp = self.max_hp = PLAYER_MAX_HP
         self.gold, self.deck, self.removals, self.spent = STARTING_GOLD, starter_deck(), 0, 0
@@ -219,7 +268,10 @@ class Run:
         if room == "RestSite":
             self.hp = min(self.max_hp, self.hp + int(self.max_hp * REST_HEAL))
         elif room == "Shop":
-            self.shop = make_shop(self.rng, self.card_odds, self.removals)
+            self.shop = make_shop(self.rng, self.card_odds, self.removals, self.bags)
+        elif room == "Treasure":
+            self.obtain(self.bags.pull("shared", roll_relic_rarity(self.rng)), "treasure")
+            self.gold += self.rng.randint(42, 52)
         return room
 
     def encounter(self, room: str) -> str:
@@ -235,6 +287,8 @@ class Run:
         self.gold += self.rng.randint(*GOLD[room])
         if room == "Boss":
             return []
+        if room == "Elite":
+            self.obtain(self.bags.pull("player", roll_relic_rarity(self.rng)), "elite")
         self.potion_drop = roll_potions(self.rng)[0] if self.potion_odds.roll(self.rng, room == "Elite") else None
         return offer(self.rng, self.card_odds, room == "Elite")
 
@@ -269,6 +323,20 @@ class Run:
         self.spent += price
         self.potions[self.potions.index(None)] = pid
         s.potions[k] = None
+
+    def obtain(self, relic: str, source: str) -> None:
+        """ponytail: stub, no effects yet."""
+        self.relics.add(relic)
+        self.relic_log.append((relic, source))
+
+    def buy_relic(self, k: int) -> None:
+        s = self.shop
+        relic, price = s.relics[k], s.relic_prices[k]
+        assert relic in RELICS and self.gold >= price, (relic, price, self.gold)
+        self.gold -= price
+        self.spent += price
+        self.obtain(relic, "shop")
+        s.relics[k] = None
 
     def drink(self, slot: int) -> None:
         """Blood Potion between fights (PotionUsage.AnyTime): 20% of max HP, truncated."""
