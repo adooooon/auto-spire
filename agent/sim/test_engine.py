@@ -566,11 +566,26 @@ c.fight("NIBBITS_WEAK")
 assert c.dexterity == 0
 c.use_potion(0)
 assert c.dexterity == 2 and "error" in c.use_potion(0) and c.dexterity == 2
+# A no-potion fight, then a potion fight on the same combat: the second starts at 0 and gets +2 once.
+c = SimCombat(rng=random.Random(0))
+c.relics = {"BELT_BUCKLE"}
+c.fight("NIBBITS_WEAK")
+assert c.dexterity == 2
+c.potions = ["BLOCK_POTION", None, None]
+c.fight("NIBBITS_WEAK")
+assert c.dexterity == 0
+c.use_potion(0)
+assert c.dexterity == 2
 # BAG_OF_MARBLES: 1 Vulnerable on every enemy at turn 1; Artifact negates it.
 c = rc("BAG_OF_MARBLES", enc="SLIMES_WEAK")
 assert len(c.enemies) > 1 and all(e.vulnerable == 1 for e in c.enemies)
 c = rc("BAG_OF_MARBLES", enc="CUBEX_CONSTRUCT_NORMAL")
 assert c.enemies[0].vulnerable == 0 and c.enemies[0].artifact == 0
+c = rc("BAG_OF_MARBLES", "RED_MASK", enc="CUBEX_CONSTRUCT_NORMAL")  # Marbles first spends the Artifact charge
+assert (c.enemies[0].vulnerable, c.enemies[0].weak, c.enemies[0].artifact) == (0, 1, 0)
+c = rc("BAG_OF_MARBLES", "RED_MASK", enc="SLIMES_WEAK")
+c.end_turn()  # turn 1 only: the debuffs tick down in the enemy turn and are not re-applied
+assert all(e.vulnerable == 0 and e.weak == 0 for e in c.enemies)
 # RED_MASK: 1 Weak on every enemy at turn 1.
 c = rc("RED_MASK", enc="SLIMES_WEAK")
 assert all(e.weak == 1 for e in c.enemies)
@@ -592,6 +607,8 @@ c.end_turn()
 assert (c.strength, c.dexterity) == (0, 0)
 c.end_turn()
 assert (c.strength, c.dexterity) == (1, 1)
+c.end_turn()
+assert (c.strength, c.dexterity) == (1, 1)  # turn 4
 # STURDY_CLAMP: block is kept at the start of a turn, capped at 10.
 for have, kept in ((15, 10), (7, 7)):
     c = rc("STURDY_CLAMP")
@@ -608,9 +625,16 @@ c = rc("ICE_CREAM")
 c.play_card(0), c.play_card(0)
 c.end_turn()
 assert c.energy == 4
+c.energy = 2
+c.fight("NIBBITS_WEAK", ["DEFEND_IRONCLAD"] * 20)  # fight() never resets energy: no carry-over into turn 1
+assert c.energy == 3
 # BREAD: turn 1 loses 2 (to 1), then max energy is 4.
 assert energies(rc("BREAD"), 2) == [1, 4]
 # ART_OF_WAR: +1 on turn 2 only after a turn with no Attack.
+c = rc("ART_OF_WAR")
+c.play_card(0)  # a Skill is not an Attack
+c.end_turn()
+assert c.energy == 4
 c = rc("ART_OF_WAR")
 c.end_turn()
 assert c.energy == 4
@@ -683,20 +707,36 @@ assert c.player_hp == 50
 # VEXING_PUZZLEBOX: a free generated card on turn 1 (6 cards in hand).
 c = rc("VEXING_PUZZLEBOX")
 assert len(c.hand) == 6 and c.cost(c.hand[-1]) == 0
+c.end_turn()
+assert len(c.hand) == 5
 # BRIMSTONE: +2 Strength to the player, +1 to each enemy, every turn.
 c = rc("BRIMSTONE")
 assert (c.strength, c.enemies[0].strength) == (2, 1)
 c.end_turn()
 assert (c.strength, c.enemies[0].strength) == (4, 2)
 # Played-card counters (Art of War / Pocketwatch's inputs).
-c = rc(deck=["STRIKE_IRONCLAD", "DEFEND_IRONCLAD"] * 10)
-c.energy = 10
-for i in range(len(c.hand)):
+c = rc()
+c.hand, c.energy = ["STRIKE_IRONCLAD", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "INFLAME"], 10
+for _ in range(4):
     c.play_card(0, 1)
-assert c.attacks_done + c.skills_done + c.powers_done == c.cards_played == 5
-att = c.attacks_done
+assert (c.attacks_done, c.skills_done, c.powers_done, c.cards_played) == (2, 1, 1, 4)
 c.end_turn()
-assert (c.attacks_last, c.cards_last) == (att, 5) and c.attacks_done == 0
+assert (c.attacks_last, c.cards_last, c.attacks_done, c.skills_done, c.powers_done) == (2, 4, 0, 0, 0)
+# Pocketwatch counts a card autoplayed after the turn ends (Dark Embrace draws a Strike Hellraiser plays).
+c = rc("POCKETWATCH")
+c.pw.update(HellraiserPower=1, DarkEmbracePower=1)
+c.hand, c.energy = ["DEFEND_IRONCLAD"] * 3 + ["DAZED"], 10
+c.draw_pile.append("STRIKE_IRONCLAD")
+for _ in range(3):
+    c.play_card(0)
+c.end_turn()
+assert c.cards_last == 4 and len(c.hand) == 5
+# Juggernaut can win the fight off a turn-start block relic: no more turn setup.
+c = rc("HORN_CLEAT", "PENDULUM", state={"pendulum": 0})
+c.pw["JuggernautPower"] = 999
+c.pw["CrimsonMantlePower"], c.crimson_self = 1, 7
+c.end_turn()
+assert c.won and c.player_block == 14 and c.relic_state["pendulum"] == 1  # no Crimson Mantle block, no Pendulum tick
 # SimClient.set_relics shares the caller's state dict and Potion Belt widens the potion slots.
 s, st = SimClient(seed=0), {"happy_flower": 2}
 s.set_relics({"HAPPY_FLOWER", "POTION_BELT"}, st)

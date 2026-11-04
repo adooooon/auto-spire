@@ -422,8 +422,9 @@ class SimCombat:
     attacks_done: int = 0  # Attacks / Skills / Powers finished this turn (AfterCardPlayed)
     skills_done: int = 0
     powers_done: int = 0
-    attacks_last: int = 0  # Attacks and cards played last turn, stored at AfterSideTurnEnd
-    cards_last: int = 0
+    cards_done: int = 0  # cards finished since the last turn start (includes autoplays after the turn ends)
+    attacks_last: int = 0  # Attacks played last turn, stored at AfterSideTurnEnd (Art of War)
+    cards_last: int = 0  # cards_done at this turn's start (Pocketwatch: BeforeSideTurnStart)
     energy: int = 0
     round: int = 1
     in_combat: bool = False
@@ -482,7 +483,7 @@ class SimCombat:
         self.in_combat = True
         self.won = None
         self.rt = {}
-        self.attacks_done = self.skills_done = self.powers_done = self.attacks_last = self.cards_last = 0
+        self.attacks_done = self.skills_done = self.powers_done = self.attacks_last = self.cards_last = self.cards_done = 0
         R = self.relics
         # AfterRoomEntered, then BeforeCombatStart (CombatRoom.StartCombat).
         elite, boss = encounter.endswith("_ELITE"), encounter.endswith("_BOSS")
@@ -500,7 +501,6 @@ class SimCombat:
             self.heal(25)
         if "BELT_BUCKLE" in R and not any(self.potions):
             self.dexterity += 2
-            self.rt["belt"] = 1
         self._start_player_turn()
 
     # --- cards -----------------------------------------------------------------------------------
@@ -588,9 +588,9 @@ class SimCombat:
             self._debuff(target, "weak", 3)
         elif pid == "BLOOD_POTION":
             self.heal(self.player_max_hp * 20 // 100)  # 20% of max HP, truncated
-        if "BELT_BUCKLE" in self.relics and not any(self.potions) and not self.rt.get("belt"):  # AfterPotionUsed
+        # AfterPotionUsed. ponytail: no mid-fight potion gain yet, so "applied" is implied by holding one at the start.
+        if "BELT_BUCKLE" in self.relics and not any(self.potions):
             self.dexterity += 2
-            self.rt["belt"] = 1
         self._check_win()
         return {"ok": True, "used": pid, "slot": slot}
 
@@ -620,6 +620,7 @@ class SimCombat:
                 return
             # AfterCardPlayed
             self.cards_played += 1
+            self.cards_done += 1
             if attack:
                 self.attacks_done += 1
             elif card.type == "Skill":
@@ -1004,11 +1005,12 @@ class SimCombat:
     def _start_player_turn(self) -> None:
         """CombatManager.StartTurn + SetupPlayerTurn for the player side."""
         self.side = "Player"
+        self.cards_last, self.cards_done = self.cards_done, 0  # Pocketwatch.BeforeSideTurnStart
         self.exhausted_this_turn = self.hp_lost_this_turn = False
         self.attack_plays, self.block_plays, self.free_cards = 0, [], []
         self.attacks_done = self.skills_done = self.powers_done = 0
         R, st = self.relics, self.relic_state
-        # BeforeSideTurnStart
+        # BeforeSideTurnStart. ponytail: per enemy, Bag of Marbles then Red Mask (Artifact: Marbles spends the charge).
         if self.round <= 1:
             for e in self._hittable():
                 if "BAG_OF_MARBLES" in R:
@@ -1027,6 +1029,9 @@ class SimCombat:
         if "SPARKLING_ROUGE" in R and self.round == 3:
             self._gain_strength(1)
             self.dexterity += 1
+        self._check_win()  # Juggernaut can kill off the block; hooks stop once combat is over
+        if not self.in_combat:
+            return
         # BeforeSideTurnStart: Aggression moves random Attacks from discard to hand.
         # ponytail: the game also upgrades them; the sim has no upgrades yet.
         attacks = [c for c in self.discard_pile if CARDS[c].type == "Attack"]
@@ -1124,7 +1129,7 @@ class SimCombat:
         self.discard_pile += self.hand  # hand flush
         self.hand = []
         self.ringing = False
-        self.attacks_last, self.cards_last = self.attacks_done, self.cards_played  # AfterSideTurnEnd relics
+        self.attacks_last = self.attacks_done  # AfterSideTurnEnd (Art of War)
         self.cards_played = 0  # SlowPower resets at the start of the enemy turn
         # AfterSideTurnEnd: Constrict hits (Unpowered, so block applies but Vulnerable doesn't);
         # Tangled, temporary Strength and this-turn powers go; Dark Embrace draws for Ethereals.
