@@ -113,7 +113,7 @@ def random_relics(rng: np.random.Generator) -> tuple[set[str], dict[str, int]]:
     """0-6 random modeled relics with random carried counters, so timing relics get practice at every count."""
     held = {str(r) for r in rng.choice(RELIC_IDS, rng.integers(0, 7), replace=False)}
     owner = {"lizard_used": "LIZARD_TAIL", "tea_set": "VENERABLE_TEA_SET"}
-    return held, {k: int(rng.integers(0, n + 1)) if n > 1 else int(rng.integers(0, 2)) for k, n in RELIC_COUNTERS
+    return held, {k: int(rng.integers(0, max(n, 2))) for k, n in RELIC_COUNTERS
                   if owner.get(k, k.upper()) in held}
 
 def _power(entity: dict, name: str) -> int:

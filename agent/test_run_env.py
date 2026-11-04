@@ -2,6 +2,7 @@
 from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
+from sim.potions import POTION_IDS
 assert COMBAT_OBS == 1530 and COMBAT_ACTIONS == 61
 from sim.engine import SimClient, SimLoopError
 
@@ -28,7 +29,10 @@ env.relics, env.relic_state, env.potions = {"VAJRA", "POTION_BELT"}, {"pen_nib":
 obs, _ = env.reset(seed=0)
 live = {k: v for k, v in env._combat.items() if k not in ("simRelics", "relicCounters", "potionSlots")}
 assert not _encode(live)[1396:].any()
-assert obs[1396:].any() and obs.max() <= 10
+assert obs.max() <= 10
+assert obs[1396 + 2 * len(POTION_IDS) + RELIC_IDS.index("VAJRA")] == 1
+pen = 1396 + 2 * len(POTION_IDS) + len(RELIC_IDS)
+assert abs(obs[pen] - 0.3) < 1e-6
 assert env.action_masks()[POTION_ACTION + 4 * MAX_ENEMIES]
 env._combat = live
 assert not env.action_masks()[POTION_ACTION:].any()
@@ -37,12 +41,16 @@ env._combat = None
 env.reset(seed=0)
 assert not env.action_masks()[POTION_ACTION + 4 * MAX_ENEMIES:].any()
 rng = np.random.default_rng(0)
-seen = set()
+seen, sizes = set(), set()
 for i in range(5000):
     r, st = random_relics(rng)
     assert len(r) <= 6 and r <= set(RELIC_IDS)
+    sizes.add(len(r))
+    owner = {"lizard_used": "LIZARD_TAIL", "tea_set": "VENERABLE_TEA_SET"}
+    cap = {"pen_nib": 9, "nunchaku": 9, "tuning_fork": 9, "happy_flower": 2, "pendulum": 2, "joss_paper": 4, "lizard_used": 1, "tea_set": 1}
+    assert all(k in cap and 0 <= v <= cap[k] and owner.get(k, k.upper()) in r for k, v in st.items()), (r, st)
     seen |= r
-assert seen == set(RELIC_IDS)
+assert seen == set(RELIC_IDS) and {0, 6} <= sizes
 
 from run_env import CARD_INDEX, N_ACTIONS, OBS_DIM, PICK, REMOVE, SHOP, SHOP_LEAVE, SHOP_REMOVE, RunPolicyEnv
 from sim.act import Shop
