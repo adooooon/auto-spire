@@ -374,4 +374,41 @@ r = fresh(); r.win("Boss"); assert r.pending == []
 for seed in range(50):
     r = fresh(seed=seed); r.win("Monster"); assert len(r.pending) <= 1 and all(k == "potion" for k, _ in r.pending)
 
+# ---- Task 6 fixes ----
+# 1. Orrery: base odds (Rare < 0.03, Uncommon < 0.37), the rarity offset never moves.
+for off in (-0.05, 0.2):
+    r = fresh(); r.card_odds.offset = off; r.obtain("ORRERY", "shop")
+    assert r.card_odds.offset == off and len(r.pending) == 5
+rb = Counter(RarityOdds().roll_base(Fixed(x)) for x in (0.029, 0.03, 0.369, 0.37, 0.99))
+assert rb == {"RARE": 1, "UNCOMMON": 2, "COMMON": 2}, rb
+rg = random.Random(0); ro = RarityOdds()
+c = Counter(ro.roll_base(rg) for _ in range(20000))
+assert abs(c["RARE"] / 20000 - 0.03) < 0.01 and abs(c["UNCOMMON"] / 20000 - 0.34) < 0.02 and ro.offset == -0.05, c
+# 2. Courier refill never re-offers the card just bought (it still counts as taken).
+for seed in range(150):
+    r = fresh("THE_COURIER", seed=seed)
+    r.shop = make_shop(random.Random(seed), r.card_odds, 0, r.bags); r.gold = 9999
+    for k in range(5):
+        if r.shop.cards[k] in CARDS:
+            bought = r.shop.cards[k]
+            r.buy(k)
+            assert r.shop.cards[k] != bought and len(set(r.shop.cards)) == 5, (seed, k)
+# 3. Relics won from an elite don't touch that elite's rewards, only the next one.
+r = fresh(seed=2)
+r.bags.pull = lambda *a, **k: "WHITE_STAR"
+r.win("Elite")
+assert not any(k == "cards" for k, _ in r.pending)
+r.bags.pull = lambda *a, **k: "ANCHOR"
+r.pending.clear(); r.win("Elite")
+assert sum(k == "cards" for k, _ in r.pending) == 1
+r = fresh(seed=2); r.bags.pull = lambda *a, **k: "WHITE_BEAST_STATUE"
+r.potion_odds.value = -5.0  # never drops by chance
+r.win("Elite"); assert r.pending == [] and abs(r.potion_odds.value + 5.0 - 0.1) < 1e-9
+r.win("Elite"); assert [k for k, _ in r.pending] == ["potion"]
+# 4. A chest's gold is awarded before its relic.
+r = fresh(seed=2); r.gold = 0; r.bags.pull = lambda *a, **k: "BOWLER_HAT"
+r.enter(room_of(r, "Treasure")); assert 42 <= r.gold <= 52 and "BOWLER_HAT" in r.relics
+r = fresh(seed=2); r.bags.pull = lambda *a, **k: "DRAGON_FRUIT"
+r.enter(room_of(r, "Treasure")); assert r.max_hp == 80 and "DRAGON_FRUIT" in r.relics
+
 print("act self-check ok")

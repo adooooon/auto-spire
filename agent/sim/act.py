@@ -64,17 +64,23 @@ class RarityOdds:
         self.offset = min(self.offset + 0.01, 0.4)
         return "UNCOMMON" if r < rare + (0.40 if elite else 0.37) else "COMMON"
 
+    def roll_base(self, rng: random.Random) -> str:
+        """RollWithBaseOdds(RegularEncounter), used for CardCreationSource.Other (Orrery): no offset, none changed."""
+        r = rng.random()
+        return "RARE" if r < 0.03 else "UNCOMMON" if r < 0.37 else "COMMON"
+
     def roll_shop(self, rng: random.Random) -> str:
         """CardRarityOddsType.Shop, RollWithoutChangingFutureOdds: Rare 9% + offset, Uncommon 37%."""
         r, rare = rng.random(), 0.09 + self.offset
         return "RARE" if r < rare else "UNCOMMON" if r < rare + 0.37 else "COMMON"
 
 
-def offer(rng: random.Random, odds: RarityOdds, elite: bool = False, boss: bool = False) -> list[str]:
-    """CardFactory.CreateForReward: 3 cards, no repeats."""
+def offer(rng: random.Random, odds: RarityOdds, elite: bool = False, boss: bool = False,
+          base: bool = False) -> list[str]:
+    """CardFactory.CreateForReward: 3 cards, no repeats. base: not an encounter reward, offset untouched."""
     out: list[str] = []
     for _ in range(3):
-        out.append(rng.choice([c for c in REWARD_POOLS[odds.roll(rng, elite, boss)] if c not in out]))
+        out.append(rng.choice([c for c in REWARD_POOLS[odds.roll_base(rng) if base else odds.roll(rng, elite, boss)] if c not in out]))
     return out
 
 
@@ -347,8 +353,9 @@ class Run:
             self.shop = make_shop(self.rng, self.card_odds, self.removals, self.bags)
         elif room == "Treasure":
             # OneOffSynchronizer.cs:133: NextInt(42, 53), upper bound exclusive
-            self.obtain(self.bags.pull("shared", roll_relic_rarity(self.rng)), "treasure")
-            self.gain_gold(self.rng.randint(42, 52))
+            relic = self.bags.pull("shared", roll_relic_rarity(self.rng))
+            self.gain_gold(self.rng.randint(42, 52))  # the gold is awarded before the relic is picked up
+            self.obtain(relic, "treasure")
         if node.type == "Unknown" and "PLANISPHERE" in self.relics:
             self.heal(5)
         return room
@@ -368,14 +375,15 @@ class Run:
             self.gain_gold(15)
         if room == "Boss":
             return []
+        # Rewards are generated (and modified by held relics) before the elite's relic is picked up.
+        force, wheel, star = (r in self.relics for r in ("WHITE_BEAST_STATUE", "PRAYER_WHEEL", "WHITE_STAR"))
         if room == "Elite":
             self.obtain(self.bags.pull("player", roll_relic_rarity(self.rng)), "elite")
-        force = "WHITE_BEAST_STATUE" in self.relics
         potion = roll_potions(self.rng)[0] if self.potion_odds.roll(self.rng, room == "Elite", force) else None
         offered = offer(self.rng, self.card_odds, room == "Elite")
-        if room == "Monster" and "PRAYER_WHEEL" in self.relics:
+        if room == "Monster" and wheel:
             self.pending.append(("cards", offer(self.rng, self.card_odds)))
-        if room == "Elite" and "WHITE_STAR" in self.relics:
+        if room == "Elite" and star:
             self.pending.append(("cards", offer(self.rng, self.card_odds, boss=True)))
         if potion:
             self.pending.append(("potion", potion))
@@ -388,10 +396,10 @@ class Run:
         self.gold -= price
         self.spent += price
         self.add_card(card)
-        s.cards[slot] = None
-        if "THE_COURIER" in self.relics:  # RestockAfterPurchase: same type, not on sale
-            s.cards[slot], s.prices[slot] = stock_card(self.rng, self.card_odds, SHOP_SLOTS[slot],
-                                                       [c for i, c in enumerate(s.cards) if i != slot and c])
+        if "THE_COURIER" in self.relics:  # RestockAfterPurchase: same type, not on sale; the bought card still counts as taken
+            s.cards[slot], s.prices[slot] = stock_card(self.rng, self.card_odds, SHOP_SLOTS[slot], [c for c in s.cards if c])
+        else:
+            s.cards[slot] = None
 
     def remove(self, card: str) -> None:
         s = self.shop
@@ -437,7 +445,7 @@ class Run:
         elif relic == "POTION_BELT":
             self.potions += [None] * 2
         elif relic == "ORRERY":
-            self.pending += [("cards", offer(self.rng, self.card_odds)) for _ in range(5)]
+            self.pending += [("cards", offer(self.rng, self.card_odds, base=True)) for _ in range(5)]
         elif relic == "CAULDRON":
             self.pending += [("potion", roll_potions(self.rng)[0]) for _ in range(5)]
 
