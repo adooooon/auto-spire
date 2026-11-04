@@ -1362,4 +1362,17 @@ assert c.exhaust_pile == [] and c._is_ethereal("DAZED") and not c._is_ethereal(S
 c = rc("GHOST_SEED")
 assert c._is_ethereal(S) and c._is_ethereal(D) and not c._is_ethereal(B)
 
+# Fix round 1: a card drawn by Centennial mid-loop isn't a turn-end card; Demon Tongue heals past Inferno's kill.
+c = rc("CENTENNIAL_PUZZLE")
+c.hand, c.draw_pile = ["INFECTION"], ["DEFEND_IRONCLAD", "DEFEND_IRONCLAD", "INFECTION"]
+eot(c)
+assert c.player_hp == 77
+for relics, hp, end in ((("DEMON_TONGUE",), 50, 50), (("DEMON_TONGUE", "MEAT_ON_THE_BONE"), 42, 42)):
+    c = rc(*relics, hp=hp)
+    c.pw["InfernoPower"], c.inferno_self = 5, 3
+    c.enemies[0].hp, c.enemies[0].block = 5, 0
+    hand(c, "BLOODLETTING")
+    c.play_card(0)
+    assert c.won and c.player_hp == end, (relics, c.player_hp)
+
 print("sim self-check ok")

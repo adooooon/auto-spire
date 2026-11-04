@@ -1165,10 +1165,12 @@ class SimCombat:
         if self.pw.get("InfernoPower"):  # Unpowered damage to every hittable enemy
             for e in self._hittable():
                 self._damage_enemy(e, self.pw["InfernoPower"])
-            self._check_win()
-        if "DEMON_TONGUE" in R and self.in_combat and not self.rt.get("tongue"):
+        # Kill doesn't win-check, so Demon Tongue still heals after Inferno's kill (and before Meat on the Bone).
+        if "DEMON_TONGUE" in R and not self.rt.get("tongue"):
             self.rt["tongue"] = 1
             self.heal(amount)
+        if self.pw.get("InfernoPower"):
+            self._check_win()
 
     def _damage_player(self, dmg: int, dealer: _Enemy | None = None) -> None:
         """Blockable damage; dealer = a monster's attack (powered), which Flame Barrier answers."""
@@ -1347,7 +1349,7 @@ class SimCombat:
         self._check_win()  # Charon's Ashes
         if not self.in_combat:
             return {"ok": True}
-        for c in self.hand:
+        for c in list(self.hand):  # turnEndCards is fixed before any effect runs (a drawn Infection does nothing)
             if CARDS[c].end_turn_damage:
                 self._damage_player(CARDS[c].end_turn_damage)
                 if not self.in_combat:
