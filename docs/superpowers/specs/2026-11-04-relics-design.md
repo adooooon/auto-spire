@@ -32,8 +32,8 @@ From the decompiled source (`decompiled/MegaCrit.Sts2.Core.*`). The exact values
 
 - **Pool:** `SharedRelicPool` + `IroncladRelicPool`, rarities Common, Uncommon, Rare and Shop: 26 + 32 + 38 + 26 = **122 relics**.
 - **Grab bags** (`RelicGrabBag`): one shuffled list per rarity, and two bags:
-  - The player bag serves elites (pull from the front) and shops (pull from the back).
-  - The shared bag serves treasure rooms (pull from the front), with its own shuffle.
+  - The player bag holds the shared and Ironclad pools and serves elites (pull from the front) and shops (pull from the back).
+  - The shared bag holds only the shared pool (`RunManager.InitializeNewRun`) and serves treasure rooms (pull from the front), with its own shuffle.
   - A relic pulled from either bag is removed from both. No relic repeats in a run.
   - If a rarity is empty, it falls through Shop → Common → Uncommon → Rare.
 - **Rarity roll** (`RelicFactory.RollRarity`): under 0.5 Common, under 0.83 Uncommon, otherwise Rare.

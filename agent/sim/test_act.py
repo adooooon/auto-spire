@@ -161,7 +161,7 @@ assert run.potions[0] == "BLOCK_POTION" and run.potion_drop is None
 
 # Relics: rarity roll, bags, shop stock, buying, elite and treasure drops.
 from .act import roll_relic_rarity
-from .relics import NOT_IN_SHOPS, NOT_MODELED, RELIC_POOL, RELICS, relic_rarity
+from .relics import IRONCLAD_RELICS, NOT_IN_SHOPS, NOT_MODELED, RELIC_POOL, RELICS, relic_rarity
 
 rng = random.Random(0)
 rolls = Counter(roll_relic_rarity(rng) for _ in range(20000))
@@ -169,9 +169,17 @@ assert abs(rolls["COMMON"] / 20000 - 0.50) < 0.02 and abs(rolls["UNCOMMON"] / 20
 assert abs(rolls["RARE"] / 20000 - 0.17) < 0.02
 bags, seen = RelicBags(random.Random(1)), []
 for i in range(122):
-    seen.append(bags.pull("player" if i % 2 else "shared", "SHOP", from_back=i % 3 == 0))
+    shared = i >= 26 and i % 2 == 0 and any(bags.bags["shared"].values())  # the shared bag runs out first
+    seen.append(bags.pull("shared" if shared else "player", "SHOP", from_back=i % 3 == 0))
 assert len(set(seen)) == 122 and set(seen) == {r for ids in RELIC_POOL.values() for r in ids}
 assert [relic_rarity(r) for r in seen[:26]] == ["SHOP"] * 26 and relic_rarity(seen[26]) == "COMMON"
+# Treasure (shared bag) never gives Ironclad relics; the player bag can.
+tr = [RelicBags(random.Random(k)).pull("shared", roll_relic_rarity(random.Random(k))) for k in range(300)]
+assert not set(tr) & IRONCLAD_RELICS
+assert any(RelicBags(random.Random(k)).pull("player", "RARE") in IRONCLAD_RELICS for k in range(100))
+b = RelicBags(random.Random(3))
+r = b.pull("player", "SHOP", allowed=lambda x: x == "BELT_BUCKLE")
+assert r == "BELT_BUCKLE" and not any(r in l for l in b.bags["shared"].values())
 # A rarity falls through when nothing in it passes the filter, not only when empty.
 assert relic_rarity(RelicBags(random.Random(2)).pull("player", "SHOP", allowed=lambda r: relic_rarity(r) == "RARE")) == "RARE"
 band = {"COMMON": (149, 201), "UNCOMMON": (191, 259), "RARE": (234, 316), "SHOP": (170, 230)}

@@ -36,5 +36,9 @@ RELIC_IDS = sorted(RELICS)
 NOT_IN_SHOPS = frozenset({"AMETHYST_AUBERGINE", "BOWLER_HAT", "LUCKY_FYSH", "OLD_COIN", "THE_COURIER"})  # IsAllowedInShops => false
 
 
+IRONCLAD_RELICS = frozenset({"BRIMSTONE", "CHARONS_ASHES", "DEMON_TONGUE", "PAPER_PHROG", "RED_SKULL", "RUINED_HELMET",
+                             "SELF_FORMING_CLAY"})  # IroncladRelicPool minus Burning Blood; the shared bag (treasure) lacks them
+
+
 def relic_rarity(relic: str) -> str:
     return next(r for r, ids in RELIC_POOL.items() if relic in ids)

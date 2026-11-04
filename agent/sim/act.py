@@ -11,7 +11,7 @@ from .cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
 from .engine import ENCOUNTERS, PLAYER_MAX_HP
 from .map import ActMap, Node, generate_map
 from .potions import POTION_POOL, POTION_SLOTS, POTIONS
-from .relics import NOT_IN_SHOPS, RELIC_POOL, RELICS, relic_rarity
+from .relics import IRONCLAD_RELICS, NOT_IN_SHOPS, RELIC_POOL, RELICS, relic_rarity
 
 STARTING_GOLD = 99  # Ironclad.StartingGold
 GOLD = {"Monster": (10, 20), "Elite": (35, 45), "Boss": (100, 100)}  # EncounterModel.Min/MaxGoldReward
@@ -175,7 +175,8 @@ class RelicBags:
     def __init__(self, rng: random.Random):
         self.bags = {}
         for bag in ("player", "shared"):
-            self.bags[bag] = {r: list(ids) for r, ids in RELIC_POOL.items()}
+            # RunManager.InitializeNewRun: the shared bag is SharedRelicPool only; the player bag adds the character pool
+            self.bags[bag] = {r: [x for x in ids if bag == "player" or x not in IRONCLAD_RELICS] for r, ids in RELIC_POOL.items()}
             for ids in self.bags[bag].values():
                 rng.shuffle(ids)
 
@@ -270,6 +271,7 @@ class Run:
         elif room == "Shop":
             self.shop = make_shop(self.rng, self.card_odds, self.removals, self.bags)
         elif room == "Treasure":
+            # OneOffSynchronizer.cs:133: NextInt(42, 53), upper bound exclusive
             self.obtain(self.bags.pull("shared", roll_relic_rarity(self.rng)), "treasure")
             self.gold += self.rng.randint(42, 52)
         return room
