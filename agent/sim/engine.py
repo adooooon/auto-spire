@@ -31,7 +31,7 @@ import random
 from dataclasses import dataclass, field
 
 from .cards import CARDS, GENERATED, card_to_dict, starter_deck
-from .potions import POTION_SLOTS, POTIONS
+from .potions import MAX_POTION_SLOTS, POTION_SLOTS, POTIONS
 
 PLAYER_MAX_HP = 80
 PLAYER_MAX_ENERGY = 3
@@ -413,8 +413,17 @@ class SimCombat:
     temp_dexterity: int = 0  # the part of `dexterity` that goes away at the end of their turn (SpeedPotionPower)
     potions: list = field(default_factory=lambda: [None] * POTION_SLOTS)  # kept across fights; None = empty
     weak: int = 0  # player's: their attacks x0.75
+    relics: set = field(default_factory=set)  # ids held (sim/relics.py); unmodeled ids are never checked
+    # Carried across fights; the same dict object as Run.relic_state (pen_nib, happy_flower, tea_set ...).
+    relic_state: dict = field(default_factory=dict)
+    rt: dict = field(default_factory=dict)  # per-fight relic state, replaced in fight()
     ringing: bool = False  # player's: only one card play this turn; removed at the end of it
     cards_played: int = 0  # this player turn (SlowPower's counter; RingingPower's check)
+    attacks_done: int = 0  # Attacks / Skills / Powers finished this turn (AfterCardPlayed)
+    skills_done: int = 0
+    powers_done: int = 0
+    attacks_last: int = 0  # Attacks and cards played last turn, stored at AfterSideTurnEnd
+    cards_last: int = 0
     energy: int = 0
     round: int = 1
     in_combat: bool = False
@@ -447,7 +456,7 @@ class SimCombat:
 
     @property
     def max_energy(self) -> int:
-        return PLAYER_MAX_ENERGY + self.pw.get("PyrePower", 0)
+        return PLAYER_MAX_ENERGY + self.pw.get("PyrePower", 0) + ("BREAD" in self.relics and self.round > 1)
 
     def heal(self, amount: int) -> None:
         self.player_hp = min(self.player_max_hp, self.player_hp + amount)
@@ -472,6 +481,26 @@ class SimCombat:
         self.shuffles = 0
         self.in_combat = True
         self.won = None
+        self.rt = {}
+        self.attacks_done = self.skills_done = self.powers_done = self.attacks_last = self.cards_last = 0
+        R = self.relics
+        # AfterRoomEntered, then BeforeCombatStart (CombatRoom.StartCombat).
+        elite, boss = encounter.endswith("_ELITE"), encounter.endswith("_BOSS")
+        if "GORGET" in R:
+            self._apply_power("PlatingPower", 4)
+        if "ODDLY_SMOOTH_STONE" in R:
+            self.dexterity += 1
+        if "VAJRA" in R:
+            self._gain_strength(1)
+        if "SLING_OF_COURAGE" in R and elite:
+            self._gain_strength(2)
+        if "ANCHOR" in R:
+            self._gain_block(10)
+        if "PANTOGRAPH" in R and boss:
+            self.heal(25)
+        if "BELT_BUCKLE" in R and not any(self.potions):
+            self.dexterity += 2
+            self.rt["belt"] = 1
         self._start_player_turn()
 
     # --- cards -----------------------------------------------------------------------------------
@@ -542,9 +571,9 @@ class SimCombat:
         elif pid == "ENERGY_POTION":
             self._gain_energy(2)
         elif pid == "STRENGTH_POTION":
-            self.strength += 2
+            self._gain_strength(2)
         elif pid == "FLEX_POTION":
-            self.strength += 5
+            self._gain_strength(5)
             self.temp_strength += 5
         elif pid == "SWIFT_POTION":
             self._draw(3)
@@ -559,6 +588,9 @@ class SimCombat:
             self._debuff(target, "weak", 3)
         elif pid == "BLOOD_POTION":
             self.heal(self.player_max_hp * 20 // 100)  # 20% of max HP, truncated
+        if "BELT_BUCKLE" in self.relics and not any(self.potions) and not self.rt.get("belt"):  # AfterPotionUsed
+            self.dexterity += 2
+            self.rt["belt"] = 1
         self._check_win()
         return {"ok": True, "used": pid, "slot": slot}
 
@@ -588,12 +620,18 @@ class SimCombat:
                 return
             # AfterCardPlayed
             self.cards_played += 1
+            if attack:
+                self.attacks_done += 1
+            elif card.type == "Skill":
+                self.skills_done += 1
+            elif card.type == "Power":
+                self.powers_done += 1
             if attack and self.pw.get("RagePower"):
                 self._gain_block(self.pw["RagePower"])
             if attack and self.pw.get("JugglingPower") and self.attack_plays == 3:  # 3rd Attack this turn
                 for _ in range(self.pw["JugglingPower"]):
                     self._add_to_hand(card_id)  # CreateClone
-            self.strength += owed
+            self._gain_strength(owed)
             self._check_win()
             if not self.in_combat:
                 return
@@ -652,7 +690,7 @@ class SimCombat:
                     self._debuff(t, "vulnerable", card.vulnerable)
         if card.double_vulnerable and target and target.is_alive and target.vulnerable:
             self._debuff(target, "vulnerable", target.vulnerable)
-        self.strength += card.temp_strength
+        self._gain_strength(card.temp_strength)
         self.temp_strength += card.temp_strength
         if card.draw:
             self._draw(card.draw)
@@ -679,7 +717,7 @@ class SimCombat:
             self._hit(card, target, 8, 2 if target and target.vulnerable else 1)
         elif cid == "FIGHT_ME":
             self._hit(card, target, 5, 2)
-            self.strength += 3
+            self._gain_strength(3)
             if target and target.is_alive:
                 target.strength += 1
         elif cid == "PILLAGE":  # draw until a non-Attack (or a full hand / nothing to draw)
@@ -729,7 +767,7 @@ class SimCombat:
         elif cid == "DOMINATE":
             if target and target.is_alive:
                 self._debuff(target, "vulnerable", 1)
-                self.strength += target.vulnerable
+                self._gain_strength(target.vulnerable)
         elif cid == "EVIL_EYE":
             for _ in range(2 if self.exhausted_this_turn else 1):
                 self._gain_block(8, card=True)
@@ -781,7 +819,7 @@ class SimCombat:
 
     def _apply_power(self, name: str, amount: int) -> None:
         if name == "StrengthPower":
-            self.strength += amount
+            self._gain_strength(amount)
             return
         self.pw[name] = 1 if name in SINGLE_POWERS else self.pw.get(name, 0) + amount
         if name == "CrimsonMantlePower":  # IncrementSelfDamage
@@ -810,6 +848,15 @@ class SimCombat:
         setattr(e, name, getattr(e, name) + amount)
         if name == "vulnerable" and self.pw.get("ViciousPower"):
             self._draw(self.pw["ViciousPower"])
+
+    def _gain_strength(self, amount: int) -> None:
+        self.strength += amount
+
+    def _damage_all(self, amount: int) -> None:
+        """Relic damage (Unpowered) to every hittable enemy, read once before the hits."""
+        for e in self._hittable():
+            self._damage_enemy(e, amount)
+        self._check_win()
 
     def _gain_energy(self, amount: int) -> None:
         if not self.pw.get("NoEnergyGainPower"):  # ModifyEnergyGain -> 0
@@ -925,7 +972,7 @@ class SimCombat:
             if from_card and self._rupture is not None:
                 self._rupture += self.pw["RupturePower"]
             else:
-                self.strength += self.pw["RupturePower"]
+                self._gain_strength(self.pw["RupturePower"])
         if self.pw.get("InfernoPower"):  # Unpowered damage to every hittable enemy
             for e in self._hittable():
                 self._damage_enemy(e, self.pw["InfernoPower"])
@@ -959,16 +1006,46 @@ class SimCombat:
         self.side = "Player"
         self.exhausted_this_turn = self.hp_lost_this_turn = False
         self.attack_plays, self.block_plays, self.free_cards = 0, [], []
-        if not self.pw.get("BarricadePower"):  # Creature.BeforeTurnStart: block clears (ShouldClearBlock)
-            self.player_block = 0
+        self.attacks_done = self.skills_done = self.powers_done = 0
+        R, st = self.relics, self.relic_state
+        # BeforeSideTurnStart
+        if self.round <= 1:
+            for e in self._hittable():
+                if "BAG_OF_MARBLES" in R:
+                    self._debuff(e, "vulnerable", 1)
+                if "RED_MASK" in R:
+                    self._debuff(e, "weak", 1)
+        # Creature.AfterTurnStart: block clears, except on turn 1. ponytail: Barricade assumed to be the
+        # block-clear preventer before Sturdy Clamp.
+        if self.round > 1 and not self.pw.get("BarricadePower"):
+            self.player_block = min(self.player_block, 10) if "STURDY_CLAMP" in R else 0
+        # AfterBlockCleared (unconditional, so Barricade doesn't skip it)
+        if "HORN_CLEAT" in R and self.round == 2:
+            self._gain_block(14)
+        if "CAPTAINS_WHEEL" in R and self.round == 3:
+            self._gain_block(18)
+        if "SPARKLING_ROUGE" in R and self.round == 3:
+            self._gain_strength(1)
+            self.dexterity += 1
         # BeforeSideTurnStart: Aggression moves random Attacks from discard to hand.
         # ponytail: the game also upgrades them; the sim has no upgrades yet.
         attacks = [c for c in self.discard_pile if CARDS[c].type == "Attack"]
         for c in self.rng.sample(attacks, min(len(attacks), self.pw.get("AggressionPower", 0))):
             self.discard_pile.remove(c)
             self._add_to_hand(c)
-        self.energy = self.max_energy
-        self._draw(HAND_DRAW_COUNT, hand_draw=True)
+        if "ICE_CREAM" in R and self.round > 1:  # ShouldPlayerResetEnergy false: AddMaxEnergyToCurrent
+            self.energy += self.max_energy
+        else:
+            self.energy = self.max_energy
+        # AfterEnergyReset
+        if "ART_OF_WAR" in R and self.round > 1 and not self.attacks_last:
+            self._gain_energy(1)
+        if "VENERABLE_TEA_SET" in R and st.get("tea_set"):
+            self._gain_energy(2)
+            st["tea_set"] = 0
+        draw = HAND_DRAW_COUNT + (2 if "BAG_OF_PREPARATION" in R and self.round == 1 else 0) + \
+            (3 if "POCKETWATCH" in R and self.round > 1 and self.cards_last <= 3 else 0)
+        self._draw(draw, hand_draw=True)
         # AfterPlayerTurnStart. ponytail: hook order assumed Crimson Mantle, then Inferno.
         if self.in_combat and self.pw.get("CrimsonMantlePower"):
             self._lose_hp(self.crimson_self)
@@ -976,11 +1053,43 @@ class SimCombat:
                 self._gain_block(self.pw["CrimsonMantlePower"])
         if self.in_combat and self.pw.get("InfernoPower"):
             self._lose_hp(self.inferno_self)
+        # ponytail: relic hook order assumed Pendulum, Festive Popper, Mercury Hourglass, Vexing Puzzlebox, Blood Vial.
+        if self.in_combat and "PENDULUM" in R:
+            st["pendulum"] = (st.get("pendulum", 0) + 1) % 3
+            if not st["pendulum"]:
+                self._draw(1)
+        if self.in_combat and "FESTIVE_POPPER" in R and self.round == 1:
+            self._damage_all(9)
+        if self.in_combat and "MERCURY_HOURGLASS" in R:
+            self._damage_all(3)
+        if self.in_combat and "VEXING_PUZZLEBOX" in R and self.round == 1:
+            # ponytail: the card comes from every Ironclad card that can be generated, not the unlocked pool.
+            card = self.rng.choice(GENERATED)
+            self.free_cards.append(card)
+            self._add_to_hand(card)
+        if self.in_combat and "BLOOD_VIAL" in R and self.round <= 1:
+            self.heal(2)
         self._check_win()
         if not self.in_combat:
             return
-        # AfterSideTurnStart
-        self.strength += self.pw.get("DemonFormPower", 0)
+        # AfterSideTurnStart. ponytail: relic order assumed Lantern, Candelabra, Chandelier, Happy Flower, Bread, Brimstone.
+        if "LANTERN" in R and self.round <= 1:
+            self._gain_energy(1)
+        if "CANDELABRA" in R and self.round == 2:
+            self._gain_energy(2)
+        if "CHANDELIER" in R and self.round == 3:
+            self._gain_energy(3)
+        if "HAPPY_FLOWER" in R:
+            st["happy_flower"] = (st.get("happy_flower", 0) + 1) % 3
+            if not st["happy_flower"]:
+                self._gain_energy(1)
+        if "BREAD" in R and self.round == 1:
+            self.energy = max(0, self.energy - 2)
+        if "BRIMSTONE" in R:
+            self._gain_strength(2)
+            for e in self._hittable():
+                e.strength += 1
+        self._gain_strength(self.pw.get("DemonFormPower", 0))
         if self.round > 1:
             self._decrement("PlatingPower")
         self.is_play_phase = True
@@ -1015,6 +1124,7 @@ class SimCombat:
         self.discard_pile += self.hand  # hand flush
         self.hand = []
         self.ringing = False
+        self.attacks_last, self.cards_last = self.attacks_done, self.cards_played  # AfterSideTurnEnd relics
         self.cards_played = 0  # SlowPower resets at the start of the enemy turn
         # AfterSideTurnEnd: Constrict hits (Unpowered, so block applies but Vulnerable doesn't);
         # Tangled, temporary Strength and this-turn powers go; Dark Embrace draws for Ethereals.
@@ -1182,7 +1292,12 @@ class SimClient:
         self._deck = list(deck)
 
     def set_potions(self, potions: list) -> None:
-        self._combat.potions = (list(potions) + [None] * POTION_SLOTS)[:POTION_SLOTS]
+        n = MAX_POTION_SLOTS if "POTION_BELT" in self._combat.relics else POTION_SLOTS
+        self._combat.potions = (list(potions) + [None] * n)[:n]
+
+    def set_relics(self, relics: set[str], state: dict[str, int]) -> None:
+        """The held relics, and the carried-over counters dict (shared, so fights mutate the caller's)."""
+        self._combat.relics, self._combat.relic_state = set(relics), state
 
     def ping(self) -> bool:
         return True

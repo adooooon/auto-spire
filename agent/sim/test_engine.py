@@ -506,4 +506,205 @@ def _no_relic_trace() -> str:
 
 
 assert _no_relic_trace() == "b373260410a683476a810544b86c91c65e3e3b3061ff8fe2763770e7baa63d93"
+# --- relics (sim/relics.py) ---------------------------------------------------------------------
+from .relics import NOT_MODELED, RELIC_POOL, RELICS, relic_rarity  # noqa: E402
+from .potions import MAX_POTION_SLOTS  # noqa: E402
+
+assert [len(v) for v in RELIC_POOL.values()] == [26, 32, 38, 26]
+assert len({r for v in RELIC_POOL.values() for r in v}) == 122 and len(RELICS) == 97 and len(NOT_MODELED) == 25
+assert [len([r for r in v if r in RELICS]) for v in RELIC_POOL.values()] == [24, 28, 30, 15]
+assert relic_rarity("VAJRA") == "COMMON" and relic_rarity("BRIMSTONE") == "SHOP" and MAX_POTION_SLOTS == 5
+
+
+def rc(*relics, deck=None, enc="NIBBITS_WEAK", state=None, hp=None, seed=0):
+    c = SimCombat(rng=random.Random(seed))
+    c.relics, c.relic_state = set(relics), {} if state is None else state
+    if hp is not None:
+        c.player_hp = hp
+    c.fight(enc, deck or ["DEFEND_IRONCLAD"] * 20)
+    return c
+
+
+def energies(c, turns=3):
+    """Energy at the start of each of the first `turns` turns, ending each turn unplayed."""
+    out = []
+    for _ in range(turns):
+        out.append(c.energy)
+        c.end_turn()
+    return out
+
+
+# GORGET: Plating 4 at turn 1 (3 on turn 2); its block at end of turn soaks 4 of the enemy's hit.
+c, base = rc("GORGET"), rc()
+assert c.pw["PlatingPower"] == 4
+c.end_turn(), base.end_turn()
+assert c.pw["PlatingPower"] == 3 and c.player_hp - base.player_hp == min(4, 80 - base.player_hp)
+# ODDLY_SMOOTH_STONE: Defend gives 6.
+c = rc("ODDLY_SMOOTH_STONE")
+c.play_card(0)
+assert c.player_block == 6
+# VAJRA: Strike hits for 7.
+c = rc("VAJRA", deck=["STRIKE_IRONCLAD"] * 20)
+e = c.enemies[0]
+hp = e.hp + e.block
+c.play_card(0, 1)
+assert hp - (e.hp + e.block) == 7
+# SLING_OF_COURAGE: 2 Strength on elites only.
+assert rc("SLING_OF_COURAGE", enc="BYRDONIS_ELITE").strength == 2 and rc("SLING_OF_COURAGE").strength == 0
+# ANCHOR: 10 block survives into turn 1, then clears normally on turn 2.
+c = rc("ANCHOR")
+assert c.player_block == 10
+c.end_turn()
+assert c.player_block == 0
+# PANTOGRAPH: heal 25 before a boss fight only.
+assert rc("PANTOGRAPH", hp=30, enc="VANTOM_BOSS").player_hp == 55 and rc("PANTOGRAPH", hp=30).player_hp == 30
+# BELT_BUCKLE: +2 Dexterity while no potions are held; once, not twice.
+assert rc("BELT_BUCKLE").dexterity == 2
+c = SimCombat(rng=random.Random(0))
+c.relics, c.potions = {"BELT_BUCKLE"}, ["BLOCK_POTION", None, None]
+c.fight("NIBBITS_WEAK")
+assert c.dexterity == 0
+c.use_potion(0)
+assert c.dexterity == 2 and "error" in c.use_potion(0) and c.dexterity == 2
+# BAG_OF_MARBLES: 1 Vulnerable on every enemy at turn 1; Artifact negates it.
+c = rc("BAG_OF_MARBLES", enc="SLIMES_WEAK")
+assert len(c.enemies) > 1 and all(e.vulnerable == 1 for e in c.enemies)
+c = rc("BAG_OF_MARBLES", enc="CUBEX_CONSTRUCT_NORMAL")
+assert c.enemies[0].vulnerable == 0 and c.enemies[0].artifact == 0
+# RED_MASK: 1 Weak on every enemy at turn 1.
+c = rc("RED_MASK", enc="SLIMES_WEAK")
+assert all(e.weak == 1 for e in c.enemies)
+
+
+def blocks(c, turns=4):
+    out = []
+    for _ in range(turns):
+        out.append(c.player_block)
+        c.end_turn()
+    return out
+
+
+# HORN_CLEAT / CAPTAINS_WHEEL: block when turn 2 / turn 3 starts, after the clear.
+assert blocks(rc("HORN_CLEAT")) == [0, 14, 0, 0] and blocks(rc("CAPTAINS_WHEEL")) == [0, 0, 18, 0]
+# SPARKLING_ROUGE: +1 Strength and Dexterity on turn 3.
+c = rc("SPARKLING_ROUGE")
+c.end_turn()
+assert (c.strength, c.dexterity) == (0, 0)
+c.end_turn()
+assert (c.strength, c.dexterity) == (1, 1)
+# STURDY_CLAMP: block is kept at the start of a turn, capped at 10.
+for have, kept in ((15, 10), (7, 7)):
+    c = rc("STURDY_CLAMP")
+    c.round, c.player_block = 2, have
+    c._start_player_turn()
+    assert c.player_block == kept
+c = rc("STURDY_CLAMP", deck=["DEFEND_IRONCLAD"] * 20)
+c.pw["BarricadePower"] = 1  # ponytail: Barricade assumed to be the block-clear preventer before Sturdy Clamp
+c.round, c.player_block = 2, 15
+c._start_player_turn()
+assert c.player_block == 15
+# ICE_CREAM: unspent energy carries from turn 2 on (1 unspent on turn 1 gives 4).
+c = rc("ICE_CREAM")
+c.play_card(0), c.play_card(0)
+c.end_turn()
+assert c.energy == 4
+# BREAD: turn 1 loses 2 (to 1), then max energy is 4.
+assert energies(rc("BREAD"), 2) == [1, 4]
+# ART_OF_WAR: +1 on turn 2 only after a turn with no Attack.
+c = rc("ART_OF_WAR")
+c.end_turn()
+assert c.energy == 4
+c = rc("ART_OF_WAR", deck=["STRIKE_IRONCLAD"] * 20)
+c.play_card(0, 1)
+c.end_turn()
+assert c.energy == 3 and rc("ART_OF_WAR").energy == 3
+# VENERABLE_TEA_SET: the flag gives +2 once and clears.
+st = {"tea_set": 1}
+c = rc("VENERABLE_TEA_SET", state=st)
+assert c.energy == 5 and st["tea_set"] == 0
+c.end_turn()
+assert c.energy == 3
+# LANTERN / CANDELABRA / CHANDELIER: +1 on turn 1, +2 on turn 2, +3 on turn 3.
+assert energies(rc("LANTERN")) == [4, 3, 3] and energies(rc("CANDELABRA")) == [3, 5, 3]
+assert energies(rc("CHANDELIER"), 4) == [3, 3, 6, 3]
+# HAPPY_FLOWER: every 3rd turn, counted across fights.
+assert energies(rc("HAPPY_FLOWER")) == [3, 3, 4]
+st = {"happy_flower": 2}
+c = rc("HAPPY_FLOWER", state=st)
+assert c.energy == 4 and st["happy_flower"] == 0
+c.end_turn()
+c.fight("NIBBITS_WEAK", ["DEFEND_IRONCLAD"] * 20)
+assert st["happy_flower"] == 2  # round 2 -> 1, then the new fight's turn 1 -> 2
+
+
+def hands(c, turns=2):
+    out = []
+    for _ in range(turns):
+        out.append(len(c.hand))
+        c.end_turn()
+    return out
+
+
+# BAG_OF_PREPARATION: 2 extra cards on turn 1 only.
+assert hands(rc("BAG_OF_PREPARATION")) == [7, 5]
+# POCKETWATCH: +3 cards if at most 3 were played last turn (turn 2 on).
+c = rc("POCKETWATCH")
+c.energy = 10
+for _ in range(3):
+    c.play_card(0)
+c.end_turn()
+assert len(c.hand) == 8
+c = rc("POCKETWATCH")
+c.energy = 10
+for _ in range(4):
+    c.play_card(0)
+c.end_turn()
+assert len(c.hand) == 5 and len(rc("POCKETWATCH").hand) == 5
+# PENDULUM: draws 1 every 3rd turn, counted across fights.
+assert hands(rc("PENDULUM"), 3) == [5, 5, 6]
+assert len(rc("PENDULUM", state={"pendulum": 2}).hand) == 6
+# FESTIVE_POPPER / MERCURY_HOURGLASS: damage to all enemies as turns start.
+base = rc(enc="SLIMES_WEAK")
+c = rc("FESTIVE_POPPER", enc="SLIMES_WEAK")
+assert [b.hp - e.hp for b, e in zip(base.enemies, c.enemies)] == [min(b.hp, max(0, 9 - b.block)) for b in base.enemies]
+hp1 = [e.hp for e in c.enemies]
+c.end_turn()
+assert [e.hp for e in c.enemies] == hp1
+c, base = rc("MERCURY_HOURGLASS"), rc()
+assert base.enemies[0].hp - c.enemies[0].hp == 3
+c.end_turn()
+assert base.enemies[0].hp - c.enemies[0].hp == 6
+# BLOOD_VIAL: heal 2 at turn 1 only.
+c = rc("BLOOD_VIAL", hp=50)
+assert c.player_hp == 52
+c.round, c.player_hp = 2, 50
+c._start_player_turn()
+assert c.player_hp == 50
+# VEXING_PUZZLEBOX: a free generated card on turn 1 (6 cards in hand).
+c = rc("VEXING_PUZZLEBOX")
+assert len(c.hand) == 6 and c.cost(c.hand[-1]) == 0
+# BRIMSTONE: +2 Strength to the player, +1 to each enemy, every turn.
+c = rc("BRIMSTONE")
+assert (c.strength, c.enemies[0].strength) == (2, 1)
+c.end_turn()
+assert (c.strength, c.enemies[0].strength) == (4, 2)
+# Played-card counters (Art of War / Pocketwatch's inputs).
+c = rc(deck=["STRIKE_IRONCLAD", "DEFEND_IRONCLAD"] * 10)
+c.energy = 10
+for i in range(len(c.hand)):
+    c.play_card(0, 1)
+assert c.attacks_done + c.skills_done + c.powers_done == c.cards_played == 5
+att = c.attacks_done
+c.end_turn()
+assert (c.attacks_last, c.cards_last) == (att, 5) and c.attacks_done == 0
+# SimClient.set_relics shares the caller's state dict and Potion Belt widens the potion slots.
+s, st = SimClient(seed=0), {"happy_flower": 2}
+s.set_relics({"HAPPY_FLOWER", "POTION_BELT"}, st)
+s.set_potions(["FIRE_POTION"])
+assert len(s._combat.potions) == MAX_POTION_SLOTS
+s.exec("fight NIBBITS_WEAK")
+assert st["happy_flower"] == 0
+s.exec("newrun")
+assert s._combat.relics == set()
+
 print("sim self-check ok")
