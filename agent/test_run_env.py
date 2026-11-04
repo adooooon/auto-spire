@@ -55,7 +55,9 @@ assert seen == set(RELIC_IDS) and {0, 6} <= sizes
 from run_env import CARD_INDEX, N_ACTIONS, OBS_DIM, PICK, REMOVE, SHOP, SHOP_LEAVE, SHOP_REMOVE, RunPolicyEnv
 from sim.act import Shop
 
-assert N_ACTIONS == 113
+from run_env import SHOP_RELIC, potion_take_action, drink_action, POTION_TAKE_2, DRINK_2
+
+assert N_ACTIONS == 120 and OBS_DIM == 1317
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -108,6 +110,7 @@ assert done and info["died_at"] == "Monster" and not info["cleared"]
 
 # MapRunModeEnv: fights chain through generated-map runs; HP carries between fights.
 from run import MapRunModeEnv
+from run_env import RandomCombat
 
 menv, rng2 = MapRunModeEnv(run_model=None), np.random.default_rng(1)
 fights = 0
@@ -162,7 +165,7 @@ assert term and info["won"] and cenv.client._combat.potions == [None, None, None
 assert abs(r - (5 * len(alive) / 10 + 5.0 - POTION_COST_HP / 10)) < 1e-6, r
 
 # Run env potions (sub-project 2).
-from run_env import DRINK, POTION_SKIP, POTION_TAKE, SHOP_POTION
+from run_env import HEAD_DECISIONS, DRINK, POTION_SKIP, POTION_TAKE, SHOP_POTION
 
 # Review focus 3: shop potions need a free slot and a modeled potion.
 renv.reset(seed=6)
@@ -175,10 +178,10 @@ assert renv.action_masks()[SHOP_POTION:SHOP_POTION + 3].tolist() == [True, False
 renv.step(SHOP_POTION)
 assert renv.run.potions[1] == "BLOCK_POTION" and renv.decision == "shop"
 # Review focus 3: an unmodeled drop is skipped without a decision; a modeled one asks where it goes.
-renv.decision, renv.offered, renv.run.potion_drop = "pick", ["ARMAMENTS", "HEADBUTT", "BRAND"], "ATTACK_POTION"
+renv.decision, renv.offered, renv.run.pending = "pick", ["ARMAMENTS", "HEADBUTT", "BRAND"], [("potion", "ATTACK_POTION")]
 renv.step(PICK + 3)
 assert renv.decision == "path" and renv.run.potion_drop is None
-renv.decision, renv.run.potion_drop = "pick", "WEAK_POTION"
+renv.decision, renv.run.pending = "pick", [("potion", "WEAK_POTION")]
 renv.step(PICK + 3)
 assert renv.decision == "potion"
 assert np.flatnonzero(renv.action_masks()).tolist() == [POTION_TAKE, POTION_TAKE + 1, POTION_TAKE + 2, POTION_SKIP]
@@ -210,5 +213,150 @@ renv.run.potions = ["FIRE_POTION", "BLOCK_POTION", None]
 renv.play(renv.run.normals[0])
 held = [p for p in renv.run.potions if p]
 assert renv.used["FIRE_POTION"] == 1 and sum(renv.used.values()) + len(held) == 2, (renv.used, held)
+
+
+# --- Relics (sub-project 3) ---
+from sim.act import SHOP_RELICS
+from sim.relics import NOT_MODELED
+
+assert POTION_TAKE_2 == SHOP_RELIC + SHOP_RELICS and DRINK_2 == POTION_TAKE_2 + 2
+assert [potion_take_action(i) for i in range(5)] == [POTION_TAKE + i for i in range(3)] + [POTION_TAKE_2, POTION_TAKE_2 + 1]
+assert [drink_action(i) for i in range(5)] == [DRINK + i for i in range(3)] + [DRINK_2, DRINK_2 + 1]
+
+
+def shop_env(relics, prices, gold, held=()):
+    e = RunPolicyEnv()
+    e.reset(seed=0)
+    e.run.relics |= set(held)
+    e.run.shop = Shop([None] * 5, [0] * 5, 75, relics=relics, relic_prices=prices)
+    e.run.gold, e.decision, e.back = gold, "shop", "shop"
+    return e
+
+
+# Orrery bought mid-shop runs its 5 picks, then returns to the shop.
+renv = shop_env(["ORRERY", "MEMBERSHIP_CARD", "POTION_BELT"], [200, 100, 100], 1000)
+renv.step(SHOP_RELIC)
+for _ in range(5):
+    assert renv.decision == "pick"
+    renv.step(PICK + 3)
+assert renv.decision == "shop" and renv.run.gold == 800
+
+# Masks: unmodeled relic never legal; unaffordable relic masked; Membership Card halves entries (mask and obs).
+unm = sorted(NOT_MODELED)[0]
+renv = shop_env([unm, "MEMBERSHIP_CARD", "POTION_BELT"], [10, 100, 120], 110)
+assert renv.action_masks()[SHOP_RELIC:SHOP_RELIC + 3].tolist() == [False, True, False]
+renv.step(SHOP_RELIC + 1)
+assert renv.run.gold == 10 and renv.run.relics == {"MEMBERSHIP_CARD"}
+renv.run.gold = 60
+assert renv.action_masks()[SHOP_RELIC + 2]  # 120 -> 60: affordable only at half price
+o = renv._obs()
+base = OBS_DIM - 3 * (len(RELIC_IDS) + 2)
+assert abs(o[base + 2 * (len(RELIC_IDS) + 2) + len(RELIC_IDS)] - 0.6) < 1e-6
+assert not o[base:base + len(RELIC_IDS)].any() and o[base + len(RELIC_IDS)] > 0  # unmodeled: no one-hot, price shown
+assert o[base - len(RELIC_IDS) + RELIC_IDS.index("MEMBERSHIP_CARD")] == 1
+renv.step(SHOP_RELIC + 2)
+assert renv.run.gold == 0 and len(renv.run.potions) == 5
+
+# Potion Belt: slots 3-4 usable.
+renv.reset(seed=1)
+renv.run.potions = ["FIRE_POTION"] * 3
+renv.decision, renv.run.gold = "shop", 1000
+renv.run.shop = Shop([None] * 5, [0] * 5, 75, potions=["BLOCK_POTION", None, None], potion_prices=[10, 0, 0])
+assert not renv.action_masks()[SHOP_POTION]
+renv.run.obtain("POTION_BELT", "shop")
+assert renv.action_masks()[SHOP_POTION]
+renv.decision, renv.run.potion_drop = "potion", "WEAK_POTION"
+assert renv.action_masks()[potion_take_action(4)] and renv.action_masks()[potion_take_action(3)]
+renv.step(potion_take_action(4))
+assert renv.run.potions[4] == "WEAK_POTION"
+renv.decision, renv.run.potions[4], renv.run.hp = "path", "BLOOD_POTION", 10
+assert renv.action_masks()[drink_action(4)]
+renv.step(drink_action(4))
+assert renv.run.potions[4] is None and renv.run.hp > 10
+renv.reset(seed=1)
+renv.run.potions = [None] * 3
+renv.decision, renv.run.potion_drop = "potion", "WEAK_POTION"
+assert not renv.action_masks()[POTION_TAKE_2:POTION_TAKE_2 + 2].any()
+
+# Cauldron with full slots: 5 potion decisions in a row, unmodeled skipped.
+renv.reset(seed=2)
+renv.run.potions = ["FIRE_POTION"] * 3
+renv.run.pending = [("potion", "WEAK_POTION"), ("potion", "ATTACK_POTION"), ("potion", "FIRE_POTION")] + [("potion", "BLOCK_POTION")] * 2
+renv._advance()
+seen = 0
+while renv.decision == "potion":
+    assert renv.action_masks()[POTION_SKIP] and renv.action_masks()[POTION_TAKE:POTION_TAKE + 3].all()
+    seen += 1
+    renv.step(POTION_SKIP)
+assert seen == 4 and renv.decision == "path" and renv.run.potion_drop is None
+
+# Elite drop of an unmodeled relic: next decision is pick, relic in relic_log.
+renv.reset(seed=3)
+renv.run.bags.pull = lambda *a, **k: unm
+renv.room = "Elite"
+renv.run.node = renv.run.map.start
+renv.run.potion_odds.roll = lambda *a, **k: False
+renv.after_fight(True)
+assert (unm, "elite") in renv.run.relic_log and renv.decision == "pick"
+renv.step(PICK + 3)
+assert renv.decision == "path"
+
+# Carry through play: Pen Nib count, Lizard Tail flag, Strawberry max HP.
+renv.reset(seed=4)
+renv.run.obtain("STRAWBERRY", "elite")
+renv.run.relics |= {"PEN_NIB", "LIZARD_TAIL"}
+renv.run.relic_state.update(pen_nib=5, lizard_used=1)
+assert renv.run.max_hp == 87
+renv.play(renv.run.normals[0])
+assert renv.fight_env.client._combat.player_max_hp == 87 and renv.run.max_hp == 87
+assert renv.run.relic_state["lizard_used"] == 1 and renv.run.relic_state["pen_nib"] != 5, renv.run.relic_state
+
+# Carry through MapRunModeEnv reset/step.
+menv = MapRunModeEnv(run_model=None)
+menv.driver.done = False
+menv.driver.reset(seed=5)
+menv.driver.run.obtain("STRAWBERRY", "elite")
+menv.driver.run.relics |= {"PEN_NIB", "LIZARD_TAIL"}
+menv.driver.run.relic_state.update(pen_nib=5, lizard_used=1)
+menv.reset(seed=5)
+c = menv.client._combat
+assert c.player_max_hp == menv.driver.run.max_hp >= 87 and c.relic_state is menv.driver.run.relic_state, (c.player_max_hp, menv.driver.run.max_hp)
+n0 = menv.driver.run.relic_state["pen_nib"]
+assert n0 == 5
+done = False
+while not done:
+    _, _, term, trunc, info = menv.step(int(rng2.choice(np.flatnonzero(menv.action_masks()))))
+    done = term or trunc
+st = menv.driver.run.relic_state
+assert st["lizard_used"] == 1 and st["pen_nib"] != 5 or not menv.driver.run.relics, st
+
+# Bounds: Old Coin gold stays within the observation range.
+renv.reset(seed=6)
+renv.run.gold = 5000
+assert renv._obs().max() <= 10
+assert renv._obs()[len(HEAD_DECISIONS) + 2] == 10
+
+# info keys
+_, _, _, _, info = renv.step(int(np.flatnonzero(renv.action_masks())[0]))
+assert {"relic_log", "relics_held", "elites_fought"} <= set(info)
+import pickle
+pickle.dumps(info)
+
+# Baseline plays a whole run with Potion Belt held, no illegal action.
+import run as runmod
+
+runmod._model = RandomCombat(np.random.default_rng(0))
+benv = RunPolicyEnv()
+benv.reset(seed=8)
+benv.run.obtain("POTION_BELT", "elite")
+brng, done, trunc = __import__("random").Random(0), False, False
+while not (done or trunc):
+    _, _, done, trunc, info = benv.step(runmod.baseline_action(benv, brng, 1))
+assert done
+
+# Report: the honesty line counts per source from relic_log.
+line = runmod.honesty([{"relic_log": [("VAJRA", "elite"), ("LANTERN", "elite"), ("BELLOWS", "treasure"), ("ORRERY", "shop")]}])
+assert line == ("honesty: elite n=2 common=100% uncommon=0% rare=0% unmodeled=0% (expect 50/33/17, 11.6) | "
+                "treasure n=1 common=0% uncommon=0% rare=100% unmodeled=100% (expect 50/33/17, 12.3) | bought n=1"), line
 
 print("run env checks ok")

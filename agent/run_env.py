@@ -15,11 +15,12 @@ from gymnasium import spaces
 
 from env import CARD_IDS, STS2CombatEnv
 from picker import play_fight
-from sim.act import BOSSES, SHOP_POTIONS, SHOP_SLOTS, Run
+from sim.act import BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Run
 from sim.cards import CARDS
 from sim.engine import SimClient
 from sim.map import BOSS_ROW, COLS, ROOM_TYPES
-from sim.potions import POTION_IDS, POTION_SLOTS, POTIONS
+from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
+from sim.relics import RELIC_IDS, RELICS
 
 DECISIONS = ("path", "pick", "shop", "remove", "potion")
 HEAD_DECISIONS = DECISIONS[:4]  # the original observation head; "potion" is flagged in the appended block
@@ -35,7 +36,30 @@ POTION_TAKE = REMOVE + len(CARD_IDS) + 1
 POTION_SKIP = POTION_TAKE + POTION_SLOTS
 SHOP_POTION = POTION_SKIP + 1
 DRINK = SHOP_POTION + SHOP_POTIONS
-N_ACTIONS = DRINK + POTION_SLOTS
+# then relics and the Potion Belt slots 3-4 (the numbering is split; use potion_take_action / drink_action):
+# [shop: buy relic 0-2][potion: put in slot 3-4][path: drink Blood Potion in slot 3-4]
+SHOP_RELIC = DRINK + POTION_SLOTS
+POTION_TAKE_2 = SHOP_RELIC + SHOP_RELICS
+DRINK_2 = POTION_TAKE_2 + MAX_POTION_SLOTS - POTION_SLOTS
+N_ACTIONS = DRINK_2 + MAX_POTION_SLOTS - POTION_SLOTS
+
+
+def potion_take_action(slot: int) -> int:
+    return POTION_TAKE + slot if slot < POTION_SLOTS else POTION_TAKE_2 + slot - POTION_SLOTS
+
+
+def drink_action(slot: int) -> int:
+    return DRINK + slot if slot < POTION_SLOTS else DRINK_2 + slot - POTION_SLOTS
+
+
+def potion_take_slot(a: int) -> int:
+    return a - POTION_TAKE if a < POTION_SKIP else a - POTION_TAKE_2 + POTION_SLOTS
+
+
+def drink_slot(a: int) -> int:
+    return a - DRINK if a < SHOP_RELIC else a - DRINK_2 + POTION_SLOTS
+
+
 CARD_INDEX = {c: i for i, c in enumerate(CARD_IDS)}
 POTION_INDEX = {p: i for i, p in enumerate(POTION_IDS)}
 FIGHTS = ("Monster", "Elite", "Boss")
@@ -43,10 +67,14 @@ LOOKAHEAD = 5  # map rows shown ahead of the current node
 SLOT_FEATURES = len(CARD_IDS) + 2  # card one-hot, price / 100, affordable
 CELL_FEATURES = len(ROOM_TYPES) + 1  # room type one-hot, reachable from here
 SHOP_POTION_FEATURES = len(POTION_IDS) + 2  # potion one-hot, price / 100, buyable
+RELIC_INDEX = {r: i for i, r in enumerate(RELIC_IDS)}
+SHOP_RELIC_FEATURES = len(RELIC_IDS) + 2  # relic one-hot (zero if unmodeled), price / 100, buyable
 # Appended: potion-decision flag, own slots, the offered potion, the shop's potions.
 POTION_OBS = 1 + POTION_SLOTS * len(POTION_IDS) + len(POTION_IDS) + SHOP_POTIONS * SHOP_POTION_FEATURES
+# Appended after that: Potion Belt slots 3-4, relics held, the shop's relics.
+RELIC_OBS = (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS) + len(RELIC_IDS) + SHOP_RELICS * SHOP_RELIC_FEATURES
 OBS_DIM = (len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(BOSSES) + len(SHOP_SLOTS) * SLOT_FEATURES + 2
-           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS)
+           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS)
 FLOOR_REWARD, CLEAR_REWARD = 0.1, 1.0
 MAX_DECISIONS = 500  # a run is ~40 decisions; this only stops a broken env
 
@@ -83,7 +111,7 @@ class RunPolicyEnv(gym.Env):
         super().reset(seed=seed)
         self.run = Run(random.Random(int(self.np_random.integers(2**31))))
         self.fight_env.client = SimClient(seed=self.run.rng.randrange(2**31))
-        self.decision, self.offered, self.room = "path", [], "Ancient"
+        self.decision, self.offered, self.room, self.back = "path", [], "Ancient", "path"
         self.done, self.cleared, self.steps = False, False, 0
         self.used: Counter = Counter()  # potion uses this run, by id
         return self._obs(), {}
@@ -94,10 +122,22 @@ class RunPolicyEnv(gym.Env):
         """Path action: move to the child in that column. The encounter if it's a fight, else None."""
         node = next(n for n in self.run.choices() if n.col == col)
         self.room = self.run.enter(node)
+        self.run.elites_fought += self.room == "Elite"
         if self.room in FIGHTS:
             return self.run.encounter(self.room)
-        self.decision = "shop" if self.room == "Shop" else "path"
+        self.back = "shop" if self.room == "Shop" else "path"
+        self._advance()  # Treasure and Rest can queue rewards (Tiny Mailbox)
         return None
+
+    def _advance(self) -> None:
+        """The next queued reward is the decision, else back to where the rewards started."""
+        reward = self.run.next_reward()
+        if reward is None:
+            self.decision = self.back
+        elif reward[0] == "cards":
+            self.offered, self.decision = reward[1], "pick"
+        else:
+            self.decision = "potion"
 
     def after_fight(self, won: bool) -> tuple[float, bool]:
         """Reward and done after a fight; on a win, the card offer becomes the next decision."""
@@ -108,7 +148,7 @@ class RunPolicyEnv(gym.Env):
         if self.room == "Boss":
             self.done = self.cleared = True
             return FLOOR_REWARD + CLEAR_REWARD, True
-        self.offered, self.decision = offered, "pick"
+        self.offered, self.decision, self.back = offered, "pick", "path"
         return FLOOR_REWARD, False
 
     def play(self, encounter: str) -> bool:
@@ -117,6 +157,7 @@ class RunPolicyEnv(gym.Env):
         combat = env.client._combat
         combat.player_hp, combat.player_max_hp = run.hp, run.max_hp
         env.encounters, env.deck, env.potions = [encounter], list(run.deck), list(run.potions)
+        env.relics, env.relic_state = run.relics, run.relic_state
         before = Counter(p for p in run.potions if p)
         try:
             won = play_fight(self.combat, env, seed=run.rng.randrange(2**31))[0]
@@ -136,7 +177,7 @@ class RunPolicyEnv(gym.Env):
         self.steps += 1
         reward = 0.0
         if self.decision == "path" and a >= DRINK:
-            self.run.drink(a - DRINK)
+            self.run.drink(drink_slot(a))
             self.used["BLOOD_POTION"] += 1
         elif self.decision == "path":
             encounter = self.enter(a - PATH)
@@ -146,22 +187,22 @@ class RunPolicyEnv(gym.Env):
                 reward, _ = self.after_fight(self.play(encounter))
         elif self.decision == "pick":
             if a - PICK < 3:
-                self.run.deck.append(self.offered[a - PICK])
-            if self.run.potion_drop in POTIONS:
-                self.decision = "potion"
-            else:  # unmodeled drops (and no drop) need no decision
-                self.run.potion_drop, self.decision = None, "path"
+                self.run.add_card(self.offered[a - PICK])
+            self._advance()
         elif self.decision == "potion":
             if a == POTION_SKIP:
                 self.run.potion_drop = None
             else:
-                self.run.take_potion(a - POTION_TAKE)
-            self.decision = "path"
+                self.run.take_potion(potion_take_slot(a))
+            self._advance()
         elif self.decision == "shop":
             if a == SHOP_LEAVE:
-                self.decision = "path"
+                self.decision = self.back = "path"
             elif a == SHOP_REMOVE:
                 self.decision = "remove"
+            elif a >= SHOP_RELIC:
+                self.run.buy_relic(a - SHOP_RELIC)
+                self._advance()  # Orrery and Cauldron queue rewards
             elif a >= SHOP_POTION:
                 self.run.buy_potion(a - SHOP_POTION)
             else:
@@ -174,7 +215,8 @@ class RunPolicyEnv(gym.Env):
         info = {"floor": self.run.node.row, "cleared": self.cleared, "gold": self.run.gold, "spent": self.run.spent,
                 "died_at": self.room if self.done and not self.cleared else None, "deck": list(self.run.deck),
                 "potions_used": sum(self.used.values()), "potions_held": sum(p is not None for p in self.run.potions),
-                "used": dict(self.used)}
+                "used": dict(self.used), "relic_log": list(self.run.relic_log),
+                "relics_held": sorted(self.run.relics), "elites_fought": self.run.elites_fought}
         return self._obs(), reward, self.done, truncated, info
 
     def action_masks(self) -> np.ndarray:
@@ -186,7 +228,7 @@ class RunPolicyEnv(gym.Env):
             for n in run.choices():
                 m[PATH + n.col] = True
             for i, p in enumerate(run.potions):
-                m[DRINK + i] = p == "BLOOD_POTION" and run.hp < run.max_hp
+                m[drink_action(i)] = p == "BLOOD_POTION" and run.hp < run.max_hp
         elif self.decision == "pick":
             for i, c in enumerate(self.offered):
                 m[PICK + i] = c in CARDS
@@ -194,13 +236,16 @@ class RunPolicyEnv(gym.Env):
         elif self.decision == "shop":
             s = run.shop
             for i, (c, p) in enumerate(zip(s.cards, s.prices)):
-                m[SHOP + i] = c in CARDS and run.gold >= p
-            m[SHOP_REMOVE] = not s.removal_used and run.gold >= s.removal_price
+                m[SHOP + i] = c in CARDS and run.gold >= run.price(p)
+            m[SHOP_REMOVE] = not s.removal_used and run.gold >= run.price(s.removal_price)
             for k, (p, price) in enumerate(zip(s.potions, s.potion_prices)):
-                m[SHOP_POTION + k] = p in POTIONS and run.gold >= price and None in run.potions
+                m[SHOP_POTION + k] = p in POTIONS and run.gold >= run.price(price) and None in run.potions
+            for k, (r, price) in enumerate(zip(s.relics, s.relic_prices)):
+                m[SHOP_RELIC + k] = r in RELICS and run.gold >= run.price(price)
             m[SHOP_LEAVE] = True
         elif self.decision == "potion":
-            m[POTION_TAKE:POTION_TAKE + POTION_SLOTS] = True
+            for i in range(len(run.potions)):
+                m[potion_take_action(i)] = True
             m[POTION_SKIP] = True
         else:
             for c in set(run.deck):  # no cancel: shop -> remove -> cancel would let a deterministic policy loop
@@ -210,7 +255,7 @@ class RunPolicyEnv(gym.Env):
     def _obs(self) -> np.ndarray:
         run = self.run
         head = [float(d == self.decision) for d in HEAD_DECISIONS]
-        head += [run.hp / 80, run.max_hp / 80, run.gold / 100, run.node.row / BOSS_ROW, run.removals / 5]
+        head += [run.hp / 80, run.max_hp / 80, min(run.gold / 100, 10), run.node.row / BOSS_ROW, run.removals / 5]
         deck = np.zeros(len(CARD_IDS))
         for c in run.deck:
             deck[CARD_INDEX[c]] += 0.5
@@ -225,8 +270,8 @@ class RunPolicyEnv(gym.Env):
             s = run.shop
             for i, (c, p) in enumerate(zip(s.cards, s.prices)):
                 if c in CARD_INDEX:
-                    slots[i, CARD_INDEX[c]], slots[i, -2], slots[i, -1] = 1, p / 100, run.gold >= p
-            removal = [s.removal_price / 100, float(not s.removal_used and run.gold >= s.removal_price)]
+                    slots[i, CARD_INDEX[c]], slots[i, -2], slots[i, -1] = 1, run.price(p) / 100, run.gold >= run.price(p)
+            removal = [run.price(s.removal_price) / 100, float(not s.removal_used and run.gold >= run.price(s.removal_price))]
         grid = np.zeros((LOOKAHEAD, COLS, CELL_FEATURES))
         reach, todo = set(), list(run.node.children)
         while todo:
@@ -245,8 +290,18 @@ class RunPolicyEnv(gym.Env):
         if self.decision in ("shop", "remove"):
             for k, (p, price) in enumerate(zip(run.shop.potions, run.shop.potion_prices)):
                 if p in POTION_INDEX:
-                    shop_p[k, POTION_INDEX[p]], shop_p[k, -2] = 1, price / 100
-                    shop_p[k, -1] = run.gold >= price and None in run.potions
+                    shop_p[k, POTION_INDEX[p]], shop_p[k, -2] = 1, run.price(price) / 100
+                    shop_p[k, -1] = run.gold >= run.price(price) and None in run.potions
         potion_obs = [float(self.decision == "potion")] + own + drop + list(shop_p.ravel())
+        belt = [float(p == pid) for p in run.potions[POTION_SLOTS:] for pid in POTION_IDS]
+        belt += [0.0] * ((MAX_POTION_SLOTS - len(run.potions)) * len(POTION_IDS))
+        held = [float(r in run.relics) for r in RELIC_IDS]
+        shop_r = np.zeros((SHOP_RELICS, SHOP_RELIC_FEATURES))
+        if self.decision in ("shop", "remove"):
+            for k, (r, price) in enumerate(zip(run.shop.relics, run.shop.relic_prices)):
+                if r:  # unmodeled: zero one-hot, but the price shows the slot is taken
+                    if r in RELIC_INDEX:
+                        shop_r[k, RELIC_INDEX[r]] = 1
+                    shop_r[k, -2], shop_r[k, -1] = run.price(price) / 100, r in RELICS and run.gold >= run.price(price)
         return np.concatenate([head, np.minimum(deck, 10), boss, slots.ravel(), removal, grid.ravel(),
-                               potion_obs]).astype(np.float32)
+                               potion_obs, belt, held, shop_r.ravel()]).astype(np.float32)

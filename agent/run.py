@@ -30,11 +30,12 @@ from sb3_contrib import MaskablePPO
 from client import AutoSpireClient
 from env import BOSS_ENCOUNTERS, ELITE_ENCOUNTERS, NORMAL_ENCOUNTERS, WEAK_ENCOUNTERS, STS2CombatEnv
 from picker import RarityOdds, offer, pick, play_fight
-from run_env import (CARD_INDEX, PATH, PICK, POTION_SKIP, POTION_TAKE, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RandomCombat,
-                     RunPolicyEnv)
+from run_env import (CARD_INDEX, PATH, PICK, POTION_SKIP, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RandomCombat,
+                     RunPolicyEnv, potion_take_action)
 from sim.cards import CARDS, starter_deck
 from sim.engine import SimClient
 from sim.map import COLS
+from sim.relics import RELICS, relic_rarity
 
 ACT1_PATH = ["weak", "weak", "weak", "normal", "normal", "rest", "elite", "normal", "normal", "rest",
              "elite", "normal", "rest", "boss"]
@@ -127,6 +128,7 @@ class MapRunModeEnv(STS2CombatEnv):
         run, combat = self.driver.run, self.client._combat
         combat.player_hp, combat.player_max_hp = run.hp, run.max_hp
         self.encounters, self.deck, self.potions = [encounter], list(run.deck), list(run.potions)
+        self.relics, self.relic_state = run.relics, run.relic_state
         self._episode_count = 1  # never full_restart: HP is synced from the run
         return super().reset(seed=seed, options=options)
 
@@ -185,7 +187,7 @@ def baseline_action(env: RunPolicyEnv, rng: random.Random, n: int) -> int:
     if env.decision == "shop":
         return SHOP_REMOVE if mask[SHOP_REMOVE] and "STRIKE_IRONCLAD" in env.run.deck else SHOP_LEAVE
     if env.decision == "potion":  # take it into a free slot, never replace
-        return POTION_TAKE + env.run.potions.index(None) if None in env.run.potions else POTION_SKIP
+        return potion_take_action(env.run.potions.index(None)) if None in env.run.potions else POTION_SKIP
     return REMOVE + CARD_INDEX["STRIKE_IRONCLAD"]
 
 
@@ -203,6 +205,18 @@ def generated_run(args: tuple[str, int, int]) -> dict:
             action = baseline_action(env, rng, n)
         obs, _, done, truncated, info = env.step(action)
     return {"strategy": strategy, **info}
+
+
+def honesty(rs: list[dict]) -> str:
+    """Do rolled relic drops match the game's odds? Treasure's pool lacks the Ironclad relics, so its unmodeled share differs."""
+    parts = []
+    for src, expect in (("elite", 11.6), ("treasure", 12.3)):
+        drops = [r for run in rs for r, s in run["relic_log"] if s == src]
+        share = lambda f: f"{100 * sum(f(r) for r in drops) / max(len(drops), 1):.0f}%"
+        parts.append(f"{src} n={len(drops)} " + " ".join(f"{k}={share(lambda r, k=k: relic_rarity(r) == k.upper())}"
+                     for k in ("common", "uncommon", "rare")) + f" unmodeled={share(lambda r: r not in RELICS)}"
+                     f" (expect 50/33/17, {expect})")
+    return "honesty: " + " | ".join(parts) + f" | bought n={sum(s == 'shop' for run in rs for _, s in run['relic_log'])}"
 
 
 def live_run(model_path: str, n: int) -> None:
@@ -263,7 +277,10 @@ def main():
                   f"/16  spent={np.mean([r['spent'] for r in rs]):.0f}  died_at={dict(died)}"
                   f"  stuck={sum(not r['cleared'] and not r['died_at'] for r in rs)}"  # hit MAX_DECISIONS
                   f"  potions_used={np.mean([r['potions_used'] for r in rs]):.2f}"
-                  f"  held_at_death={np.mean([r['potions_held'] for r in died_runs]) if died_runs else 0:.2f}")
+                  f"  held_at_death={np.mean([r['potions_held'] for r in died_runs]) if died_runs else 0:.2f}"
+                  f"  relics={np.mean([len(r['relics_held']) for r in rs]):.2f}"
+                  f"  elites={np.mean([r['elites_fought'] for r in rs]):.2f}")
+            print("         " + honesty(rs))
             print(f"         used: {dict(used.most_common())}")
         return
     strategies = args.strategies.split(",")

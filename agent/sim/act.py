@@ -276,6 +276,7 @@ class Run:
         self.gold, self.deck, self.removals, self.spent = STARTING_GOLD, starter_deck(), 0, 0
         self.card_odds, self.unknown_odds = RarityOdds(), UnknownOdds()
         self.last_room: str | None = None
+        self.elites_fought = 0
         self.shop: Shop | None = None
         self.potions: list[str | None] = [None] * POTION_SLOTS
         self.potion_odds = PotionOdds()
