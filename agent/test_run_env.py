@@ -63,6 +63,9 @@ assert N_ACTIONS == 120 and OBS_DIM == 1317
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
 for seed in range(200):
     obs, _ = renv.reset(seed=seed)
+    if seed % 4 == 0:
+        renv.run.obtain("POTION_BELT", "elite")  # 5 slots must not change the observation size
+        obs = renv._obs()
     done = trunc = False
     while not (done or trunc):
         assert obs.shape == (OBS_DIM,) and obs.min() >= -1 and obs.max() <= 10, (obs.min(), obs.max())
@@ -309,7 +312,21 @@ renv.run.relic_state.update(pen_nib=5, lizard_used=1)
 assert renv.run.max_hp == 87
 renv.play(renv.run.normals[0])
 assert renv.fight_env.client._combat.player_max_hp == 87 and renv.run.max_hp == 87
-assert renv.run.relic_state["lizard_used"] == 1 and renv.run.relic_state["pen_nib"] != 5, renv.run.relic_state
+p1 = renv.run.relic_state["pen_nib"]
+assert renv.run.relic_state["lizard_used"] == 1 and p1 != 5, renv.run.relic_state
+renv.play(renv.run.normals[1])  # second fight: counts on from p1, not from 5 or 0
+assert renv.run.relic_state["lizard_used"] == 1 and renv.run.max_hp >= 87
+assert renv.run.relic_state["pen_nib"] != p1, renv.run.relic_state
+
+# Potion Belt must not change the observation size or move earlier indices.
+renv.reset(seed=4)
+renv.decision, renv.run.potion_drop = "potion", "WEAK_POTION"
+before = renv._obs()
+renv.run.obtain("POTION_BELT", "elite")
+after = renv._obs()
+assert after.shape == (OBS_DIM,)
+cut = OBS_DIM - (2 * len(POTION_IDS) + len(RELIC_IDS) + 3 * (len(RELIC_IDS) + 2))
+assert (after[:cut] == before[:cut]).all()
 
 # Carry through MapRunModeEnv reset/step.
 menv = MapRunModeEnv(run_model=None)
@@ -328,7 +345,8 @@ while not done:
     _, _, term, trunc, info = menv.step(int(rng2.choice(np.flatnonzero(menv.action_masks()))))
     done = term or trunc
 st = menv.driver.run.relic_state
-assert st["lizard_used"] == 1 and st["pen_nib"] != 5 or not menv.driver.run.relics, st
+assert st["lizard_used"] == 1 and st["pen_nib"] != 5, st
+assert menv.driver.run.max_hp == menv.client._combat.player_max_hp >= 87
 
 # Bounds: Old Coin gold stays within the observation range.
 renv.reset(seed=6)

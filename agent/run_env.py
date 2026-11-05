@@ -284,7 +284,7 @@ class RunPolicyEnv(gym.Env):
             if 0 <= k < LOOKAHEAD:
                 grid[k, n.col, ROOM_TYPES.index(n.type)] = 1
                 grid[k, n.col, -1] = id(n) in reach
-        own = [float(p == pid) for p in run.potions for pid in POTION_IDS]
+        own = [float(p == pid) for p in run.potions[:POTION_SLOTS] for pid in POTION_IDS]
         drop = [float(self.decision == "potion" and run.potion_drop == pid) for pid in POTION_IDS]
         shop_p = np.zeros((SHOP_POTIONS, SHOP_POTION_FEATURES))
         if self.decision in ("shop", "remove"):
