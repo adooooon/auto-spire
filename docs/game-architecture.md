@@ -535,6 +535,62 @@ Ported to the sim in `agent/sim/potions.py` and `SimCombat.use_potion`; drops an
   - 3 random potions, priced 50 / 75 / 100 by rarity × U(0.95, 1.05), rounded (`MerchantPotionEntry.GetCost`).
   - A potion can only be bought into a free slot.
 
+## Relics
+
+97 of the 122 relics are modeled: ids and rarities in `agent/sim/relics.py` (`RELIC_POOL`, `NOT_MODELED`, `RELICS`), effects in `SimCombat` (`agent/sim/engine.py`), drops and shops in `agent/sim/act.py`. Relic state lives on `Run` and carries across fights (Pen Nib, Nunchaku, Lizard Tail's used flag ...).
+
+- **Pool:** `SharedRelicPool` plus `IroncladRelicPool`: Common 26, Uncommon 32, Rare 38, Shop 26 = 122.
+- **Unmodeled relics** (25) still drop, use up that reward and stock shops, so the odds stay honest. They do nothing and can't be bought.
+
+| Rarity | Modeled |
+|---|---|
+| Common (24 of 26) | Amethyst Aubergine, Anchor, Bag of Marbles, Bag of Preparation, Blood Vial, Book of Five Rings, Bronze Scales, Centennial Puzzle, Festive Popper, Gorget, Happy Flower, Juzu Bracelet, Lantern, Meal Ticket, Oddly Smooth Stone, Pendulum, Potion Belt, Red Mask, Red Skull, Regal Pillow, Strawberry, Strike Dummy, Vajra, Venerable Tea Set |
+| Uncommon (28 of 32) | Akabeko, Bowler Hat, Candelabra, Eternal Feather, Gremlin Horn, Horn Cleat, Joss Paper, Kusarigama, Letter Opener, Lucky Fysh, Mercury Hourglass, Nunchaku, Orichalcum, Ornamental Fan, Pantograph, Paper Phrog, Parrying Shield, Pear, Pen Nib, Permafrost, Planisphere, Reptile Trinket, Ripple Basin, Self-Forming Clay, Sparkling Rouge, Tiny Mailbox, Tuning Fork, Vambrace |
+| Rare (30 of 38) | Art of War, Beating Remnant, Captain's Wheel, Chandelier, Charon's Ashes, Cloak Clasp, Demon Tongue, Game Piece, Ice Cream, Intimidating Helmet, Kunai, Lizard Tail, Mango, Meat on the Bone, Mummified Hand, Old Coin, Pocketwatch, Prayer Wheel, Rainbow Ring, Ruined Helmet, Shuriken, Stone Calendar, Sturdy Clamp, The Courier, Tungsten Rod, Unceasing Top, Unsettling Lamp, Vexing Puzzlebox, White Beast Statue, White Star |
+| Shop (15 of 26) | Belt Buckle, Bread, Brimstone, Burning Sticks, Cauldron, Chemical X, Dragon Fruit, Ghost Seed, Lee's Waffle, Membership Card, Orrery, Ringing Triangle, Screaming Flagon, Sling of Courage, The Abacus |
+
+| Not modeled (25) | Why |
+|---|---|
+| War Paint, Whetstone, Miniature Cannon, Stone Cracker, Bellows, Frozen Egg, Molten Egg, Toxic Egg, Razor Tooth, Lava Lamp | card upgrades |
+| Gnarled Hammer, Kifuda, Punch Dagger, Royal Stamp, Wing Charm | enchantments |
+| Gambling Chip, Dolly's Mirror | choosing a card |
+| Dingy Rug, Toolbox | colorless cards |
+| Girya, Shovel | rest-site choices |
+| Lasting Candy | 4-card reward offers |
+| Petrified Toad | a new potion (the rock) |
+| Miniature Tent, Mystic Lighter | no effect in this sim (no other rest option, no enchanted cards) |
+
+### Drops
+
+- **Rarity** (`RelicFactory.RollRarity`): under 0.5 Common, under 0.83 Uncommon, otherwise Rare.
+- **Grab bags** (`RelicGrabBag`): one shuffled list per rarity, in two bags.
+  - The player bag holds the shared and Ironclad pools (elites pull from the front, shops from the back). The shared bag holds only the shared pool (`RunManager.InitializeNewRun`) and serves treasure, so chests never give Ironclad relics (Brimstone, Charon's Ashes, Demon Tongue, Paper Phrog, Red Skull, Ruined Helmet, Self-Forming Clay).
+  - A relic pulled from either bag leaves both, so none repeats in a run.
+  - Fall-through is Shop, Common, Uncommon, Rare (`RelicGrabBag.GetAvailableDeque`). It happens when nothing in the rarity passes the filter, not only when the rarity is empty. Shops filter out `IsAllowedInShops => false`: Amethyst Aubergine, Bowler Hat, Lucky Fysh, Old Coin, The Courier.
+- **Elites** (`RewardsSet`): always one relic; bosses give none. A relic won from an elite can't modify that same reward set, because `RewardsSet.GenerateWithoutOffering` runs before `RelicReward.OnSelect`.
+- **Treasure** (`OneOffSynchronizer.cs:133`): gold `NextInt(42, 53)` (upper bound exclusive, so 42 to 52), awarded before the relic.
+- **Shop** (`MerchantInventory.PopulateRelicEntries`): 3 relics, 2 rolled rarities and 1 Shop. Base price 175 / 225 / 275 / 200 (Common / Uncommon / Rare / Shop) × U(0.85, 1.15), rounded.
+
+### Rules
+
+- **Prices** (`MerchantEntry.Cost`): discounts multiply, then truncate. The discount reads live, so Membership Card (50%) reprices the whole shop at once; The Courier is 80%. The sim prices a Membership Card purchase before the card is held.
+- **Courier restock** (`RestockAfterPurchase`): buying a card, potion or relic refills that slot. The card refill excludes the card just bought. Card removal doesn't refill.
+- **Gold** (`PlayerCmd.GainGold`): Bowler Hat's x1.25 truncates; Dragon Fruit then adds 1 max HP per gain.
+- **Card rarity for reward relics** (`CardFactory.RollForRarity`, `CardRarityOdds.RollWithBaseOdds`):
+  - Orrery uses base odds (3% Rare, 34% Uncommon) and doesn't move the rarity offset.
+  - White Star uses boss odds (all Rare), which resets the offset.
+- **Combat start** (`CombatRoom.StartCombat`): AfterRoomEntered, then BeforeCombatStart.
+- **Block:**
+  - Turn-1 block isn't cleared (`Creature.AfterTurnStart` returns on turn 1).
+  - AfterBlockCleared fires every turn, even when block is kept (Barricade, Sturdy Clamp's 10).
+- **Hook order** (`CombatState.IterateHookListeners`): a creature's powers come before its relics. Among relics, the game uses the player's relic list order.
+- **Death** (`CreatureCmd`): a lethal hit skips AfterDamageReceived, so Lizard Tail's survival doesn't trigger those relics.
+- **Ending** (`CardCmd`): a kill makes combat "ending". Exhausts and autoplays no-op, but AfterCardPlayed still runs.
+
+### Simplifications
+
+Known shortcuts are marked `ponytail:` in `engine.py` and `act.py` (grep for them); most are relic order where the source doesn't fix it. The one with a visible limit is Vexing Puzzlebox, which draws from the sim's `GENERATED` pool, not the game's unlocked pool, so it can't create a card the sim doesn't model.
+
 ## File structure
 
 ### PCK contents
