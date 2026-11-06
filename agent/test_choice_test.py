@@ -75,3 +75,12 @@ for name, m, want in (("first-legal", Stub(env, False), False), ("last-legal", L
     print(f"{name}: row 3 subset n={n} {r:.2f} vs {ch:.2f}; overall {ro:.2f} vs {cho:.2f}")
     assert n >= 10 and passes_headbutt(r, ch) == want
 print("choice test checks ok")
+
+# Only the card under test is scored; a row below MIN_N is LOW N, never a pass.
+from choice_test import from_card, print_verdict
+mixed = collect(Stub(env, False), "BURNING_PACT", fights=60, seed=3, env=env)
+assert len(from_card(mixed, "BURNING_PACT")) <= len(mixed) and all(p["source"] == "BURNING_PACT" for p in from_card(mixed, "BURNING_PACT"))
+assert from_card([{"source": "BRAND"}, {"source": "HEADBUTT"}], "BRAND") == [{"source": "BRAND"}]
+assert print_verdict([("a", 100, "x", True), ("b", 29, "y", True)]) == "NOT ALL PASS"
+assert print_verdict([("a", 100, "x", True), ("b", 30, "y", True)]) == "ALL PASS"
+print("choice test fix checks ok")

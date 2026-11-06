@@ -32,6 +32,7 @@ from env import BOSS_ENCOUNTERS, ELITE_ENCOUNTERS, NORMAL_ENCOUNTERS, WEAK_ENCOU
 from picker import RarityOdds, offer, pick, play_fight
 from run_env import (CARD_INDEX, EVENT, PATH, PICK, POTION_SKIP, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RandomCombat,
                      RunPolicyEnv, potion_take_action)
+from choice_test import is_good, is_junk
 from sim.cards import CARDS, CHOICE_CARDS, starter_deck
 from sim.engine import SimClient
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
@@ -243,14 +244,15 @@ def event_report(rs: list[dict]) -> str:
 
 def choice_report(rs: list[dict]) -> str:
     """What the run's fights asked the policy to pick: per prompt card, count and share that took a junk card
-    (among prompts offering both junk and non-junk)."""
+    (Headbutt: a non-basic, non-junk card), among prompts offering both kinds."""
     log = [c for run in rs for c in run["choice_log"]]
     parts = []
     for card in CHOICE_CARDS:
         cs = [c for c in log if c[0] == card]
-        mixed = [c for c in cs if len({CARDS[o].rarity == "Status" for o in c[2]}) == 2]
-        junk = 100 * sum(CARDS[c[1]].rarity == "Status" for c in mixed) / max(len(mixed), 1)
-        parts.append(f"{card}: {len(cs)} (junk {junk:.0f}% of {len(mixed)})")
+        is_kind = is_good if card == "HEADBUTT" else is_junk
+        mixed = [c for c in cs if len({is_kind(o) for o in c[2]}) == 2]
+        share = f"{100 * sum(is_kind(c[1]) for c in mixed) / len(mixed):.0f}% of {len(mixed)}" if mixed else "n=0"
+        parts.append(f"{card}: {len(cs)} ({'non-basic non-junk' if card == 'HEADBUTT' else 'junk'} {share})")
     return "choices: " + " | ".join(parts)
 
 

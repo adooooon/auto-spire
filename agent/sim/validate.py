@@ -177,10 +177,10 @@ def main():
     ap.add_argument("--new-cards", action="store_true", help="decks of 4 starter cards + 10 Uncommons/Rares")
     args = ap.parse_args()
     if args.deck:
-        env_module.random_deck = lambda rng: args.deck.split(",")
+        env_module.random_deck = lambda rng, *_: args.deck.split(",")
     elif args.new_cards:
         pool = UNCOMMONS + RARES
-        env_module.random_deck = lambda rng: ["STRIKE_IRONCLAD", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH"] + \
+        env_module.random_deck = lambda rng, *_: ["STRIKE_IRONCLAD", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH"] + \
             [str(c) for c in rng.choice(pool, size=10)]
     encounters = parse_encounters(args.encounters)
 

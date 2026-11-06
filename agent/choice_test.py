@@ -87,6 +87,11 @@ def collect(model, card: str, fights: int = 200, seed: int = 0, env=None) -> lis
     return out
 
 
+def from_card(prompts: list[dict], card: str) -> list[dict]:
+    """Only the prompts the card under test opened (a random-deck card can open one too)."""
+    return [p for p in prompts if p["source"] == card]
+
+
 def read_choice(model, env, combat: dict) -> int:
     """The action the model takes at this combat state, read the way play reads it. Leaves env as it was."""
     saved, env._combat = env._combat, combat
@@ -127,12 +132,22 @@ def hp_rates(model, env, prompts) -> tuple[float, float, int]:
     return (float(np.mean(shares[0])), float(np.mean(shares[1])), n) if n else (0.0, 0.0, 0)
 
 
+def print_verdict(rows) -> str:
+    """A row below MIN_N is LOW N, not a pass, whatever its rates."""
+    rows = [(name, n, text, ok and n >= MIN_N, "LOW N" if n < MIN_N else None) for name, n, text, ok in rows]
+    for name, n, text, ok, low in rows:
+        print(f"{name}: n={n}  {text}  {low or ('PASS' if ok else 'FAIL')}")
+    verdict = "ALL PASS" if all(r[3] for r in rows) else "NOT ALL PASS"
+    print(verdict)
+    return verdict
+
+
 def main(path: str, headbutt_fights: int = 200):
     from sb3_contrib import MaskablePPO
     from sim.engine import SimClient
     model = MaskablePPO.load(path)
     env = STS2CombatEnv(client=SimClient(seed=0))
-    prompts = {c: collect(model, c, fights=headbutt_fights if c == "HEADBUTT" else 200, seed=i)
+    prompts = {c: from_card(collect(model, c, fights=headbutt_fights if c == "HEADBUTT" else 200, seed=i), c)
                for i, c in enumerate(("BURNING_PACT", "BRAND", "HEADBUTT"))}
     rows = []  # (name, n, text, passed)
     parts = [(c, score_junk(prompts[c]), len([p for p in prompts[c] if score_junk([p]) != (0.0, 0.0)])) for c in ("BURNING_PACT", "BRAND")]
@@ -148,9 +163,7 @@ def main(path: str, headbutt_fights: int = 200):
                  passes_headbutt(r, ch) and len(sub) > 0))
     lo, hi, n4 = hp_rates(model, env, prompts["HEADBUTT"])
     rows.append(("4 headbutt hp", n4, f"block card at 15% HP {lo:.0%}, at 100% HP {hi:.0%}", passes_hp(lo, hi) and n4 > 0))
-    for name, n, text, ok in rows:
-        print(f"{name}: n={n}  {text}  {'PASS' if ok else 'FAIL'}" + (f"  WARNING: n below {MIN_N}" if n < MIN_N else ""))
-    print("ALL PASS" if all(ok for *_, ok in rows) else "NOT ALL PASS")
+    print_verdict(rows)
 
 
 if __name__ == "__main__":

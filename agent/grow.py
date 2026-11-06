@@ -1,6 +1,6 @@
 """Grow a trained MaskablePPO into a bigger observation/action space (sub-project 2: potions).
 
-Every old weight is copied; weights from new inputs and to new actions start at zero, so the grown
+Every old weight is copied (insert_map places old cards and fixed segments among new ones); weights from new inputs and to new actions start at zero, so the grown
 model acts exactly like the old one until training moves them. New inputs and actions must be
 appended (old indices unchanged), as env.py and run_env.py do. From agent/:
     python grow.py models/ppo_sts2_sim_act1_map_v10_final.zip models/ppo_sts2_sim_act1_map_v10p.zip --env combat
@@ -16,14 +16,14 @@ from sb3_contrib import MaskablePPO
 
 def insert_map(segments: list, old_ids: list[str], new_ids: list[str]) -> list[int]:
     """Each old position's new index. A segment is an int (that many fixed positions) or "cards" (one per card id)."""
-    out, old_at, new_at = [], 0, 0
+    out, new_at = [], 0
     for seg in segments:
         if seg == "cards":
             out += [new_at + new_ids.index(c) for c in old_ids]
-            old_at, new_at = old_at + len(old_ids), new_at + len(new_ids)
+            new_at += len(new_ids)
         else:
             out += range(new_at, new_at + seg)
-            old_at, new_at = old_at + seg, new_at + seg
+            new_at += seg
     return out
 
 

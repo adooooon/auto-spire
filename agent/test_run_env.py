@@ -550,5 +550,22 @@ assert m[PICK] and not m[PICK + 1] and m[PICK + 2]
 # Choices made in a run's fights reach info, and the report reads them.
 from run import choice_report
 line = choice_report([{"choice_log": [("BRAND", "WOUND", ("WOUND", "BASH")), ("HEADBUTT", "BASH", ("BASH", "WOUND"))]}])
-assert "BRAND: 1" in line and "junk 100%" in line and "HEADBUTT: 1" in line
+assert "BRAND: 1 (junk 100% of 1)" in line and "HEADBUTT: 1 (non-basic non-junk 100% of 1)" in line
+line = choice_report([{"choice_log": [("HEADBUTT", "WOUND", ("WOUND", "BASH")), ("BRAND", "BASH", ("BASH", "BASH"))]}])
+assert "HEADBUTT: 1 (non-basic non-junk 0% of 1)" in line and "BRAND: 1 (junk n=0)" in line
 print("run choice checks ok")
+
+# A client without set_relics (the live game) never gets a prompt card in a random deck.
+from sim.cards import CHOICE_CARDS as _CC
+class _Live:
+    def __init__(self): self._c = SimClient(seed=0)
+    def __getattr__(self, n):
+        if n in ("set_relics", "set_potions"): raise AttributeError(n)
+        return getattr(self._c, n)
+    def set_deck(self, d): self.last = d; self._c.set_deck(d)
+_live = _Live()
+_e = STS2CombatEnv(client=_live, random_decks=True, prompt_practice=True, heal=False)
+for _s in range(60):
+    _e.reset(seed=_s)
+    assert not set(_live.last) & set(_CC), _live.last
+print("live deck strip ok")

@@ -284,8 +284,11 @@ class STS2CombatEnv(gym.Env):
                 if self.heal:
                     self.client.exec("heal 999")
                 # The deck persists across fights in a live run, so set it every episode.
-                self.client.set_deck(self.deck or (random_deck(self.np_random, self.prompt_practice) if self.random_decks else starter_deck()))
                 set_relics = getattr(self.client, "set_relics", None)  # sim only; before set_potions (Potion Belt)
+                deck = self.deck or (random_deck(self.np_random, self.prompt_practice) if self.random_decks else starter_deck())
+                if not set_relics and not self.deck:  # the live mod can't answer a card prompt
+                    deck = [c for c in deck if c not in CHOICE_CARDS]
+                self.client.set_deck(deck)
                 relics, state = (self.relics, self.relic_state) if self.relics is not None else (
                     random_relics(self.np_random) if self.random_decks else (set(), {}))
                 if set_relics:
