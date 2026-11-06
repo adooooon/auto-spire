@@ -706,3 +706,20 @@ Went with the "restart the game process every N episodes" workaround rather than
    - The mod's server-side `newrun` handler can legitimately take 5-13+ seconds (asset preloading), longer than the Python client's default 5s HTTP timeout. The client would time out and **retry** while the first attempt was still running server-side, kicking off a second concurrent `StartNewRunAsync` racing the first — this was the actual cause of several of the corrupted-startup crashes, not the asset-loading itself. Fixed by giving `newrun` specifically a long client-side timeout (45s) and `retries=1` (never retry it), and bumping the mod's own internal wait from 20s to 40s for headroom.
 
 With all three fixed, `agent/env.py`'s `STS2CombatEnv(episodes_per_restart=N)` runs indefinitely: every Nth episode reset calls `client.full_restart()` (~30s, fully automated) instead of the lighter in-run `fight`-command reset, and CPU/animation backlog never gets the chance to accumulate. Validated over 6 episodes / 2 restarts with zero manual intervention and zero aborts.
+
+### 2026-11-06: Real runs in the live game
+
+`python run.py --live --model <combat> --run-model <run policy>` (`agent/live.py`) now plays a real Act 1: the game's own map, rewards, shops, events, rest sites and treasure, with no staged fights. It replaces the fixed route. `/state` reports `screen` and its `details`; the new `/exec` verbs are `map`, `reward`, `pick`, `proceed`, `event`, `rest`, `chest`, `chest_relic`, `buy`, `drop_potion`, `choose`, `choose_discard` and `choose_option` (`mod/AutoSpire/AutoSpireRun.cs`). `live.py` fills the fields of `sim.act.Run` that `RunPolicyEnv` reads, so the policy sees the same observation and mask as in training.
+
+What the game taught us:
+- `CardSelectCmd.Selector` is the game's test hook and answers every card prompt without its selection screen. The mod installs one on `newrun`. AutoSlay (`MegaCrit.Sts2.Core.AutoSlay`), the game's own test bot, is the model for most of this: it uses `ForceClick`, the same purchase call and `SetFtuesEnabled(false)`.
+- First-time tutorials intercept Proceed, so `newrun` turns them off. This only touched the modded profile.
+- The rewards screen stays on the overlay stack under an open map, so "is the map open" must be checked first.
+- The mod's JSON leaves out null fields.
+- Potions are addressed by slot (`PotionSlots`), which can have gaps.
+
+First clear (v13c + v6pc): floors 1-16 won, ending at 29/80 HP against Vantom, with 0 `[ERROR]` lines in `godot.log`. One run says nothing about a clear rate.
+
+Not yet seen live: Headbutt, Brand and Burning Pact in a fight (the run offered Headbutt and passed), the five modeled events, shop removal and relic purchases, replacing a held potion, drinking Blood Potion between fights.
+
+Where live differs from the sim, all because the sim doesn't model it: Neow and unmodeled events use a fixed rule in `live.py` (leave if allowed, else a modeled relic, else the first safe option), prompts from those take the first card, unmodeled potions are skipped, and rest sites always heal since there are no upgrades, even at full HP. `relicCounters` sends each relic's displayed number, which only matches the sim where they count the same way.

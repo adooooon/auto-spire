@@ -7,8 +7,8 @@ relic/potion rewards or map choice; add them as the sim grows.
 
 Compare pick strategies over simulated runs:
     python run.py --model models/ppo_sts2_sim_act1_run_v9_final.zip --runs 200
-Play one run in the live game, picking from its real reward screens:
-    python run.py --model models/ppo_sts2_sim_act1_run_v9_final.zip --live
+Play one real Act 1 in the live game, with the run policy making every choice (live.py):
+    python run.py --model models/ppo_sts2_sim_act1_pc_v14_final.zip --run-model models/ppo_sts2_sim_run_policy_v7_final.zip --live
 Compare on generated maps (shops, ? rooms), baseline vs a run policy:
     python run.py --model models/ppo_sts2_sim_act1_run_v9_final.zip --maps generated --run-model models/ppo_sts2_sim_run_policy_v1_final.zip --runs 500 --n 16
 
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import random
-import time
 from collections import Counter
 from multiprocessing import Pool
 
@@ -27,7 +26,6 @@ import gymnasium as gym
 import numpy as np
 from sb3_contrib import MaskablePPO
 
-from client import AutoSpireClient
 from env import BOSS_ENCOUNTERS, ELITE_ENCOUNTERS, NORMAL_ENCOUNTERS, WEAK_ENCOUNTERS, STS2CombatEnv
 from picker import RarityOdds, offer, pick, play_fight
 from run_env import (CARD_INDEX, EVENT, PATH, PICK, POTION_SKIP, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RandomCombat,
@@ -47,11 +45,6 @@ FIGHTS = [n for n in ACT1_PATH if n != "rest"]
 PICK_ENCOUNTERS = NORMAL_ENCOUNTERS + ELITE_ENCOUNTERS  # what a pick is scored against
 BURNING_BLOOD_HEAL = 6
 REST_HEAL = 24
-
-
-def live_offer(offered: list[str]) -> list[str]:
-    """The live game can't answer the sim's card prompts, so live play never picks those cards."""
-    return [c for c in offered if c not in CHOICE_CARDS]
 
 
 def choose(strategy: str, model, deck: list[str], offered: list[str], rng: random.Random, n: int) -> str | None:
@@ -256,38 +249,6 @@ def choice_report(rs: list[dict]) -> str:
     return "choices: " + " | ".join(parts)
 
 
-def live_run(model_path: str, n: int) -> None:
-    """One run in the live game. Burning Blood is the game's own; rest sites are `heal 24`."""
-    model = MaskablePPO.load(model_path)
-    rng = random.Random()
-    client = AutoSpireClient()
-    env = STS2CombatEnv(client=client, heal=False)  # first reset full_restarts into a fresh run
-    deck = starter_deck()
-    for node in ACT1_PATH:
-        if node == "rest":
-            client.exec(f"heal {REST_HEAL}")
-            print(f"rest: -> {client.state()['player']['hp']} HP")
-            continue
-        env.encounters, env.deck = list(NODE_ENCOUNTERS[node]), deck
-        ok, _ = play_fight(model, env)
-        if not ok:
-            print(f"{node} fight lost — run over")
-            return
-        if node == "boss":
-            break
-        rewards = None
-        for _ in range(40):  # the rewards screen opens shortly after the win
-            rewards = client.state().get("rewards")
-            if rewards:
-                break
-            time.sleep(0.25)
-        offered = next(([c["id"] for c in r["cards"]] for r in rewards or [] if r.get("cards")), [])
-        choice = choose("mc", model, deck, live_offer(offered), rng, n)
-        deck = deck + ([choice] if choice else [])
-        print(f"{node} won, {client.state()['player']['hp']} HP; offered {offered} -> {choice or 'skip'}")
-    print(f"Act 1 cleared: {client.state()['player']['hp']} HP, deck +{deck[10:]}")
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -300,7 +261,10 @@ def main():
     ap.add_argument("--run-model", default=None, help="run policy zip (adds the 'policy' strategy on generated maps)")
     args = ap.parse_args()
     if args.live:
-        return live_run(args.model, args.n)
+        if not args.run_model:
+            ap.error("--live needs --run-model")
+        from live import live_run
+        return live_run(args.model, args.run_model)
     if args.maps == "generated":
         strategies = ["baseline"] + (["policy"] if args.run_model else [])
         with Pool(initializer=_init, initargs=(args.model, args.run_model)) as pool:

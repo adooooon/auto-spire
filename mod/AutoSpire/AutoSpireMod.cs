@@ -164,9 +164,14 @@ public static class AutoSpireMod
 
         var player = LocalContext.GetMe(runState);
         var combatMgr = CombatManager.Instance;
+        var screen = RunBridge.Screen(runState);
 
         return new
         {
+            screen,
+            details = RunBridge.Details(screen, runState),
+            choice = RunBridge.Choice(player),
+            potionSlots = player?.PotionSlots.Select(p => p?.Id.Entry).ToList(),
             phase = combatMgr.IsInProgress ? "combat" : "map",
             inRun = true,
             floor = runState.TotalFloor,
@@ -181,18 +186,14 @@ public static class AutoSpireMod
 
     // The post-combat rewards screen, if it's the top overlay: each reward's type, plus the
     // offered cards for card rewards. Read-only — the agent adds its pick via `card <ID> Deck`.
-    private static readonly System.Reflection.FieldInfo RewardsSetField =
-        typeof(NRewardsScreen).GetField("_rewardsSet", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-
     private static object? GetRewards()
     {
-        if (NOverlayStack.Instance?.Peek() is not NRewardsScreen screen)
-            return null;
-        var set = RewardsSetField.GetValue(screen) as RewardsSet;
-        return set?.Rewards.Select(r => new
+        return RunBridge.RewardButtons()?.Select(b => b.Reward).Select(r => new
         {
-            type = r.GetType().Name,
-            cards = r is CardReward cr ? cr.Cards.Select(SerializeCard).ToList() : null
+            type = r?.GetType().Name,
+            cards = r is CardReward cr ? cr.Cards.Select(SerializeCard).ToList() : null,
+            potion = (r as PotionReward)?.Potion?.Id.Entry,
+            relic = (r as RelicReward)?.Relic?.Id.Entry,
         }).ToList();
     }
 
@@ -211,10 +212,17 @@ public static class AutoSpireMod
         return new
         {
             inCombat = true,
-            isPlayPhase = IsPlayPhase(player),
+            // An open card prompt is the player's move, whatever phase it came up in.
+            isPlayPhase = IsPlayPhase(player) || AgentSelector.Current != null,
+            choice = RunBridge.Choice(player),
+            potionSlots = player?.PotionSlots.Select(p => p?.Id.Entry).ToList(),
+            // Named for the sim's field. relicCounters: ponytail: every counter is the relic's displayed
+            // number under its lower-case id, which only matches the sim's where the two count the same way.
+            simRelics = player?.Relics.Select(r => r.Id.Entry).ToList(),
+            relicCounters = RelicCounters(player, state),
             // False while a queued play/end-turn is still resolving: /exec only enqueues, so
             // without this an agent can read the pre-action state and repeat its action.
-            actionsIdle = RunManager.Instance.ActionQueueSet.IsEmpty && !RunManager.Instance.ActionExecutor.IsRunning,
+            actionsIdle = AgentSelector.Current != null || (RunManager.Instance.ActionQueueSet.IsEmpty && !RunManager.Instance.ActionExecutor.IsRunning),
             round = state.RoundNumber,
             // Card plays started this turn (what RingingPower checks; SlowPower counts finished ones).
             cardsPlayedThisTurn = combatMgr.History.CardPlaysStarted.Count(e => e.HappenedThisTurn(state)),
@@ -222,6 +230,16 @@ public static class AutoSpireMod
             player = player != null ? SerializePlayerCombat(player) : null,
             enemies = state.Enemies.Select(SerializeCreature).ToList()
         };
+    }
+
+    private static Dictionary<string, int> RelicCounters(Player? player, CombatState state)
+    {
+        var counters = player?.Relics.GroupBy(r => r.Id.Entry.ToLowerInvariant()).ToDictionary(g => g.Key, g => g.First().DisplayAmount)
+            ?? new Dictionary<string, int>();
+        var plays = CombatManager.Instance.History.CardPlaysStarted.Where(e => e.HappenedThisTurn(state)).ToList();
+        counters["attacks"] = plays.Count(e => e.CardPlay.Card.Type == CardType.Attack);
+        counters["skills"] = plays.Count(e => e.CardPlay.Card.Type == CardType.Skill);
+        return counters;
     }
 
     // CombatManager.IsPlayPhase was removed upstream; phase is now tracked per-player.
@@ -398,6 +416,10 @@ public static class AutoSpireMod
                 // lets a training loop fully automate "launch game -> in a run" with no
                 // human clicking, e.g. after a periodic restart to clear engine resource buildup.
                 "newrun" => ExecNewRun(parts),
+                // A real run: map moves, rewards, events, rests, shops, treasure, card prompts.
+                "map" or "reward" or "pick" or "proceed" or "event" or "rest" or "chest" or "chest_relic" or "buy"
+                    or "drop_potion" or "choose" or "choose_discard" or "choose_option"
+                    => OnMainThread<object>(() => RunBridge.Exec(verb, parts))!,
                 // Pass through to game's dev console (kill, godmode, draw, energy, gold, etc.)
                 _ => ExecConsole(cmd)
             };
@@ -486,11 +508,11 @@ public static class AutoSpireMod
         }
         if (player == null) return new { error = "no_player" };
 
-        var potions = player.Potions.ToList();
-        if (potionIndex < 0 || potionIndex >= potions.Count)
-            return new { error = "invalid_potion_index", max = potions.Count - 1 };
+        var slots = player.PotionSlots;
+        if (potionIndex < 0 || potionIndex >= slots.Count || slots[potionIndex] == null)
+            return new { error = "invalid_potion_index", max = slots.Count - 1 };
 
-        var potion = potions[potionIndex];
+        var potion = slots[potionIndex]!;
         Creature? target = null;
         if (targetId.HasValue && combatState != null)
         {
@@ -536,6 +558,8 @@ public static class AutoSpireMod
                 _ => ModelDb.Character<MegaCrit.Sts2.Core.Models.Characters.Ironclad>(),
             };
 
+            AgentSelector.Install();
+            SaveManager.Instance.SetFtuesEnabled(false);  // first-time tutorials block the Proceed buttons, as in AutoSlay
             var player = Player.CreateForNewRun(character, SaveManager.Instance.GenerateUnlockStateFromProgress(), 1uL);
             var runState = RunState.CreateForTest(
                 new List<Player> { player },

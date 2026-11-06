@@ -424,11 +424,12 @@ class STS2CombatEnv(gym.Env):
                 mask[CHOOSE_HAND:CHOOSE_HAND + min(len(hand), MAX_HAND)] = True
             else:
                 for c in (self._combat.get("player") or {}).get("discardPile") or []:
-                    mask[CHOOSE_DISCARD + CARD_IDS.index(c["id"])] = True
+                    if c["id"] in CARD_IDS:  # the live game can hold cards the sim doesn't have
+                        mask[CHOOSE_DISCARD + CARD_IDS.index(c["id"])] = True
             return mask
         for i, c in enumerate(hand[:MAX_HAND]):
-            # Armaments and live play can't answer a card prompt (only the sim reports simRelics, and
-            # only it pauses for the prompt cards): never play those.
+            # Armaments can't be played (the sim has no upgrades). The other prompt cards need a client that
+            # answers prompts: the sim and the mod report simRelics, older clients don't.
             if c["canPlay"] and c["id"] in CARDS and (c["id"] not in CHOICE_CARDS or "simRelics" in self._combat):
                 slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
                 mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True

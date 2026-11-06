@@ -516,8 +516,6 @@ live["choice"] = None
 live["player"]["hand"] = [card_to_dict("BRAND", 0, True)]
 env._combat = live
 assert not env.action_masks()[0]
-from run import live_offer
-assert live_offer(["BRAND", "BASH", "ARMAMENTS"]) == ["BASH", "ARMAMENTS"]
 
 # Prompt practice, in decks only and only when asked.
 rng = np.random.default_rng(0)
@@ -569,3 +567,29 @@ for _s in range(60):
     _e.reset(seed=_s)
     assert not set(_live.last) & set(_CC), _live.last
 print("live deck strip ok")
+
+# Live run: the game's state fills what the policy reads, and its fallback for unreadable events is safe.
+from live import LiveRun, _event_opts, _fallback_option, _shop
+from run_env import OBS_DIM as RUN_OBS_DIM
+
+live_env = RunPolicyEnv()
+live = LiveRun()
+live.sync({"player": {"hp": 50, "maxHp": 80, "gold": 200, "deck": [{"id": "BASH"}, {"id": "NOT_A_SIM_CARD"}],
+                      "relics": [{"id": "GORGET"}]}, "potionSlots": ["SPEED_POTION", None, None]})
+live.sync_map({"current": {"col": 3, "row": 0}, "boss": "VANTOM_BOSS", "points": [
+    {"col": 3, "row": 0, "type": "Ancient", "children": [{"col": 2, "row": 1}, {"col": 4, "row": 1}]},
+    {"col": 2, "row": 1, "type": "Monster", "children": [{"col": 3, "row": 16}]},
+    {"col": 4, "row": 1, "type": "Unknown", "children": [{"col": 3, "row": 16}]},
+    {"col": 3, "row": 16, "type": "Boss", "children": []}]})
+live_env.run, live_env.done, live_env.decision, live_env.offered = live, False, "path", []
+assert live.deck == ["BASH"] and live_env._obs().shape == (RUN_OBS_DIM,)
+assert list(np.flatnonzero(live_env.action_masks())) == [PATH + 2, PATH + 4]
+live.shop = _shop({"cards": [{"id": "BASH", "cost": 50}, {"cost": 60}], "relics": [], "potions": []})
+live_env.decision = "shop"
+assert len(live.shop.cards) == 5 and live.shop.removal_used and live_env.action_masks()[SHOP]
+assert _event_opts("JUNGLE_MAZE_ADVENTURE", {"SoloGold": 140, "JoinForcesGold": 55}) == [(18, 140, 0), (0, 55, 0)]
+opt = lambda key, **kw: {"key": key, "locked": False, "kills": False, **kw}
+assert _fallback_option([opt("A"), opt("B.LEAVE")]) == 1
+assert _fallback_option([opt("A", kills=True), opt("B")]) == 1
+assert _fallback_option([opt("A"), opt("B", relic="GORGET")]) == 1
+print("live run mapping ok")
