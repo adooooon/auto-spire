@@ -1,4 +1,4 @@
-from choice_test import passes_flip, passes_headbutt, passes_hp, passes_junk, score_headbutt, score_junk
+from choice_test import headbutt_subset, passes_flip, passes_headbutt, passes_hp, passes_junk, score_headbutt, score_junk
 
 hand = lambda picked: {"source": "BRAND", "options": ["WOUND", "BASH", "BASH", "BASH"], "picked": picked}
 assert score_junk([hand("WOUND")] * 3 + [hand("BASH")]) == (0.75, 0.25)
@@ -16,9 +16,15 @@ assert passes_hp(0.5, 0.4) and not passes_hp(0.5, 0.45)
 assert score_junk([{"source": "BRAND", "options": ["WOUND", "BASH", "BASH", "BASH"], "picked": "BASH"}])[1] == 0.25
 assert score_headbutt([{"source": "HEADBUTT", "options": ["BASH", "WOUND", "WOUND", "WOUND"], "picked": "WOUND"}]) == (0.0, 0.5)
 
+# row 3 subset: scored only where the first legal (lowest CARD_IDS) id is basic or junk and a good card is there too
+sub = lambda *o: {"source": "HEADBUTT", "options": list(o), "picked": o[0]}
+assert headbutt_subset([sub("BASH", "STRIKE_IRONCLAD", "WOUND")]) == []  # first id is BASH
+assert len(headbutt_subset([sub("STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "WOUND", "DEMON_FORM")])) == 1  # DEFEND_IRONCLAD first
+assert headbutt_subset([sub("DEFEND_IRONCLAD", "WOUND")]) == []  # no good card
+
 # The combat-reading rows, against stub choosers that do and don't look at the situation.
 import numpy as np
-from choice_test import collect, hp_rates, swap_rate
+from choice_test import headbutt_subset, score_headbutt_subset, collect, hp_rates, swap_rate
 from env import CHOOSE_DISCARD, CHOOSE_HAND, CARD_IDS, STS2CombatEnv
 from sim.cards import CARDS
 from sim.engine import SimClient
@@ -54,4 +60,18 @@ for smart in (True, False):
     assert env._combat is before  # the read-only rows leave the fight as they found it
     assert n_swap >= 5 and n_hp >= 5, "stub runs found too few prompts to test the rows"
     assert passes_flip(swap) == smart and passes_hp(low, high) == smart  # the rows can fail, not just pass
+
+class Last(Stub):  # answers prompts with the last legal action, plays the first
+    def predict(self, obs, action_masks, deterministic=True):
+        legal = np.flatnonzero(action_masks)
+        return np.array(legal[-1] if self.env._combat.get("choice") else legal[0]), None
+
+
+for name, m, want in (("first-legal", Stub(env, False), False), ("last-legal", Last(env, False), False)):
+    head = collect(m, "HEADBUTT", fights=60, seed=2, env=env)
+    r, ch = score_headbutt_subset(head)
+    ro, cho = score_headbutt(head)
+    n = len(headbutt_subset(head))
+    print(f"{name}: row 3 subset n={n} {r:.2f} vs {ch:.2f}; overall {ro:.2f} vs {cho:.2f}")
+    assert n >= 10 and passes_headbutt(r, ch) == want
 print("choice test checks ok")

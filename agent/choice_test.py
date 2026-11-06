@@ -5,6 +5,7 @@ Plays 200 fights per prompt card, always taking the most likely action, and scor
 """
 from __future__ import annotations
 
+import argparse
 import copy
 import sys
 
@@ -39,6 +40,16 @@ def score_headbutt(prompts):
     # A discard prompt is answered by card id, so each distinct id is one action: random is over distinct ids.
     # Scored only where a good card and a basic-or-junk card are both there (any non-good card is basic or junk).
     return _rates(prompts, is_good, distinct=True)
+
+
+def headbutt_subset(prompts):
+    """Prompts a first-legal chooser can't pass: the lowest CARD_IDS id in the discard is basic or junk, and a good card is there too.
+    (The grown model takes the first legal id, and the alphabetical order of CARD_IDS puts Bash before Strike and Wound.)"""
+    return [p for p in prompts if not is_good(min(p["options"], key=CARD_IDS.index)) and any(map(is_good, p["options"]))]
+
+
+def score_headbutt_subset(prompts):
+    return score_headbutt(headbutt_subset(prompts))
 
 
 def passes_junk(rate, chance): return rate > 0.5 and rate >= 2 * chance
@@ -116,21 +127,25 @@ def hp_rates(model, env, prompts) -> tuple[float, float, int]:
     return (float(np.mean(shares[0])), float(np.mean(shares[1])), n) if n else (0.0, 0.0, 0)
 
 
-def main(path: str):
+def main(path: str, headbutt_fights: int = 200):
     from sb3_contrib import MaskablePPO
     from sim.engine import SimClient
     model = MaskablePPO.load(path)
     env = STS2CombatEnv(client=SimClient(seed=0))
-    prompts = {c: collect(model, c, seed=i) for i, c in enumerate(("BURNING_PACT", "BRAND", "HEADBUTT"))}
+    prompts = {c: collect(model, c, fights=headbutt_fights if c == "HEADBUTT" else 200, seed=i)
+               for i, c in enumerate(("BURNING_PACT", "BRAND", "HEADBUTT"))}
     rows = []  # (name, n, text, passed)
     parts = [(c, score_junk(prompts[c]), len([p for p in prompts[c] if score_junk([p]) != (0.0, 0.0)])) for c in ("BURNING_PACT", "BRAND")]
     rows.append(("1 junk", min(n for *_, n in parts), "  ".join(f"{c} {r:.0%} vs random {ch:.0%}" for c, (r, ch), _ in parts),
                  all(passes_junk(*rc) for _, rc, _ in parts)))
     sw = [(c, *swap_rate(model, env, prompts[c])) for c in ("BURNING_PACT", "BRAND")]
     rows.append(("2 swap", min(n for _, _, n in sw), "  ".join(f"{c} {r:.0%}" for c, r, _ in sw), all(passes_flip(r) and n for _, r, n in sw)))
-    r, ch = score_headbutt(prompts["HEADBUTT"])
-    n3 = len([p for p in prompts["HEADBUTT"] if score_headbutt([p]) != (0.0, 0.0)])
-    rows.append(("3 headbutt", n3, f"non-basic non-junk {r:.0%} vs random {ch:.0%}", passes_headbutt(r, ch) and n3 > 0))
+    sub = headbutt_subset(prompts["HEADBUTT"])
+    r, ch = score_headbutt(sub)
+    ro, cho = score_headbutt(prompts["HEADBUTT"])
+    rows.append(("3 headbutt", len(sub), f"non-basic non-junk {r:.0%} vs random {ch:.0%} (prompts whose first legal id is basic/junk; "
+                 f"info only, all {len([p for p in prompts['HEADBUTT'] if score_headbutt([p]) != (0.0, 0.0)])} mixed prompts: {ro:.0%} vs random {cho:.0%})",
+                 passes_headbutt(r, ch) and len(sub) > 0))
     lo, hi, n4 = hp_rates(model, env, prompts["HEADBUTT"])
     rows.append(("4 headbutt hp", n4, f"block card at 15% HP {lo:.0%}, at 100% HP {hi:.0%}", passes_hp(lo, hi) and n4 > 0))
     for name, n, text, ok in rows:
@@ -139,4 +154,8 @@ def main(path: str):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    ap = argparse.ArgumentParser()
+    ap.add_argument("model")
+    ap.add_argument("--headbutt-fights", type=int, default=200)
+    a = ap.parse_args()
+    main(a.model, a.headbutt_fights)
