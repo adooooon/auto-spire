@@ -30,10 +30,11 @@ from sb3_contrib import MaskablePPO
 from client import AutoSpireClient
 from env import BOSS_ENCOUNTERS, ELITE_ENCOUNTERS, NORMAL_ENCOUNTERS, WEAK_ENCOUNTERS, STS2CombatEnv
 from picker import RarityOdds, offer, pick, play_fight
-from run_env import (CARD_INDEX, PATH, PICK, POTION_SKIP, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RandomCombat,
+from run_env import (CARD_INDEX, EVENT, PATH, PICK, POTION_SKIP, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RandomCombat,
                      RunPolicyEnv, potion_take_action)
 from sim.cards import CARDS, starter_deck
 from sim.engine import SimClient
+from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 from sim.map import COLS
 from sim.relics import RELICS, relic_rarity
 
@@ -186,6 +187,8 @@ def baseline_action(env: RunPolicyEnv, rng: random.Random, n: int) -> int:
         return PICK + (env.offered.index(choice) if choice else 3)
     if env.decision == "shop":
         return SHOP_REMOVE if mask[SHOP_REMOVE] and "STRIKE_IRONCLAD" in env.run.deck else SHOP_LEAVE
+    if env.decision == "event":
+        return EVENT + rng.randrange(EVENT_OPTIONS)
     if env.decision == "potion":  # take it into a free slot, never replace
         return potion_take_action(env.run.potions.index(None)) if None in env.run.potions else POTION_SKIP
     return REMOVE + CARD_INDEX["STRIKE_IRONCLAD"]
@@ -217,6 +220,20 @@ def honesty(rs: list[dict]) -> str:
                      for k in ("common", "uncommon", "rare")) + f" unmodeled={share(lambda r: r not in RELICS)}"
                      f" (expect 50/33/17, {expect})")
     return "honesty: " + " | ".join(parts) + f" | bought n={sum(s == 'shop' for run in rs for _, s in run['relic_log'])}"
+
+
+def event_report(rs: list[dict]) -> str:
+    """Does the policy's choice change with its situation? Option 1's rate, split at half HP and at 100 gold."""
+    seen = [e for run in rs for e in run["events_seen"]]
+    lines = [f"events: {len(seen) / max(len(rs), 1):.2f} per run, {100 * sum(e in MODELED_EVENTS for e in seen) / max(len(seen), 1):.0f}% modeled"]
+    log = [c for run in rs for c in run["event_log"]]
+    rate = lambda cs: f"{100 * np.mean([c[1] for c in cs]):.0f}% of {len(cs)}" if cs else "n=0"
+    for event in MODELED_EVENTS:
+        cs = [c for c in log if c[0] == event]
+        low, rich = [c for c in cs if c[2] * 2 < c[3]], [c for c in cs if c[4] >= 100]
+        lines.append(f"  {event}{' (per hold decision)' if event == 'SLIPPERY_BRIDGE' else ''}: option 1 {rate(cs)} | HP<50% {rate(low)} | HP>=50% {rate([c for c in cs if c[2] * 2 >= c[3]])}"
+                     f" | gold>=100 {rate(rich)} | gold<100 {rate([c for c in cs if c[4] < 100])}")
+    return "\n".join(lines)
 
 
 def live_run(model_path: str, n: int) -> None:
@@ -278,9 +295,10 @@ def main():
                   f"  stuck={sum(not r['cleared'] and not r['died_at'] for r in rs)}"  # hit MAX_DECISIONS
                   f"  potions_used={np.mean([r['potions_used'] for r in rs]):.2f}"
                   f"  held_at_death={np.mean([r['potions_held'] for r in died_runs]) if died_runs else 0:.2f}"
-                  f"  relics={np.mean([len(r['relics_held']) for r in rs]):.2f}"
+                  f"  relics={np.mean([sum(x != 'SWORD_OF_STONE' for x in r['relics_held']) for r in rs]):.2f}"
                   f"  elites={np.mean([r['elites_fought'] for r in rs]):.2f}")
             print("         " + honesty(rs))
+            print(event_report(rs))
             print(f"         used: {dict(used.most_common())}")
         return
     strategies = args.strategies.split(",")

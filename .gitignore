@@ -7,7 +7,7 @@ mod/out/
 mod/AutoSpire/bin/
 mod/AutoSpire/obj/
 mod/pack/.godot/
-agent/models/
+agent/models
 agent/tb_logs/
 .DS_Store
 agent/validate_mismatches.jsonl

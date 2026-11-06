@@ -591,6 +591,27 @@ Ported to the sim in `agent/sim/potions.py` and `SimCombat.use_potion`; drops an
 
 Known shortcuts are marked `ponytail:` in `engine.py` and `act.py` (grep for them); most are relic order where the source doesn't fix it. The one with a visible limit is Vexing Puzzlebox, which draws from the sim's `GENERATED` pool, not the game's unlocked pool, so it can't create a card the sim doesn't model.
 
+## Events
+
+21 events can appear in Act 1: Overgrowth's 13 and 8 shared ones. The pool, each event's `IsAllowed` and the 5 modeled ids are in `agent/sim/events.py`; effects are in `Run` (`agent/sim/act.py`). The sim only models these, and live play doesn't use them.
+
+- **Pool:** `ActModel.GenerateRooms` shuffles `AllEvents + AllSharedEvents`.
+- **Drawing:** `RoomSet.EnsureNextEventIsValid` skips events that are disallowed or already visited. If all are exhausted, they repeat.
+- **Row:** `RunManager` creates the room before adding it to the history, so row r means `TotalFloor == r` when `IsAllowed` runs.
+- **Unmodeled events** (16) stay in the pool as empty rooms, so the odds of meeting a modeled one stay right.
+
+| Event | Option 0 | Option 1 |
+|---|---|---|
+| Byrdonis Nest | +7 max HP | Egg: an Unplayable card |
+| Jungle Maze | 18 HP, then 150±15 gold | 50±15 gold |
+| Slippery Bridge (row > 6, deck not empty) | lose the card at risk | 3 HP, then 4, 5 ...: a new card is at risk |
+| Sunken Statue | Sword of Stone | 111±10 gold, then 7 HP |
+| The Legends Were True (deck not empty, HP >= 10) | Spoils Map: an Unplayable card | 8 HP for a potion, uniform over the pool |
+
+- **HP loss outside combat:** Tungsten Rod applies, Beating Remnant doesn't (combat only), and Lizard Tail saves the player at max(1, 50% of max HP).
+- **Gold:** `GainGold` truncates decimals. Jungle Maze deals its damage first, so dying there pays no gold.
+- **Sim shortcut:** the egg and the map act as a Wound in fights, which behaves the same and needs no new card id.
+
 ## File structure
 
 ### PCK contents

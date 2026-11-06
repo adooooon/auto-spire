@@ -412,3 +412,161 @@ r = fresh(seed=2); r.bags.pull = lambda *a, **k: "DRAGON_FRUIT"
 r.enter(room_of(r, "Treasure")); assert r.max_hp == 80 and "DRAGON_FRUIT" in r.relics
 
 print("act self-check ok")
+
+# --- events: each against its source in decompiled/MegaCrit.Sts2.Core.Models.Events ---------------------
+from .act import QUEST_CARD, Run, potion_rarity
+from .cards import CARDS
+from .engine import PLAYER_MAX_HP
+from .events import EVENT_ALLOWED, MODELED_EVENTS
+from .relics import RELICS
+
+
+def ev(name, **kw):
+    r = Run(random.Random(7))
+    for k, v in kw.items():
+        setattr(r, k, v)
+    r.start_event(name)
+    assert r.event == name
+    return r
+
+
+assert len(EVENT_ALLOWED) == 21 and set(MODELED_EVENTS) <= set(EVENT_ALLOWED)
+assert sorted(Run(random.Random(1)).events) == sorted(EVENT_ALLOWED)
+assert Run(random.Random(1)).events != Run(random.Random(2)).events
+
+# Byrdonis Nest: +7 max HP, or an Unplayable card.
+r = ev("BYRDONIS_NEST", hp=50)
+r.choose_event(0)
+assert (r.hp, r.max_hp, r.event) == (50 + 7, PLAYER_MAX_HP + 7, None)
+r = ev("BYRDONIS_NEST")
+n = len(r.deck)
+r.choose_event(1)
+assert r.deck[-1] == QUEST_CARD and len(r.deck) == n + 1 and CARDS[QUEST_CARD].cost == -1
+
+# Jungle Maze: solo is 18 HP for 135-165 gold, joining is free for 35-65; GainGold truncates after Bowler Hat.
+for s in range(200):
+    r = Run(random.Random(s))
+    r.start_event("JUNGLE_MAZE_ADVENTURE")
+    (hp, solo, _), (_, join, _) = r.event_opts
+    assert hp == 18 and 135 <= solo < 165 and 35 <= join < 65
+r.hp, g = 50, r.gold
+r.choose_event(0)
+assert r.hp == 32 and r.gold == g + int(solo)
+r = ev("JUNGLE_MAZE_ADVENTURE", hp=18, gold=10)  # damage comes first, so a death takes no gold
+r.choose_event(0)
+assert r.hp == 0 and r.gold == 10
+r = ev("JUNGLE_MAZE_ADVENTURE", gold=0, hp=5)
+join = r.event_opts[1][1]
+r.choose_event(1)
+assert r.hp == 5 and r.gold == int(join)
+r = ev("JUNGLE_MAZE_ADVENTURE", gold=0)  # (int)(150.7 * 1.25), not int(150.7) * 5 // 4
+r.relics.add("BOWLER_HAT")
+r.event_opts = [(18, 150.7, 0), (0, 50, 0)]
+r.choose_event(0)
+assert r.gold == 188
+
+# Sunken Statue: the sword does nothing; diving pays gold first, then 7 HP.
+r = ev("SUNKEN_STATUE")
+r.choose_event(0)
+assert "SWORD_OF_STONE" in r.relics and r.relic_log[-1] == ("SWORD_OF_STONE", "event") and "SWORD_OF_STONE" not in RELICS
+golds = set()
+for s in range(300):
+    r = Run(random.Random(s))
+    r.start_event("SUNKEN_STATUE")
+    golds.add(r.event_opts[1][1])
+assert golds == set(range(101, 122))
+r = ev("SUNKEN_STATUE", hp=7, gold=0)
+r.relics.add("DRAGON_FRUIT")  # gold first: Dragon Fruit's +1 max HP also heals 1, so 7 damage leaves 1
+r.choose_event(1)
+assert r.hp == 1 and r.gold > 0
+
+# The Legends Were True: the Unplayable map, or 8 HP for a potion picked uniformly from both pools.
+r = ev("THE_LEGENDS_WERE_TRUE", hp=40)
+r.choose_event(1)
+assert r.hp == 32 and r.pending[-1][0] == "potion" and r.event is None
+r = ev("THE_LEGENDS_WERE_TRUE", hp=40)
+r.choose_event(0)
+assert r.hp == 40 and r.deck[-1] == QUEST_CARD and not r.pending
+picks = Counter()
+for s in range(4800):
+    r = Run(random.Random(s))
+    r.start_event("THE_LEGENDS_WERE_TRUE")
+    r.hp = 40
+    r.choose_event(1)
+    picks[potion_rarity(r.pending[-1][1])] += 1
+assert all(1400 < picks[k] < 1800 for k in ("COMMON", "UNCOMMON", "RARE")), picks  # 16 of each, not rarity-weighted
+
+# Slippery Bridge: first roll skips Basic cards; holding costs 3, 4, 5 ... and never re-offers that card id or copy.
+deck = ["STRIKE_IRONCLAD", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH", "ANGER", "ANGER", "BLOODLETTING"]
+for s in range(100):
+    r = Run(random.Random(s))
+    r.deck = list(deck)
+    r.start_event("SLIPPERY_BRIDGE")
+    assert r.deck[r.bridge_card] in ("ANGER", "BLOODLETTING")
+    r.hp, first = 50, r.deck[r.bridge_card]
+    r.choose_event(1)
+    assert r.hp == 47 and r.event == "SLIPPERY_BRIDGE" and r.deck[r.bridge_card] != first and r.event_opts[1][0] == 4
+    r.choose_event(1)
+    assert r.hp == 43 and r.event_opts[1][0] == 5
+    at_risk, n = r.deck[r.bridge_card], len(r.deck)
+    r.choose_event(0)
+    assert r.event is None and len(r.deck) == n - 1 and r.deck.count(at_risk) == deck.count(at_risk) - 1
+r = Run(random.Random(3))  # all Basic: falls back to the whole deck
+r.deck = ["STRIKE_IRONCLAD", "DEFEND_IRONCLAD"]
+r.start_event("SLIPPERY_BRIDGE")
+assert r.bridge_card in (0, 1)
+r = Run(random.Random(3))  # everything skipped: a skipped card comes back
+r.deck = ["ANGER"]
+r.start_event("SLIPPERY_BRIDGE")
+r.hp = 80
+for _ in range(3):
+    r.choose_event(1)
+assert r.bridge_card == 0 and r.event == "SLIPPERY_BRIDGE"
+r = ev("SLIPPERY_BRIDGE", hp=3, deck=list(deck))  # a lethal hold ends the run
+r.choose_event(1)
+assert r.hp == 0
+
+# Damage outside combat: Tungsten Rod applies, Beating Remnant doesn't, Lizard Tail saves once.
+r = ev("SUNKEN_STATUE", hp=50)
+r.relics |= {"TUNGSTEN_ROD", "BEATING_REMNANT"}
+r.lose_hp(30)
+assert r.hp == 21
+r = Run(random.Random(1))
+r.relics.add("LIZARD_TAIL")
+r.hp = 5
+r.lose_hp(8)
+assert r.hp == PLAYER_MAX_HP // 2 and r.relic_state["lizard_used"] == 1
+r.hp = 5
+r.lose_hp(8)
+assert r.hp == 0
+r = Run(random.Random(1))
+r.relics.add("TUNGSTEN_ROD")
+r.hp = 10
+r.lose_hp(1)
+assert r.hp == 10
+
+# Pull order: IsAllowed and seen events are skipped, the skipped stay behind, and nothing repeats until all are seen.
+r = Run(random.Random(5))
+r.events = ["TEA_MASTER", "UNREST_SITE", "SUNKEN_STATUE", "THIS_OR_THAT"]
+r.gold, r.hp = 0, r.max_hp
+assert r.pull_event() == "SUNKEN_STATUE" and r.pull_event() == "THIS_OR_THAT"
+r.gold, r.hp = 200, 10  # now allowed: the index wraps back to them
+assert r.pull_event() == "TEA_MASTER" and r.pull_event() == "UNREST_SITE"
+assert r.pull_event() in r.events  # all seen: the game logs a warning and repeats
+r = Run(random.Random(5))
+r.events = ["SLIPPERY_BRIDGE", "THIS_OR_THAT"]
+r.node = next(n for n in r.map.grid.values() if n.row == 6)
+assert r.pull_event() == "THIS_OR_THAT"  # TotalFloor 6 is not > 6
+r = Run(random.Random(5))
+r.events = ["SLIPPERY_BRIDGE", "THIS_OR_THAT"]
+r.node = next(n for n in r.map.grid.values() if n.row == 7)
+assert r.pull_event() == "SLIPPERY_BRIDGE"
+assert not EVENT_ALLOWED["THE_LEGENDS_WERE_TRUE"](type("R", (), {"deck": ["BASH"], "hp": 9}))
+assert EVENT_ALLOWED["UNREST_SITE"](type("R", (), {"hp": 56, "max_hp": 80}))  # exactly 70%
+assert not EVENT_ALLOWED["UNREST_SITE"](type("R", (), {"hp": 57, "max_hp": 80}))
+
+# Unmodeled events are empty rooms that still use up the pool.
+r = Run(random.Random(5))
+r.start_event("TEA_MASTER")
+assert r.event is None
+print("event checks ok")

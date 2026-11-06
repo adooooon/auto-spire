@@ -678,6 +678,11 @@ The sim now models 97 of the 122 relics in the pool, in the sim only. The other 
 
   These are low because the random decks are weaker than decks built over a run. 4 relics still raise the win rate by about 2.5 times.
 - **Rounds:** no further round (v14, v6) was run, because neither new pair gained more than noise. v13 + v3r scored highest, so it is the pair kept and the base for events. v13a and v5 stay on disk.
+### 2026-11-05: Events
+
+The sim now models 5 of the 21 events that can appear in Act 1, in the sim only. The other 16 stay in the pool as empty rooms. The rules are in `docs/game-architecture.md`, "Events".
+
+The run policy learned a near-fixed answer for most events, and the clear rate stayed level: v13 + v6p 79.8% against 80.0% before events. The goal was choices that change with HP and gold, and two training rounds didn't reach it. Tables and the HP and gold probe are in `docs/superpowers/specs/2026-11-05-events-design.md`, "Results".
 
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 

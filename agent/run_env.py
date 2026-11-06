@@ -18,6 +18,7 @@ from picker import play_fight
 from sim.act import BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Run
 from sim.cards import CARDS
 from sim.engine import SimClient
+from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 from sim.map import BOSS_ROW, COLS, ROOM_TYPES
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
 from sim.relics import RELIC_IDS, RELICS
@@ -41,7 +42,8 @@ DRINK = SHOP_POTION + SHOP_POTIONS
 SHOP_RELIC = DRINK + POTION_SLOTS
 POTION_TAKE_2 = SHOP_RELIC + SHOP_RELICS
 DRINK_2 = POTION_TAKE_2 + MAX_POTION_SLOTS - POTION_SLOTS
-N_ACTIONS = DRINK_2 + MAX_POTION_SLOTS - POTION_SLOTS
+EVENT = DRINK_2 + MAX_POTION_SLOTS - POTION_SLOTS  # [event: option 0-1]
+N_ACTIONS = EVENT + EVENT_OPTIONS
 
 
 def potion_take_action(slot: int) -> int:
@@ -73,8 +75,10 @@ SHOP_RELIC_FEATURES = len(RELIC_IDS) + 2  # relic one-hot (zero if unmodeled), p
 POTION_OBS = 1 + POTION_SLOTS * len(POTION_IDS) + len(POTION_IDS) + SHOP_POTIONS * SHOP_POTION_FEATURES
 # Appended after that: Potion Belt slots 3-4, relics held, the shop's relics.
 RELIC_OBS = (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS) + len(RELIC_IDS) + SHOP_RELICS * SHOP_RELIC_FEATURES
+# Appended after that: event-decision flag, which event, each option's HP loss / gold / max HP, Slippery Bridge's card.
+EVENT_OBS = 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3 + len(CARD_IDS)
 OBS_DIM = (len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(BOSSES) + len(SHOP_SLOTS) * SLOT_FEATURES + 2
-           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS)
+           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS + EVENT_OBS)
 FLOOR_REWARD, CLEAR_REWARD = 0.1, 1.0
 MAX_DECISIONS = 500  # a run is ~40 decisions; this only stops a broken env
 
@@ -92,8 +96,9 @@ class RandomCombat:
 class RunPolicyEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, combat_model: str | None = None):
+    def __init__(self, combat_model: str | None = None, event_practice: bool = False):
         super().__init__()
+        self.event_practice = event_practice  # training only: real runs rarely meet an event at low HP
         self.action_space = spaces.Discrete(N_ACTIONS)
         self.observation_space = spaces.Box(low=-1.0, high=10.0, shape=(OBS_DIM,), dtype=np.float32)
         if combat_model:
@@ -126,6 +131,11 @@ class RunPolicyEnv(gym.Env):
         if self.room in FIGHTS:
             return self.run.encounter(self.room)
         self.back = "shop" if self.room == "Shop" else "path"
+        if self.run.event:
+            self.decision = "event"
+            if self.event_practice and self.run.rng.random() < 0.5:  # HP >= 10: The Legends Were True's IsAllowed
+                self.run.hp, self.run.gold = self.run.rng.randint(10, self.run.max_hp), self.run.rng.randint(0, 400)
+            return None
         self._advance()  # Treasure and Rest can queue rewards (Tiny Mailbox)
         return None
 
@@ -195,6 +205,12 @@ class RunPolicyEnv(gym.Env):
             else:
                 self.run.take_potion(potion_take_slot(a))
             self._advance()
+        elif self.decision == "event":
+            self.run.choose_event(a - EVENT)
+            if self.run.hp <= 0:
+                self.done = True
+            elif not self.run.event:
+                self._advance()  # The Legends Were True can queue a potion
         elif self.decision == "shop":
             if a == SHOP_LEAVE:
                 self.decision = self.back = "path"
@@ -216,7 +232,8 @@ class RunPolicyEnv(gym.Env):
                 "died_at": self.room if self.done and not self.cleared else None, "deck": list(self.run.deck),
                 "potions_used": sum(self.used.values()), "potions_held": sum(p is not None for p in self.run.potions),
                 "used": dict(self.used), "relic_log": list(self.run.relic_log),
-                "relics_held": sorted(self.run.relics), "elites_fought": self.run.elites_fought}
+                "relics_held": sorted(self.run.relics), "elites_fought": self.run.elites_fought,
+                "events_seen": list(self.run.events_seen), "event_log": list(self.run.event_log)}
         return self._obs(), reward, self.done, truncated, info
 
     def action_masks(self) -> np.ndarray:
@@ -247,6 +264,8 @@ class RunPolicyEnv(gym.Env):
             for i in range(len(run.potions)):
                 m[potion_take_action(i)] = True
             m[POTION_SKIP] = True
+        elif self.decision == "event":
+            m[EVENT:EVENT + EVENT_OPTIONS] = True
         else:
             for c in set(run.deck):  # no cancel: shop -> remove -> cancel would let a deterministic policy loop
                 m[REMOVE + CARD_INDEX[c]] = True
@@ -303,5 +322,14 @@ class RunPolicyEnv(gym.Env):
                     if r in RELIC_INDEX:
                         shop_r[k, RELIC_INDEX[r]] = 1
                     shop_r[k, -2], shop_r[k, -1] = run.price(price) / 100, r in RELICS and run.gold >= run.price(price)
+        event_obs = np.zeros(EVENT_OBS)
+        if run.event:
+            event_obs[0] = 1
+            event_obs[1 + MODELED_EVENTS.index(run.event)] = 1
+            k = 1 + len(MODELED_EVENTS)
+            for i, (hp, gold, max_hp) in enumerate(run.event_opts):
+                event_obs[k + 3 * i:k + 3 * i + 3] = hp / 80, gold / 100, max_hp / 80
+            if run.event == "SLIPPERY_BRIDGE":
+                event_obs[k + 3 * EVENT_OPTIONS + CARD_INDEX[run.deck[run.bridge_card]]] = 1
         return np.concatenate([head, np.minimum(deck, 10), boss, slots.ravel(), removal, grid.ravel(),
-                               potion_obs, belt, held, shop_r.ravel()]).astype(np.float32)
+                               potion_obs, belt, held, shop_r.ravel(), event_obs]).astype(np.float32)
