@@ -222,10 +222,13 @@ internal static class RunBridge
                 Field<TaskCompletionSource<int?>>(screen, "_completionSource")!.SetResult(Arg(1));
                 break;
             }
+            case "close_map": // for live_check: the debug `event` and `room` commands leave the map open
+                NMapScreen.Instance?.Close();
+                break;
             case "proceed":
                 Proceed();
                 break;
-            case "event":
+            case "option": // an event option; `event <ID>` stays the dev console's
             {
                 var ev = ((EventRoom)rs.CurrentRoom!).LocalMutableEvent;
                 if (ev.IsFinished && ev.CurrentOptions.Count == 0) TaskHelper.RunSafely(NEventRoom.Proceed());

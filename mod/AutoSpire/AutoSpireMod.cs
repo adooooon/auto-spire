@@ -417,7 +417,7 @@ public static class AutoSpireMod
                 // human clicking, e.g. after a periodic restart to clear engine resource buildup.
                 "newrun" => ExecNewRun(parts),
                 // A real run: map moves, rewards, events, rests, shops, treasure, card prompts.
-                "map" or "reward" or "pick" or "proceed" or "event" or "rest" or "chest" or "chest_relic" or "buy"
+                "map" or "close_map" or "reward" or "pick" or "proceed" or "option" or "rest" or "chest" or "chest_relic" or "buy"
                     or "drop_potion" or "choose" or "choose_discard" or "choose_option"
                     => OnMainThread<object>(() => RunBridge.Exec(verb, parts))!,
                 // Pass through to game's dev console (kill, godmode, draw, energy, gold, etc.)
@@ -494,8 +494,9 @@ public static class AutoSpireMod
     // potion <index> [targetId]
     private static object ExecPotion(string[] parts)
     {
-        if (parts.Length < 2 || !int.TryParse(parts[1], out var potionIndex))
-            return new { error = "usage: potion <index> [targetId]" };
+        if (parts.Length < 2) return new { error = "usage: potion <slot> [targetId], or potion <ID> to add one" };
+        if (!int.TryParse(parts[1], out var potionIndex))
+            return ExecConsole(string.Join(' ', parts));  // the dev console's `potion <ID>`
 
         uint? targetId = parts.Length >= 3 && uint.TryParse(parts[2], out var tid) ? tid : null;
 

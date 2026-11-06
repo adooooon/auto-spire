@@ -709,7 +709,7 @@ With all three fixed, `agent/env.py`'s `STS2CombatEnv(episodes_per_restart=N)` r
 
 ### 2026-11-06: Real runs in the live game
 
-`python run.py --live --model <combat> --run-model <run policy>` (`agent/live.py`) now plays a real Act 1: the game's own map, rewards, shops, events, rest sites and treasure, with no staged fights. It replaces the fixed route. `/state` reports `screen` and its `details`; the new `/exec` verbs are `map`, `reward`, `pick`, `proceed`, `event`, `rest`, `chest`, `chest_relic`, `buy`, `drop_potion`, `choose`, `choose_discard` and `choose_option` (`mod/AutoSpire/AutoSpireRun.cs`). `live.py` fills the fields of `sim.act.Run` that `RunPolicyEnv` reads, so the policy sees the same observation and mask as in training.
+`python run.py --live --model <combat> --run-model <run policy>` (`agent/live.py`) now plays a real Act 1: the game's own map, rewards, shops, events, rest sites and treasure, with no staged fights. It replaces the fixed route. `/state` reports `screen` and its `details`; the new `/exec` verbs are `map`, `reward`, `pick`, `proceed`, `option`, `rest`, `chest`, `chest_relic`, `buy`, `drop_potion`, `choose`, `choose_discard` and `choose_option` (`mod/AutoSpire/AutoSpireRun.cs`). `live.py` fills the fields of `sim.act.Run` that `RunPolicyEnv` reads, so the policy sees the same observation and mask as in training.
 
 What the game taught us:
 - `CardSelectCmd.Selector` is the game's test hook and answers every card prompt without its selection screen. The mod installs one on `newrun`. AutoSlay (`MegaCrit.Sts2.Core.AutoSlay`), the game's own test bot, is the model for most of this: it uses `ForceClick`, the same purchase call and `SetFtuesEnabled(false)`.
@@ -720,6 +720,6 @@ What the game taught us:
 
 First clear (v13c + v6pc): floors 1-16 won, ending at 29/80 HP against Vantom, with 0 `[ERROR]` lines in `godot.log`. One run says nothing about a clear rate.
 
-Not yet seen live: Headbutt, Brand and Burning Pact in a fight (the run offered Headbutt and passed), the five modeled events, shop removal and relic purchases, replacing a held potion, drinking Blood Potion between fights.
+`agent/live_check.py` stages what a run rarely reaches, using debug commands, and compares it with the sim's rules: the three prompt cards through `env.step`, both options of all five modeled events, relic and removal purchases, dropping a potion and drinking Blood Potion between fights. 16/16 pass. Taking a potion reward with full slots is still only covered in parts (the drop, and the claim).
 
 Where live differs from the sim, all because the sim doesn't model it: Neow and unmodeled events use a fixed rule in `live.py` (leave if allowed, else a modeled relic, else the first safe option), prompts from those take the first card, unmodeled potions are skipped, and rest sites always heal since there are no upgrades, even at full HP. `relicCounters` sends each relic's displayed number, which only matches the sim where they count the same way.

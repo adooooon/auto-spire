@@ -209,7 +209,7 @@ class LiveGame:
     def do_event(self, d: dict) -> None:
         options = d["options"]
         if d["finished"] or not options or any(o["proceed"] for o in options):
-            self.act(f"event {next((i for i, o in enumerate(options) if o['proceed']), 0)}")
+            self.act(f"option {next((i for i, o in enumerate(options) if o['proceed']), 0)}")
         elif d["id"] in MODELED_EVENTS and len(options) == 2:
             self.run.event, self.run.event_opts = d["id"], _event_opts(d["id"], d["vars"])
             self.run.bridge_card = None
@@ -220,11 +220,11 @@ class LiveGame:
             a = self.ask("event") - EVENT if self.run.event else _fallback_option(options)
             self.run.event = None
             print(f"  event {d['id']}: {options[a]['key'].rsplit('.', 1)[-1]}")
-            self.act(f"event {a}")
+            self.act(f"option {a}")
         else:
             a = _fallback_option(options)
             print(f"  event {d['id']} (not modeled): {options[a]['key'].rsplit('.', 1)[-1]}")
-            self.act(f"event {a}")
+            self.act(f"option {a}")
 
     def do_shop(self, d: dict) -> None:
         self.run.shop = _shop(d)
