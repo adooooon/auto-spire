@@ -14,7 +14,23 @@ import torch
 from sb3_contrib import MaskablePPO
 
 
-def grow(old: MaskablePPO, env) -> MaskablePPO:
+def insert_map(segments: list, old_ids: list[str], new_ids: list[str]) -> list[int]:
+    """Each old position's new index. A segment is an int (that many fixed positions) or "cards" (one per card id)."""
+    out, old_at, new_at = [], 0, 0
+    for seg in segments:
+        if seg == "cards":
+            out += [new_at + new_ids.index(c) for c in old_ids]
+            old_at, new_at = old_at + len(old_ids), new_at + len(new_ids)
+        else:
+            out += range(new_at, new_at + seg)
+            old_at, new_at = old_at + seg, new_at + seg
+    return out
+
+
+_OBS_IN = ("mlp_extractor.policy_net.0.weight", "mlp_extractor.value_net.0.weight")
+
+
+def grow(old: MaskablePPO, env, obs_map: list[int] | None = None, act_map: list[int] | None = None) -> MaskablePPO:
     new = MaskablePPO("MlpPolicy", env, n_steps=old.n_steps, batch_size=old.batch_size, n_epochs=old.n_epochs,
                       learning_rate=old.learning_rate, gamma=old.gamma, policy_kwargs=old.policy_kwargs,
                       device="cpu", verbose=1)
@@ -22,7 +38,14 @@ def grow(old: MaskablePPO, env) -> MaskablePPO:
     for key, w in old.policy.state_dict().items():
         assert all(o <= n for o, n in zip(w.shape, state[key].shape)), (key, w.shape, state[key].shape)
         grown = torch.zeros_like(state[key])
-        grown[tuple(slice(0, s) for s in w.shape)] = w
+        if obs_map is not None and key in _OBS_IN:
+            grown[:, obs_map] = w
+        elif act_map is not None and key == "action_net.weight":
+            grown[act_map, :] = w
+        elif act_map is not None and key == "action_net.bias":
+            grown[act_map] = w
+        else:
+            grown[tuple(slice(0, s) for s in w.shape)] = w
         state[key] = grown
     new.policy.load_state_dict(state)
     new.num_timesteps = old.num_timesteps
@@ -35,15 +58,21 @@ def _heads(model: MaskablePPO, obs: torch.Tensor) -> tuple[torch.Tensor, torch.T
         return model.policy.action_net(pi), model.policy.value_net(vf)
 
 
-def check(old: MaskablePPO, new: MaskablePPO, n: int = 256) -> bool:
+def check(old: MaskablePPO, new: MaskablePPO, obs_map: list[int] | None = None, act_map: list[int] | None = None,
+          n: int = 256) -> bool:
     """Same logits on the old actions and same value, whatever the new inputs hold; new actions at 0."""
-    obs = torch.randn(n, old.observation_space.shape[0])
-    extra = torch.randn(n, new.observation_space.shape[0] - obs.shape[1])
+    k, n_in = old.action_space.n, old.observation_space.shape[0]
+    obs_map = list(range(n_in)) if obs_map is None else obs_map
+    act_map = list(range(k)) if act_map is None else act_map
+    obs = torch.randn(n, n_in)
+    big = torch.randn(n, new.observation_space.shape[0])  # random at every new input
+    big[:, obs_map] = obs
     lo, vo = _heads(old, obs)
-    ln, vn = _heads(new, torch.cat([obs, extra], 1))
-    k = old.action_space.n
-    return bool(torch.allclose(lo, ln[:, :k], atol=1e-5) and torch.allclose(vo, vn, atol=1e-5)
-                and (ln[:, k:] == 0).all())
+    ln, vn = _heads(new, big)
+    rest = torch.ones(ln.shape[1], dtype=torch.bool)
+    rest[act_map] = False
+    return bool(torch.allclose(lo, ln[:, act_map], atol=1e-5) and torch.allclose(vo, vn, atol=1e-5)
+                and (ln[:, rest] == 0).all())
 
 
 def main():
