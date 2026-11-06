@@ -641,6 +641,44 @@ The sim now models 12 Act 1 potions: drops, shop potions, 3 slots, drinking in c
   These are low because the random decks are weaker than decks built over a run. They still show 2 potions roughly double or triple the win rate.
 - **Rounds:** a second round (v12, then v4) gained nothing. Both rows are within about 1 point of 66.6%, while one standard error is about 2 points. So the rounds stopped, and v11 + v3 is the model to keep.
 
+### 2026-11-04: Relics
+
+The sim now models 97 of the 122 relics in the pool, in the sim only. The other 25 still drop, with no effect, so the odds of a useful relic stay honest. The rules are in `docs/game-architecture.md`, "Relics".
+- **Training:** each stage used 6 envs and a 256×256 network. v11r and v3r are v11 and v3 grown with `agent/grow.py`.
+  - **Phase A:** combat v11r trained 15M steps on Act 1 fights with random decks and random relics, giving v13a.
+  - **Phase B:** v13a trained 20M steps on real runs (`--run-mode`, run policy v3r), giving v13.
+  - **Run policy v5:** v3r trained 4M decisions with v13 fighting.
+
+**Results**, the same 500 generated maps per row, picker N = 16, run policy choices. Potions, relics and elites columns are per run. A dash means that number wasn't recorded for that row.
+
+| Combat | Run policy | Clear | Avg floor | Gold spent | Potions used | Relics | Elites | Died: boss / elite / monster |
+|---|---|---|---|---|---|---|---|---|
+| v11 | v3 (no relics) | 66.6% | 15.7 | 112 | 2.12 | — | — | 142 / 11 / 14 |
+| v11r | v3r (the bar) | 78.8% | 15.7 | 130 | 2.10 | 1.64 | 0.60 | 83 / 12 / 11 |
+| v13 | v3r | **80.0%** | 15.7 | 131 | 2.05 | 1.64 | 0.60 | 79 / 11 / 10 |
+| v13 | v5 | 77.8% | 15.9 | 125 | 2.01 | 1.72 | 0.58 | 101 / 5 / 5 |
+
+- **Most of the gain came from the relics themselves.** v11r + v3r are the older models grown to accept relics, with no training on them, yet they cleared 78.8%. In a smaller check (N = 2) the same pair cleared 69.4% with relic effects turned off.
+- **Training on relics added no clear gain.** v13 + v3r is 1.2 points above the bar, and v13 + v5 is 1 point below it. One standard error is about 2 points, so both are within noise.
+- **v5 buys more relics** (25 over 500 runs, against 4) and halves the deaths before the boss, but more runs then lose at the boss. The net result is no better.
+- **Honesty report** for v13 + v3r, against the expected odds:
+
+| Source | n | Common / uncommon / rare | Expected | No-effect | Expected |
+|---|---|---|---|---|---|
+| Elite drops | 287 | 48 / 37 / 14 | 50 / 33 / 17 | 11% | 11.6% |
+| Treasure rooms | 531 | 52 / 33 / 15 | 50 / 33 / 17 | 13% | 12.3% |
+
+- **Bosses** with v13, 200 fights each, random decks, no potions, 0 or 4 random modeled relics:
+
+| Boss | 0 relics | 4 relics |
+|---|---|---|
+| Vantom | 12% | 30% |
+| Ceremonial Beast | 16% | 39% |
+| The Kin | 10% | 28% |
+
+  These are low because the random decks are weaker than decks built over a run. 4 relics still raise the win rate by about 2.5 times.
+- **Rounds:** no further round (v14, v6) was run, because neither new pair gained more than noise. v13 + v3r scored highest, so it is the pair kept and the base for events. v13a and v5 stay on disk.
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.
