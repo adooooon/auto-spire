@@ -14,9 +14,10 @@ import numpy as np
 from gymnasium import spaces
 
 from env import CARD_IDS, STS2CombatEnv
+from grow import insert_map
 from picker import play_fight
 from sim.act import BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Run
-from sim.cards import CARDS
+from sim.cards import CARDS, CHOICE_CARDS
 from sim.engine import SimClient
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 from sim.map import BOSS_ROW, COLS, ROOM_TYPES
@@ -119,6 +120,7 @@ class RunPolicyEnv(gym.Env):
         self.decision, self.offered, self.room, self.back = "path", [], "Ancient", "path"
         self.done, self.cleared, self.steps = False, False, 0
         self.used: Counter = Counter()  # potion uses this run, by id
+        self.choice_log: list = []  # (source, picked, options) of every card prompt in this run's fights
         return self._obs(), {}
 
     # --- the pieces MapRunModeEnv (run.py) reuses ------------------------------------------------
@@ -175,6 +177,7 @@ class RunPolicyEnv(gym.Env):
             traceback.print_exc()
             return False
         combat = env.client._combat
+        self.choice_log += combat.choice_log
         run.hp, run.max_hp, run.potions = combat.player_hp, combat.player_max_hp, list(combat.potions)
         self.used += before - Counter(p for p in run.potions if p)
         return won
@@ -233,7 +236,8 @@ class RunPolicyEnv(gym.Env):
                 "potions_used": sum(self.used.values()), "potions_held": sum(p is not None for p in self.run.potions),
                 "used": dict(self.used), "relic_log": list(self.run.relic_log),
                 "relics_held": sorted(self.run.relics), "elites_fought": self.run.elites_fought,
-                "events_seen": list(self.run.events_seen), "event_log": list(self.run.event_log)}
+                "events_seen": list(self.run.events_seen), "event_log": list(self.run.event_log),
+                "choice_log": list(self.choice_log)}
         return self._obs(), reward, self.done, truncated, info
 
     def action_masks(self) -> np.ndarray:
@@ -333,3 +337,11 @@ class RunPolicyEnv(gym.Env):
                 event_obs[k + 3 * EVENT_OPTIONS + CARD_INDEX[run.deck[run.bridge_card]]] = 1
         return np.concatenate([head, np.minimum(deck, 10), boss, slots.ravel(), removal, grid.ravel(),
                                potion_obs, belt, held, shop_r.ravel(), event_obs]).astype(np.float32)
+
+
+def run_maps() -> tuple[list[int], list[int]]:
+    """(obs_map, act_map) for grow.py: where a run policy trained before the three prompt cards keeps its inputs."""
+    old_ids = sorted(set(CARD_IDS) - set(CHOICE_CARDS))
+    tail = 2 + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS + 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3
+    obs = [len(HEAD_DECISIONS) + 5, "cards", len(BOSSES)] + ["cards", 2] * len(SHOP_SLOTS) + [tail, "cards"]
+    return insert_map(obs, old_ids, CARD_IDS), insert_map([REMOVE, "cards", N_ACTIONS - REMOVE - len(CARD_IDS)], old_ids, CARD_IDS)

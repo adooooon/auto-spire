@@ -241,6 +241,19 @@ def event_report(rs: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def choice_report(rs: list[dict]) -> str:
+    """What the run's fights asked the policy to pick: per prompt card, count and share that took a junk card
+    (among prompts offering both junk and non-junk)."""
+    log = [c for run in rs for c in run["choice_log"]]
+    parts = []
+    for card in CHOICE_CARDS:
+        cs = [c for c in log if c[0] == card]
+        mixed = [c for c in cs if len({CARDS[o].rarity == "Status" for o in c[2]}) == 2]
+        junk = 100 * sum(CARDS[c[1]].rarity == "Status" for c in mixed) / max(len(mixed), 1)
+        parts.append(f"{card}: {len(cs)} (junk {junk:.0f}% of {len(mixed)})")
+    return "choices: " + " | ".join(parts)
+
+
 def live_run(model_path: str, n: int) -> None:
     """One run in the live game. Burning Blood is the game's own; rest sites are `heal 24`."""
     model = MaskablePPO.load(model_path)
@@ -304,6 +317,7 @@ def main():
                   f"  elites={np.mean([r['elites_fought'] for r in rs]):.2f}")
             print("         " + honesty(rs))
             print(event_report(rs))
+            print(choice_report(rs))
             print(f"         used: {dict(used.most_common())}")
         return
     strategies = args.strategies.split(",")

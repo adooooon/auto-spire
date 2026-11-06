@@ -80,7 +80,7 @@ def main():
     ap.add_argument("old")
     ap.add_argument("new")
     ap.add_argument("--env", choices=["combat", "run"], required=True)
-    ap.add_argument("--insert-cards", action="store_true", help="old model predates the Headbutt/Burning Pact/Brand inputs (combat)")
+    ap.add_argument("--insert-cards", action="store_true", help="old model predates the Headbutt/Burning Pact/Brand inputs")
     args = ap.parse_args()
     maps = (None, None)
     if args.env == "combat":
@@ -92,6 +92,9 @@ def main():
     else:
         from run_env import RunPolicyEnv
         env = RunPolicyEnv()
+        if args.insert_cards:
+            from run_env import run_maps
+            maps = run_maps()
     old = MaskablePPO.load(args.old, device="cpu")
     new = grow(old, env, *maps)
     if not check(old, new, *maps):

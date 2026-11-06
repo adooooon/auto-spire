@@ -528,3 +528,27 @@ assert all(d.count("WOUND") <= 2 for d in decks)
 assert set(CHOICE_CARDS) <= {x for d in decks for x in d}
 assert not any("WOUND" in random_deck(rng) for _ in range(500))
 print("choice env checks ok")
+
+from run_env import REMOVE, run_maps
+obs_map, act_map = run_maps()
+renv.reset(seed=1)
+renv.run, renv.decision, renv.offered = fx["run"], fx["decision"], fx["offered"]
+renv.back = "path"
+new_obs = renv._obs()
+assert np.array_equal(new_obs[obs_map], fx["run_obs"])
+assert not np.delete(new_obs, obs_map).any()
+assert np.array_equal(renv.action_masks()[act_map], fx["run_mask"])
+old_ids = sorted(set(CARD_IDS) - set(CHOICE_CARDS))
+assert act_map[REMOVE + old_ids.index("TRUE_GRIT")] == REMOVE + CARD_IDS.index("TRUE_GRIT")
+
+# The three cards can be picked; Armaments can't.
+renv.reset(seed=1)
+renv.decision, renv.offered = "pick", ["HEADBUTT", "ARMAMENTS", "BRAND"]
+m = renv.action_masks()
+assert m[PICK] and not m[PICK + 1] and m[PICK + 2]
+
+# Choices made in a run's fights reach info, and the report reads them.
+from run import choice_report
+line = choice_report([{"choice_log": [("BRAND", "WOUND", ("WOUND", "BASH")), ("HEADBUTT", "BASH", ("BASH", "WOUND"))]}])
+assert "BRAND: 1" in line and "junk 100%" in line and "HEADBUTT: 1" in line
+print("run choice checks ok")
