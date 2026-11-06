@@ -80,17 +80,21 @@ def main():
     ap.add_argument("old")
     ap.add_argument("new")
     ap.add_argument("--env", choices=["combat", "run"], required=True)
+    ap.add_argument("--insert-cards", action="store_true", help="old model predates the Headbutt/Burning Pact/Brand inputs (combat)")
     args = ap.parse_args()
+    maps = (None, None)
     if args.env == "combat":
-        from env import STS2CombatEnv
+        from env import STS2CombatEnv, combat_maps
         from sim.engine import SimClient
         env = STS2CombatEnv(client=SimClient())
+        if args.insert_cards:
+            maps = combat_maps()
     else:
         from run_env import RunPolicyEnv
         env = RunPolicyEnv()
     old = MaskablePPO.load(args.old, device="cpu")
-    new = grow(old, env)
-    if not check(old, new):
+    new = grow(old, env, *maps)
+    if not check(old, new, *maps):
         raise SystemExit("grow self-check failed; not saved")
     new.save(args.new)
     print(f"grow self-check ok: {old.observation_space.shape[0]}->{new.observation_space.shape[0]} inputs, "

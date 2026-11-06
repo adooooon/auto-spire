@@ -2,8 +2,8 @@
 by simulating fights with the combat policy, and take the one that loses the least HP.
 
 Every option is scored on the same seeds (common random numbers), so the comparison
-isn't decided by luck of the draw. Offered cards the sim doesn't model (Armaments,
-Headbutt, Burning Pact, Brand: card-choice prompts) can't be scored and are never picked.
+isn't decided by luck of the draw. Offered cards the sim doesn't model (Armaments: it
+chooses a card to upgrade) can't be scored and are never picked.
 
 Runs that use this (sim and live) live in run.py.
 """

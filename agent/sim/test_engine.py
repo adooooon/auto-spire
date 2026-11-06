@@ -366,19 +366,7 @@ assert set(ENCOUNTER_GROUPS["act1"]) == set(ENCOUNTERS), "env encounter groups o
 # Env: every masked-legal action is accepted by the sim (no invalid actions).
 from env import END_TURN, STS2CombatEnv  # noqa: E402
 
-class _AnsweringClient(SimClient):
-    """ponytail: env.py has no choice actions yet, so this takes the first option for it. Use a plain
-    SimClient here once it does."""
-
-    def play(self, hand_index, target_id=None):
-        result = super().play(hand_index, target_id)
-        while result.get("choice"):
-            hand = result["choice"]["kind"] == "hand"
-            result = self._combat.choose_card(0) if hand else self._combat.choose_discard(self._combat.discard_pile[0])
-        return result
-
-
-env = STS2CombatEnv(encounter=list(ENCOUNTERS), client=_AnsweringClient(seed=4), random_decks=True)
+env = STS2CombatEnv(encounter=list(ENCOUNTERS), client=SimClient(seed=4), random_decks=True)
 for _ in range(100):
     env.reset()
     done = False

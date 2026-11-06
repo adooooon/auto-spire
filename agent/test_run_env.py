@@ -3,7 +3,9 @@ from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
 from sim.potions import POTION_IDS
-assert COMBAT_OBS == 1530 and COMBAT_ACTIONS == 61
+assert COMBAT_OBS == 1574 and COMBAT_ACTIONS == 158
+from env import CHOICE_FEATURES, POTION_FEATURES, RELIC_FEATURES
+POT0 = COMBAT_OBS - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
 from sim.engine import SimClient, SimLoopError
 
 # Review focus 1: a sim infinite loop ends the episode as aborted instead of hanging or raising.
@@ -28,10 +30,10 @@ env._episode_count = 1
 env.relics, env.relic_state, env.potions = {"VAJRA", "POTION_BELT"}, {"pen_nib": 3}, ["BLOCK_POTION"] * 5
 obs, _ = env.reset(seed=0)
 live = {k: v for k, v in env._combat.items() if k not in ("simRelics", "relicCounters", "potionSlots")}
-assert not _encode(live)[1396:].any()
+assert not _encode(live)[POT0:].any()
 assert obs.max() <= 10
-assert obs[1396 + 2 * len(POTION_IDS) + RELIC_IDS.index("VAJRA")] == 1
-pen = 1396 + 2 * len(POTION_IDS) + len(RELIC_IDS)
+assert obs[POT0 + 2 * len(POTION_IDS) + RELIC_IDS.index("VAJRA")] == 1
+pen = POT0 + 2 * len(POTION_IDS) + len(RELIC_IDS)
 assert abs(obs[pen] - 0.3) < 1e-6
 assert env.action_masks()[POTION_ACTION + 4 * MAX_ENEMIES]
 env._combat = live
@@ -57,7 +59,7 @@ from sim.act import Shop
 
 from run_env import SHOP_RELIC, potion_take_action, drink_action, POTION_TAKE_2, DRINK_2
 
-assert N_ACTIONS == 122 and OBS_DIM == 1317 + 12 + len(CARD_INDEX)  # the events block is appended
+assert N_ACTIONS == 125 and OBS_DIM == 1335 + 12 + len(CARD_INDEX)  # the events block is appended
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -83,9 +85,9 @@ a.reset(seed=11)
 b.reset(seed=11)
 assert [(n.col, n.row, n.type) for n in a.run.map.nodes()] == [(n.col, n.row, n.type) for n in b.run.map.nodes()]
 
-# Review focus 2: an offer of only prompt cards leaves only "skip".
+# Review focus 2: an offer of only unmodeled cards (Armaments) leaves only "skip".
 renv.reset(seed=1)
-renv.decision, renv.offered = "pick", ["ARMAMENTS", "HEADBUTT", "BRAND"]
+renv.decision, renv.offered = "pick", ["ARMAMENTS"]
 assert np.flatnonzero(renv.action_masks()).tolist() == [PICK + 3]
 
 # Review focus 3: a broke player in a shop can only leave; removal is masked once used.
@@ -149,7 +151,7 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == END_TURN + 1 + 20 and COMBAT_OBS == 1530
+assert cenv.action_space.n == COMBAT_ACTIONS == 158 and COMBAT_OBS == 1574
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()
@@ -158,7 +160,7 @@ assert np.flatnonzero(cenv.action_masks()[POTION_ACTION:]).tolist() == [0, 1, 8]
 # Review focus 2: a potion that ends the fight is a win, minus the use cost.
 cenv.potions = ["EXPLOSIVE_AMPOULE", None, None]
 obs, _ = cenv.reset(seed=0)
-assert obs.shape == (COMBAT_OBS,) and obs[1358 + POTION_IDS.index("EXPLOSIVE_AMPOULE")] == 1
+assert obs.shape == (COMBAT_OBS,) and obs[POT0 - POTION_FEATURES + POTION_IDS.index("EXPLOSIVE_AMPOULE")] == 1
 alive = [e for e in cenv.client._combat.enemies if e.is_alive]
 for e in alive:
     e.hp = 5
@@ -383,7 +385,7 @@ print("run env checks ok")
 from run_env import EVENT, EVENT_OBS, PATH
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 
-assert N_ACTIONS == EVENT + EVENT_OPTIONS == 122 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
+assert N_ACTIONS == EVENT + EVENT_OPTIONS == 125 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
 renv = RunPolicyEnv()
 obs, _ = renv.reset(seed=11)
 assert not obs[-EVENT_OBS:].any()  # all zero off an event, so a grown model sees what it knew
@@ -464,3 +466,65 @@ for i in range(20):  # off by default, so evaluation stays on real runs
     enter_event(renv, "THE_LEGENDS_WERE_TRUE")
     assert (renv.run.hp, renv.run.gold) == (40, 77)
 print("event env checks ok")
+
+import pickle
+from env import CHOOSE_DISCARD, CHOOSE_HAND, CHOICE_FEATURES, CARD_IDS, combat_maps, random_deck
+from sim.cards import CHOICE_CARDS
+from sim.cards import card_to_dict
+fx = pickle.load(open("test_data/grow_fixture.pkl", "rb"))
+
+# Every old input has the same value at its new index, and new inputs read 0 with no new cards.
+obs_map, act_map = combat_maps()
+new_obs = _encode(fx["combat"])
+assert np.array_equal(new_obs[obs_map], fx["combat_obs"])
+assert not np.delete(new_obs, obs_map).any()
+assert act_map == list(range(CHOOSE_HAND)) and COMBAT_OBS == len(new_obs)
+
+
+def choice_env(hand, discard=()):
+    env = STS2CombatEnv(encounter="MAWLER_NORMAL", client=SimClient(seed=0))
+    env.deck, env.potions, env.relics, env.relic_state = list(hand), [], set(), {}
+    env._episode_count = 1
+    env.reset(seed=0)
+    c = env.client._combat
+    c.hand, c.discard_pile, c.energy = list(hand), list(discard), 3
+    env._combat = env.client.combat()
+    return env, c
+
+
+# A hand prompt: only the legal slots are open, and the action resolves it.
+env, c = choice_env(["BURNING_PACT", "WOUND", "BASH"])
+env.step(0)
+m = env.action_masks()
+assert m.nonzero()[0].tolist() == [CHOOSE_HAND, CHOOSE_HAND + 1]
+obs = _encode(env._combat)
+assert obs[-CHOICE_FEATURES] == 1 and obs[-CHOICE_FEATURES + 2 + CHOICE_CARDS.index("BURNING_PACT")] == 1
+env.step(CHOOSE_HAND + 1)
+assert c.exhaust_pile == ["BASH"] and c.pending_choice is None and env.action_masks()[END_TURN]
+
+# A discard prompt: open by card id.
+env, c = choice_env(["HEADBUTT"], ["BASH", "WOUND", "WOUND"])
+env.step(0)
+m = env.action_masks()
+assert m.nonzero()[0].tolist() == sorted(CHOOSE_DISCARD + CARD_IDS.index(x) for x in ("BASH", "WOUND"))
+env.step(CHOOSE_DISCARD + CARD_IDS.index("BASH"))
+assert c.draw_pile[-1] == "BASH"
+
+# Review focus 5: live has no simRelics, so the three cards stay masked and a live pick can't take them.
+live = {k: v for k, v in env.client.combat().items() if k != "simRelics"}
+live["choice"] = None
+live["player"]["hand"] = [card_to_dict("BRAND", 0, True)]
+env._combat = live
+assert not env.action_masks()[0]
+from run import live_offer
+assert live_offer(["BRAND", "BASH", "ARMAMENTS"]) == ["BASH", "ARMAMENTS"]
+
+# Prompt practice, in decks only and only when asked.
+rng = np.random.default_rng(0)
+decks = [random_deck(rng, prompt_practice=True) for _ in range(4000)]
+assert 0.50 < np.mean([any(x in CHOICE_CARDS for x in d) for d in decks]) < 0.68
+assert 0.20 < np.mean(["WOUND" in d for d in decks]) < 0.30
+assert all(d.count("WOUND") <= 2 for d in decks)
+assert set(CHOICE_CARDS) <= {x for d in decks for x in d}
+assert not any("WOUND" in random_deck(rng) for _ in range(500))
+print("choice env checks ok")

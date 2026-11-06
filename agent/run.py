@@ -32,7 +32,7 @@ from env import BOSS_ENCOUNTERS, ELITE_ENCOUNTERS, NORMAL_ENCOUNTERS, WEAK_ENCOU
 from picker import RarityOdds, offer, pick, play_fight
 from run_env import (CARD_INDEX, EVENT, PATH, PICK, POTION_SKIP, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RandomCombat,
                      RunPolicyEnv, potion_take_action)
-from sim.cards import CARDS, starter_deck
+from sim.cards import CARDS, CHOICE_CARDS, starter_deck
 from sim.engine import SimClient
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 from sim.map import COLS
@@ -46,6 +46,11 @@ FIGHTS = [n for n in ACT1_PATH if n != "rest"]
 PICK_ENCOUNTERS = NORMAL_ENCOUNTERS + ELITE_ENCOUNTERS  # what a pick is scored against
 BURNING_BLOOD_HEAL = 6
 REST_HEAL = 24
+
+
+def live_offer(offered: list[str]) -> list[str]:
+    """The live game can't answer the sim's card prompts, so live play never picks those cards."""
+    return [c for c in offered if c not in CHOICE_CARDS]
 
 
 def choose(strategy: str, model, deck: list[str], offered: list[str], rng: random.Random, n: int) -> str | None:
@@ -262,7 +267,7 @@ def live_run(model_path: str, n: int) -> None:
                 break
             time.sleep(0.25)
         offered = next(([c["id"] for c in r["cards"]] for r in rewards or [] if r.get("cards")), [])
-        choice = choose("mc", model, deck, offered, rng, n)
+        choice = choose("mc", model, deck, live_offer(offered), rng, n)
         deck = deck + ([choice] if choice else [])
         print(f"{node} won, {client.state()['player']['hp']} HP; offered {offered} -> {choice or 'skip'}")
     print(f"Act 1 cleared: {client.state()['player']['hp']} HP, deck +{deck[10:]}")

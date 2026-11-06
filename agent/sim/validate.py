@@ -25,7 +25,7 @@ import env as env_module
 from client import AutoSpireClient
 from env import PLAYER_POWERS, STS2CombatEnv, _power, _ready, parse_encounters
 
-from .cards import CARDS, RARES, UNCOMMONS
+from .cards import CARDS, CHOICE_CARDS, RARES, UNCOMMONS
 from .engine import HISTORY_FIELDS, MONSTERS, WRIGGLER_SLOT_OPENERS, SimCombat, _Enemy, legal_moves
 
 # Random enemy picks (compared only with one hittable enemy): the cards, and powers that hit or
@@ -38,9 +38,9 @@ RANDOM_PILE_POWERS = {"AggressionPower", "StampedePower"}
 
 
 def ids(cards) -> list[str]:
-    """Card ids; ones the sim doesn't model (generated prompt cards like Headbutt) become an inert
-    Wound so pile sizes still line up."""
-    return [x["id"] if x["id"] in CARDS else "WOUND" for x in cards]
+    """Card ids; ones this check doesn't model (the prompt cards, which pause for a choice the live game
+    makes and the replay can't mirror) become an inert Wound so pile sizes still line up."""
+    return [x["id"] if x["id"] in CARDS and x["id"] not in CHOICE_CARDS else "WOUND" for x in cards]
 
 
 def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> SimCombat:
@@ -65,7 +65,7 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
     sim.attack_plays = min(sim.attack_plays, sim.cards_played)
     # Free-this-turn cards (Infernal Blade's) are visible live: cost 0 where the sim would charge.
     sim.free_cards = []
-    sim.free_cards = [x["id"] for x in p["hand"] if x["cost"] == 0 and x["id"] in CARDS and sim.cost(x["id"]) > 0]
+    sim.free_cards = [x["id"] for x in p["hand"] if x["cost"] == 0 and x["id"] in CARDS and x["id"] not in CHOICE_CARDS and sim.cost(x["id"]) > 0]
     # /combat lists exactly the enemies still in combat (dead illusions included), in order,
     # so sim index + 1 lines up with list position.
     for e in c["enemies"]:
@@ -198,7 +198,7 @@ def main():
             print(f"[{enc} #{fight}] " + ", ".join(f"{e['modelId']}({e['hp']})" for e in c["enemies"]))
             while c.get("inCombat"):
                 hand = c["player"]["hand"]
-                playable = [i for i, x in enumerate(hand) if x["canPlay"] and x["id"] in CARDS]  # (no prompts)
+                playable = [i for i, x in enumerate(hand) if x["canPlay"] and x["id"] in CARDS and x["id"] not in CHOICE_CARDS]  # (no prompts)
                 idx = random.choice(playable) if playable and random.random() < 0.85 else None
                 living = [e for e in c["enemies"] if e["isAlive"]]
                 played = hand[idx]["id"] if idx is not None else ""

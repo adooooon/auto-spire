@@ -1,12 +1,14 @@
 """Gymnasium environment for STS2 combat, scoped to a single fixed encounter.
 
-Action space: Discrete(MAX_HAND * MAX_ENEMIES + 1)
+Action space: Discrete(N_ACTIONS)
   a < END_TURN -> play hand card a // MAX_ENEMIES at enemy slot a % MAX_ENEMIES
                   (slot = index into the living-enemy list, sent as its combatId;
                   only AnyEnemy cards use the slot — others are masked to slot 0)
   END_TURN     -> end turn
   a > END_TURN -> use potion slot (a - POTION_ACTION) // MAX_ENEMIES at enemy slot % MAX_ENEMIES
                   (sim only: masked off when /combat has no potionSlots, i.e. live)
+  CHOOSE_HAND + i      -> answer a hand card prompt with hand card i (sim only)
+  CHOOSE_DISCARD + k   -> answer a discard prompt with CARD_IDS[k] (sim only)
 
 Observation space: Box(OBS_DIM,) float32 — see _encode() for the layout.
 
@@ -26,7 +28,8 @@ import requests
 from gymnasium import spaces
 
 from client import AutoSpireClient
-from sim.cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
+from grow import insert_map
+from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
 from sim.engine import MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
 from sim.relics import RELIC_IDS
@@ -74,9 +77,15 @@ RELIC_COUNTERS = (("pen_nib", 10), ("nunchaku", 10), ("tuning_fork", 10), ("happ
 RELIC_POWERS = (("ThornsPower", 5), ("VigorPower", 10), ("SelfFormingClayPower", 5))
 # Appended after POTION_FEATURES: slots 3-4 one-hot, relic multi-hot, counters, this turn's Attacks and Skills mod 3, powers.
 RELIC_FEATURES = (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS) + len(RELIC_IDS) + len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS)
-OBS_DIM = MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES + RELIC_FEATURES
+# Appended last: a card prompt is open (hand, discard), and which card asked.
+CHOICE_FEATURES = 2 + len(CHOICE_CARDS)
+OBS_DIM = (MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES
+           + RELIC_FEATURES + CHOICE_FEATURES)
 POTION_ACTION = END_TURN + 1  # potion actions come after END_TURN, so old action indices are unchanged
-N_ACTIONS = POTION_ACTION + MAX_POTION_SLOTS * MAX_ENEMIES  # slots 3-4 extend the potion block, which is last
+# Card prompts: pick hand slot i, or a discard-pile card by id. Appended after the potion block.
+CHOOSE_HAND = POTION_ACTION + MAX_POTION_SLOTS * MAX_ENEMIES  # slots 3-4 extend the potion block
+CHOOSE_DISCARD = CHOOSE_HAND + MAX_HAND
+N_ACTIONS = CHOOSE_DISCARD + len(CARD_IDS)
 # ponytail: a fight-level reward can't see that a potion saved now helps a later fight, so each use
 # costs this much HP's worth (x hp_weight). Tune from run.py's potions_used / held_at_death numbers.
 POTION_COST_HP = 5
@@ -93,7 +102,15 @@ def _encode_card(card: dict) -> list[float]:
     ] + [float(card["id"] == cid) for cid in CARD_IDS]
 
 
-def random_deck(rng: np.random.Generator) -> list[str]:
+def combat_maps() -> tuple[list[int], list[int]]:
+    """(obs_map, act_map) for grow.py: where a model trained before the three prompt cards keeps its inputs."""
+    old_ids = sorted(set(CARD_IDS) - set(CHOICE_CARDS))
+    rest = MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES + RELIC_FEATURES
+    return (insert_map([6, "cards"] * MAX_HAND + [PLAYER_FEATURES] + ["cards"] * 3 + [rest], old_ids, CARD_IDS),
+            list(range(CHOOSE_HAND)))
+
+
+def random_deck(rng: np.random.Generator, prompt_practice: bool = False) -> list[str]:
     """Starter deck minus 0-3 Strikes/Defends, plus 0-8 random Ironclad cards (with replacement) —
     roughly the decks an Act 1 run sees. Rarity 60/30/10%: Rares oversampled vs. the ~3% of offers
     so the policy learns to play them."""
@@ -101,7 +118,12 @@ def random_deck(rng: np.random.Generator) -> list[str]:
     for _ in range(rng.integers(0, 4)):
         deck.remove(rng.choice([c for c in deck if c != "BASH"]))
     pools = [COMMONS, UNCOMMONS, RARES]
-    return deck + [str(rng.choice(pools[rng.choice(3, p=[0.6, 0.3, 0.1])])) for _ in range(rng.integers(0, 9))]
+    deck += [str(rng.choice(pools[rng.choice(3, p=[0.6, 0.3, 0.1])])) for _ in range(rng.integers(0, 9))]
+    if prompt_practice and rng.random() < 0.5:  # the prompt cards are rare in offers, so seed them in
+        deck.append(str(rng.choice(CHOICE_CARDS)))
+        if rng.random() < 0.5:  # Wounds give Burning Pact and Brand something worth exhausting
+            deck += ["WOUND"] * int(rng.integers(1, 3))
+    return deck
 
 
 def random_potions(rng: np.random.Generator, slots: int = POTION_SLOTS) -> list[str]:
@@ -191,7 +213,12 @@ def _encode(combat: dict) -> np.ndarray:
     relic_feats += [ctr.get("attacks", 0) % 3 / 3.0, ctr.get("skills", 0) % 3 / 3.0]
     relic_feats += [_power(player, name) / n for name, n in RELIC_POWERS]
 
-    return np.array(hand_feats + player_feats + pile_feats + enemy_feats + potion_feats + relic_feats, dtype=np.float32)
+    choice = combat.get("choice") or {}
+    choice_feats = [float(choice.get("kind") == "hand"), float(choice.get("kind") == "discard")]
+    choice_feats += [float(choice.get("source") == cid) for cid in CHOICE_CARDS]
+
+    return np.array(hand_feats + player_feats + pile_feats + enemy_feats + potion_feats + relic_feats + choice_feats,
+                    dtype=np.float32)
 
 
 def _ready(combat: dict) -> bool:
@@ -216,6 +243,7 @@ class STS2CombatEnv(gym.Env):
         client: AutoSpireClient | None = None,
         episodes_per_restart: int = 40,
         random_decks: bool = False,
+        prompt_practice: bool = False,  # random decks include the card-prompt cards (training only)
         heal: bool = True,  # False: HP carries over from the previous fight (multi-fight runs)
         hp_weight: float = 1.0,  # HP lost costs hp_weight x what dealing that much damage earns
     ):
@@ -223,6 +251,7 @@ class STS2CombatEnv(gym.Env):
         self.encounters = [encounter] if isinstance(encounter, str) else list(encounter)
         self.client = client or AutoSpireClient()
         self.random_decks = random_decks
+        self.prompt_practice = prompt_practice
         self.heal = heal
         self.hp_weight = hp_weight
         self.deck: list[str] | None = None  # fixed deck (e.g. a run's), overriding random/starter
@@ -255,7 +284,7 @@ class STS2CombatEnv(gym.Env):
                 if self.heal:
                     self.client.exec("heal 999")
                 # The deck persists across fights in a live run, so set it every episode.
-                self.client.set_deck(self.deck or (random_deck(self.np_random) if self.random_decks else starter_deck()))
+                self.client.set_deck(self.deck or (random_deck(self.np_random, self.prompt_practice) if self.random_decks else starter_deck()))
                 set_relics = getattr(self.client, "set_relics", None)  # sim only; before set_potions (Potion Belt)
                 relics, state = (self.relics, self.relic_state) if self.relics is not None else (
                     random_relics(self.np_random) if self.random_decks else (set(), {}))
@@ -287,7 +316,11 @@ class STS2CombatEnv(gym.Env):
             prev_player_hp = _player_hp(prev)
 
             used_potion = False
-            if action < END_TURN:
+            if action >= CHOOSE_DISCARD:
+                result = self.client.exec(f"choose_discard {CARD_IDS[int(action) - CHOOSE_DISCARD]}")
+            elif action >= CHOOSE_HAND:
+                result = self.client.exec(f"choose {int(action) - CHOOSE_HAND}")
+            elif action < END_TURN:
                 card, slot = divmod(int(action), MAX_ENEMIES)
                 hand = (prev.get("player") or {}).get("hand") or []
                 enemies = _living(prev)
@@ -382,10 +415,18 @@ class STS2CombatEnv(gym.Env):
         hand = (self._combat.get("player") or {}).get("hand") or []
         n_enemies = min(len(_living(self._combat)), MAX_ENEMIES)
         mask = np.zeros(N_ACTIONS, dtype=bool)
+        choice = self._combat.get("choice")
+        if choice:  # a card prompt is open: only its answers are legal
+            if choice["kind"] == "hand":
+                mask[CHOOSE_HAND:CHOOSE_HAND + min(len(hand), MAX_HAND)] = True
+            else:
+                for c in (self._combat.get("player") or {}).get("discardPile") or []:
+                    mask[CHOOSE_DISCARD + CARD_IDS.index(c["id"])] = True
+            return mask
         for i, c in enumerate(hand[:MAX_HAND]):
-            # Cards the sim doesn't model open a choice prompt the mod can't answer (live, Stoke /
-            # Infernal Blade can generate them): never play them.
-            if c["canPlay"] and c["id"] in CARDS:
+            # Armaments and live play can't answer a card prompt (only the sim reports simRelics, and
+            # only it pauses for the prompt cards): never play those.
+            if c["canPlay"] and c["id"] in CARDS and (c["id"] not in CHOICE_CARDS or "simRelics" in self._combat):
                 slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
                 mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True
         for i, pid in enumerate((self._combat.get("potionSlots") or [])[:MAX_POTION_SLOTS]):
