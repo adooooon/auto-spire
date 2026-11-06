@@ -458,6 +458,11 @@ class SimCombat:
     _post_play: bool = False  # AutoPostPlay: Stampede / Howl autoplays at the end of the turn
     _rupture: int | None = None  # Strength owed for HP lost to the card being played (RupturePower)
     _ethereal_exhausts: int = 0  # Dark Embrace draws for these after the hand flush
+    # A card waiting on the player's choice: {"kind": "hand" | "discard", "source": card_id}.
+    pending_choice: dict | None = None
+    choice_log: list[tuple[str, str, tuple[str, ...]]] = field(default_factory=list)  # (source, picked, options), paused prompts only
+    _pausable: bool = False  # the play being resolved may stop at a prompt (not an autoplay)
+    _paused: tuple | None = None  # what the rest of a paused play needs, see _run_plays
 
     @property
     def max_energy(self) -> int:
@@ -479,6 +484,8 @@ class SimCombat:
         return CARDS[card_id].ethereal or ("GHOST_SEED" in self.relics and card_id in ("STRIKE_IRONCLAD", "DEFEND_IRONCLAD"))
 
     def fight(self, encounter: str, deck: list[str] | None = None) -> None:
+        # A play abandoned at a prompt never finishes, so its depth and Rupture count go too.
+        self.pending_choice, self.choice_log, self._paused, self._effect_depth, self._rupture = None, [], None, 0, None
         self.enemies = []
         for entry in encounter_roster(encounter, self.rng):
             model_id, _, first = entry.partition(":")
@@ -542,6 +549,8 @@ class SimCombat:
             not (self.ringing and self.cards_played)
 
     def play_card(self, hand_index: int, target_id: int | None = None) -> dict:
+        if self.pending_choice:
+            return {"error": "choice_pending"}
         if not self.in_combat or not self.is_play_phase:
             return {"error": "not_play_phase"}
         if hand_index < 0 or hand_index >= len(self.hand):
@@ -563,14 +572,51 @@ class SimCombat:
         if card_id in self.free_cards:
             self.free_cards.remove(card_id)
         self.hand.pop(hand_index)
+        self._pausable = True
         self._play(card_id, target, x, energy_value=spent)
+        self._pausable = False
         self._check_win()
+        if self.pending_choice:
+            return {"ok": True, "choice": self.pending_choice}
         return {"ok": True, "played": card.title, "index": hand_index}
+
+    def choose_card(self, hand_index: int) -> dict:
+        """Answer a pending "hand" prompt with the card at hand_index."""
+        if not self.pending_choice or self.pending_choice["kind"] != "hand" or not 0 <= hand_index < len(self.hand):
+            return {"error": "invalid_choice"}
+        options = tuple(self.hand)
+        return self._resume_play(self.hand.pop(hand_index), options)
+
+    def choose_discard(self, card_id: str) -> dict:
+        """Answer a pending "discard" prompt with a card in the discard pile."""
+        if not self.pending_choice or self.pending_choice["kind"] != "discard" or card_id not in self.discard_pile:
+            return {"error": "invalid_choice"}
+        options = tuple(self.discard_pile)
+        self.discard_pile.remove(card_id)
+        return self._resume_play(card_id, options)
+
+    def _resume_play(self, picked: str, options: tuple[str, ...]) -> dict:
+        """The rest of the play that stopped at the prompt: AfterCardPlayed, further plays, result pile."""
+        source = self.pending_choice["source"]
+        self.choice_log.append((source, picked, options))
+        self.pending_choice = None
+        self._finish_choice(source, picked)
+        self._effect_depth -= 1
+        card_id, target, x, force_exhaust, energy_value, plays_left, mine, outer = self._paused
+        self._paused = None
+        self._pausable = True  # One-Two Punch's second play asks again
+        if self._after_resolve(CARDS[card_id], mine, outer):
+            self._run_plays(card_id, target, x, force_exhaust, energy_value, plays_left)
+        self._pausable = False
+        self._check_win()
+        return {"ok": True, "choice": self.pending_choice}
 
     def use_potion(self, slot: int, target_id: int | None = None) -> dict:
         """PotionModel.OnUse for the modeled potions; target_id is an enemy combatId (enemy potions only).
         Potion damage and Block Potion's block are Unpowered: block absorbs the damage, but Strength,
         Vulnerable, Weak, Shrink, Dexterity and Frail don't apply (ValuePropExtensions.IsPoweredAttack)."""
+        if self.pending_choice:
+            return {"error": "choice_pending"}
         if not self.in_combat or not self.is_play_phase:
             return {"error": "not_play_phase"}
         if not 0 <= slot < len(self.potions) or self.potions[slot] not in POTIONS:
@@ -635,7 +681,13 @@ class SimCombat:
         if attack and self.pw.get("OneTwoPunchPower"):  # ModifyCardPlayCount, then Decrement
             plays = 2
             self._decrement("OneTwoPunchPower")
-        for _ in range(plays):
+        self._run_plays(card_id, target, x, force_exhaust, energy_value, plays)
+
+    def _run_plays(self, card_id: str, target: _Enemy | None, x: int, force_exhaust: bool, energy_value: int | None,
+                   plays: int) -> None:
+        card = CARDS[card_id]
+        attack = card.type == "Attack"
+        for plays_left in range(plays - 1, -1, -1):
             self._play_seq += 1
             mine = self._play_id = self._play_seq
             # BeforeCardPlayed. Intimidating Helmet reads the card's energy value (an autoplay spends 0 but costs its cost).
@@ -657,29 +709,12 @@ class SimCombat:
             try:
                 self._resolve(card_id, target, x)
             finally:
-                self._effect_depth -= 1
-            self._play_id = mine
-            owed, self._rupture = self._rupture, outer
-            if not self.in_combat:
+                if not self.pending_choice:  # a paused play is still resolving: _resume_play lowers it
+                    self._effect_depth -= 1
+            if self.pending_choice:
+                self._paused = (card_id, target, x, force_exhaust, energy_value, plays_left, mine, outer)
                 return
-            # AfterCardPlayed
-            self.cards_played += 1
-            self.cards_done += 1
-            if attack:
-                self.attacks_done += 1
-            elif card.type == "Skill":
-                self.skills_done += 1
-            elif card.type == "Power":
-                self.powers_done += 1
-            if attack and self.pw.get("RagePower"):
-                self._gain_block(self.pw["RagePower"])
-            if attack and self.pw.get("JugglingPower") and self.attack_plays == 3:  # 3rd Attack this turn
-                for _ in range(self.pw["JugglingPower"]):
-                    self._add_to_hand(card_id)  # CreateClone
-            self._gain_strength(owed)
-            self._after_card_relics(card)
-            self._check_win()
-            if not self.in_combat:
+            if not self._after_resolve(card, mine, outer):
                 return
         if card.type != "Power":  # Powers: PileType.None, removed from combat
             if card.exhaust or force_exhaust:
@@ -687,6 +722,31 @@ class SimCombat:
             else:
                 self.discard_pile.append(card_id)
         self._check_empty_hand()
+
+    def _after_resolve(self, card, mine: int, outer: int | None) -> bool:
+        """AfterCardPlayed for one play. False if the fight is over."""
+        attack = card.type == "Attack"
+        self._play_id = mine
+        owed, self._rupture = self._rupture, outer
+        if not self.in_combat:
+            return False
+        self.cards_played += 1
+        self.cards_done += 1
+        if attack:
+            self.attacks_done += 1
+        elif card.type == "Skill":
+            self.skills_done += 1
+        elif card.type == "Power":
+            self.powers_done += 1
+        if attack and self.pw.get("RagePower"):
+            self._gain_block(self.pw["RagePower"])
+        if attack and self.pw.get("JugglingPower") and self.attack_plays == 3:  # 3rd Attack this turn
+            for _ in range(self.pw["JugglingPower"]):
+                self._add_to_hand(card.id)  # CreateClone
+        self._gain_strength(owed)
+        self._after_card_relics(card)
+        self._check_win()
+        return self.in_combat
 
     def _check_empty_hand(self) -> None:
         """CombatManager.CheckForEmptyHand -> Unceasing Top: after a card play or potion (autoplays too) that isn't
@@ -759,9 +819,11 @@ class SimCombat:
                 self.discard_pile.append(card_id)
             return
         target = self.rng.choice(hittable) if c.target_type == "AnyEnemy" else None
-        outer = self._play_id
+        outer, pausable = self._play_id, self._pausable
+        self._pausable = False
         self._play(card_id, target, self.energy, force_exhaust)
         self._play_id = outer  # Pen Nib / Vambrace / Lamp keep the outer card
+        self._pausable = pausable
 
     def _resolve(self, card_id: str, target: _Enemy | None, x: int) -> None:
         """A card's OnPlay: the generic fields in the order documented in cards.py, or _special."""
@@ -905,6 +967,14 @@ class SimCombat:
                 self._autoplay(top)
         elif cid == "PRIMAL_FORCE":
             self.hand = ["GIANT_ROCK" if CARDS[c].type == "Attack" else c for c in self.hand]
+        elif cid == "HEADBUTT":
+            self._hit(card, target, card.damage)
+            self._ask("discard", cid)
+        elif cid == "BURNING_PACT":
+            self._ask("hand", cid)
+        elif cid == "BRAND":
+            self._lose_hp(1, from_card=True)
+            self._ask("hand", cid)
         elif cid == "STOKE":
             n = len(self.hand)
             for c in list(self.hand):
@@ -914,6 +984,38 @@ class SimCombat:
                 self._add_to_hand(self.rng.choice(GENERATED))
         else:
             raise KeyError(f"no special logic for {cid}")
+
+    def _ask(self, kind: str, source: str) -> None:
+        """CardSelectCmd.FromHand / FromCombatPile, choosing exactly 1: nothing if the fight is ending or there are no
+        options, no prompt for 1 option, else the player picks and the play stops here until they do."""
+        pile = self.hand if kind == "hand" else self.discard_pile
+        if self._ending() or not pile:
+            self._finish_choice(source, None)
+        elif len(pile) == 1:
+            self._finish_choice(source, pile.pop())
+        elif self._pausable:
+            self.pending_choice = {"kind": kind, "source": source}
+        else:
+            # ponytail: the game prompts the player here too (only Whispering Earring has a selector). Autoplays
+            # nest inside other effects, so pausing one needs a stack of paused plays; add it if Havoc's pick matters.
+            picked = self.rng.choice(pile)
+            pile.remove(picked)
+            self._finish_choice(source, picked)
+
+    def _finish_choice(self, source: str, picked: str | None) -> None:
+        """The rest of the card after its prompt. picked is already out of its pile."""
+        if source == "HEADBUTT":
+            if picked:
+                self.draw_pile.append(picked)  # CardPilePosition.Top
+            return
+        if picked:
+            self._exhaust(picked)
+        if self._ending():  # CardPileCmd.Draw and PowerCmd.Apply no-op once the fight is ending
+            return
+        if source == "BURNING_PACT":
+            self._draw(2)
+        else:  # Brand
+            self._gain_strength(1)
 
     def _hit(self, card, target: _Enemy | None, base: int, hits: int = 1) -> None:
         # Vigor and Strike Dummy add to the base like Strength; Pen Nib doubles the attack it fires on.
@@ -1305,6 +1407,8 @@ class SimCombat:
         self.is_play_phase = True
 
     def end_turn(self) -> dict:
+        if self.pending_choice:
+            return {"error": "choice_pending"}
         if not self.in_combat or not self.is_play_phase:
             return {"error": "not_play_phase"}
         self.is_play_phase = False
@@ -1491,6 +1595,7 @@ class SimCombat:
             "isPlayPhase": self.is_play_phase,
             "round": self.round,
             "cardsPlayedThisTurn": self.cards_played,
+            "choice": self.pending_choice,
             "currentSide": "Player" if self.is_play_phase else "Enemy",
             "simRelics": sorted(self.relics),  # sim only; player.relics is filled by the live game
             "relicCounters": {**self.relic_state, "attacks": self.attacks_done, "skills": self.skills_done},
@@ -1568,6 +1673,10 @@ class SimClient:
             return {"ok": True}
         if verb == "play":
             return self._combat.play_card(int(parts[1]), int(parts[2]) if len(parts) > 2 else None)
+        if verb == "choose":
+            return self._combat.choose_card(int(parts[1]))
+        if verb == "choose_discard":
+            return self._combat.choose_discard(parts[1])
         if verb == "end":
             return self._combat.end_turn()
         if verb == "potion":

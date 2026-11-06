@@ -29,11 +29,10 @@ RELIC_PRICE = {"COMMON": 175, "UNCOMMON": 225, "RARE": 275, "SHOP": 200}  # Reli
 SHOP_RELICS = 3  # MerchantInventory.PopulateRelicEntries: two rolled, then one SHOP
 FALL_THROUGH = ("SHOP", "COMMON", "UNCOMMON", "RARE")  # RelicGrabBag.GetAvailableDeque
 
-# The Ironclad pool by rarity. These open a card-choice prompt the sim can't play yet, so they're
+# The Ironclad pool by rarity. Armaments chooses a card to upgrade and the sim has no upgrades, so it's
 # offered and stocked like any card but can't be picked or bought.
-PROMPT_CARDS = {"ARMAMENTS": "Skill", "HEADBUTT": "Attack", "BURNING_PACT": "Skill", "BRAND": "Skill"}
-REWARD_POOLS = {"COMMON": COMMONS + ("ARMAMENTS", "HEADBUTT"), "UNCOMMON": UNCOMMONS + ("BURNING_PACT",),
-                "RARE": RARES + ("BRAND",)}
+PROMPT_CARDS = {"ARMAMENTS": "Skill"}
+REWARD_POOLS = {"COMMON": COMMONS + ("ARMAMENTS",), "UNCOMMON": UNCOMMONS, "RARE": RARES}
 
 WEAK = tuple(e for e in ENCOUNTERS if e.endswith("_WEAK"))
 ELITES = tuple(e for e in ENCOUNTERS if e.endswith("_ELITE"))

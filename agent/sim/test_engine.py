@@ -366,7 +366,19 @@ assert set(ENCOUNTER_GROUPS["act1"]) == set(ENCOUNTERS), "env encounter groups o
 # Env: every masked-legal action is accepted by the sim (no invalid actions).
 from env import END_TURN, STS2CombatEnv  # noqa: E402
 
-env = STS2CombatEnv(encounter=list(ENCOUNTERS), client=SimClient(seed=4), random_decks=True)
+class _AnsweringClient(SimClient):
+    """ponytail: env.py has no choice actions yet, so this takes the first option for it. Use a plain
+    SimClient here once it does."""
+
+    def play(self, hand_index, target_id=None):
+        result = super().play(hand_index, target_id)
+        while result.get("choice"):
+            hand = result["choice"]["kind"] == "hand"
+            result = self._combat.choose_card(0) if hand else self._combat.choose_discard(self._combat.discard_pile[0])
+        return result
+
+
+env = STS2CombatEnv(encounter=list(ENCOUNTERS), client=_AnsweringClient(seed=4), random_decks=True)
 for _ in range(100):
     env.reset()
     done = False
@@ -479,18 +491,23 @@ assert s.exec(f"potion 0 {nib}")["ok"] and s.combat()["potionSlots"] == [None, N
 # Golden pin: relic-less fights must never change (relic code must not leak into them).
 import hashlib  # noqa: E402
 
-from .cards import COMMONS, RARES, UNCOMMONS, starter_deck  # noqa: E402
+from . import engine  # noqa: E402
+from .cards import CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, starter_deck  # noqa: E402
 from .potions import POTION_IDS  # noqa: E402
 
 
 def _no_relic_trace() -> str:
-    """Every fight state on seeded random play. Any change here means relic code leaked into relic-less fights."""
+    """Every fight state on seeded random play. Any change here means relic code leaked into relic-less fights.
+    The hash predates the choice cards, so they're held out of the decks and of Stoke / Infernal Blade: it still
+    pins that every other card plays the same, RNG included."""
     h = hashlib.sha256()
+    pool = [c for c in COMMONS + UNCOMMONS + RARES if c not in CHOICE_CARDS]
+    generated, engine.GENERATED = engine.GENERATED, tuple(c for c in engine.GENERATED if c not in CHOICE_CARDS)
     for seed in range(66):
         rng = random.Random(seed)
         c = SimCombat(rng=random.Random(seed))
         c.potions = [rng.choice(POTION_IDS), None, rng.choice(POTION_IDS)]
-        c.fight(ENCOUNTERS[seed % len(ENCOUNTERS)], starter_deck() + rng.choices(COMMONS + UNCOMMONS + RARES, k=6))
+        c.fight(ENCOUNTERS[seed % len(ENCOUNTERS)], starter_deck() + rng.choices(pool, k=6))
         for _ in range(300):
             if not c.in_combat:
                 break
@@ -502,6 +519,7 @@ def _no_relic_trace() -> str:
             except SimLoopError:
                 break
             h.update(repr((c.player_hp, c.player_block, c.energy, c.hand, c.round, [e.hp for e in c.enemies])).encode())
+    engine.GENERATED = generated
     return h.hexdigest()
 
 
@@ -1374,5 +1392,112 @@ for relics, hp, end in ((("DEMON_TONGUE",), 50, 50), (("DEMON_TONGUE", "MEAT_ON_
     hand(c, "BLOODLETTING")
     c.play_card(0)
     assert c.won and c.player_hp == end, (relics, c.player_hp)
+
+# Headbutt: 9 damage, then a discard card goes on top of the draw pile.
+c = solo(["HEADBUTT", "STRIKE_IRONCLAD"])
+c.discard_pile = ["BASH", "DEFEND_IRONCLAD"]
+hp = c.enemies[0].hp
+assert c.play_card(0, 1)["ok"]
+assert c.pending_choice == {"kind": "discard", "source": "HEADBUTT"} and c.enemies[0].hp == hp - 9 and c.energy == 2
+assert c.combat_dict()["choice"] == c.pending_choice
+assert c.play_card(0, 1)["error"] == "choice_pending" and c.end_turn()["error"] == "choice_pending"
+assert c.choose_discard("BASH")["ok"]
+assert c.draw_pile[-1] == "BASH" and c.pending_choice is None and c.discard_pile == ["DEFEND_IRONCLAD", "HEADBUTT"]
+assert c.choice_log == [("HEADBUTT", "BASH", ("BASH", "DEFEND_IRONCLAD"))]
+
+# Burning Pact: exhaust from hand, then draw 2.
+c = solo(["BURNING_PACT", "WOUND", "STRIKE_IRONCLAD"])
+c.play_card(0)
+assert c.pending_choice["kind"] == "hand" and c.hand == ["WOUND", "STRIKE_IRONCLAD"]
+assert c.choose_card(0)["ok"]
+assert c.exhaust_pile == ["WOUND"] and len(c.hand) == 3 and c.discard_pile == ["BURNING_PACT"]
+
+# Brand: lose 1 HP first, exhaust, then 1 Strength. Costs 0.
+c = solo(["BRAND", "WOUND", "BASH"])
+hp, s = c.player_hp, c.strength
+c.play_card(0)
+assert c.player_hp == hp - 1 and c.energy == 3 and c.strength == s
+c.choose_card(1)
+assert c.exhaust_pile == ["BASH"] and c.strength == s + 1
+
+# CardSelectCmd: one legal card is taken with no prompt; none means the rest still resolves.
+c = solo(["BURNING_PACT", "WOUND"]); c.play_card(0)
+assert c.pending_choice is None and c.exhaust_pile == ["WOUND"] and len(c.hand) == 2 and not c.choice_log
+c = solo(["BRAND"]); s = c.strength; c.play_card(0)
+assert c.pending_choice is None and c.strength == s + 1 and not c.exhaust_pile
+c = solo(["HEADBUTT"]); c.play_card(0, 1)
+assert c.pending_choice is None and c.discard_pile == ["HEADBUTT"]
+
+# Review focus 1: One-Two Punch plays Headbutt twice, so two prompts.
+c = solo(["HEADBUTT"]); c.discard_pile = ["BASH", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"]
+c.pw["OneTwoPunchPower"] = 1
+c.play_card(0, 1); c.choose_discard("BASH")
+assert c.pending_choice == {"kind": "discard", "source": "HEADBUTT"}
+c.choose_discard("DEFEND_IRONCLAD")
+assert c.pending_choice is None and c.draw_pile[-2:] == ["BASH", "DEFEND_IRONCLAD"] and c.discard_pile == ["STRIKE_IRONCLAD", "HEADBUTT"]
+
+# Review focus 2: killing the last enemy ends the fight with no prompt.
+c = solo(["HEADBUTT"]); c.discard_pile = ["BASH", "DEFEND_IRONCLAD"]; c.enemies[0].hp = 1
+c.play_card(0, 1)
+assert not c.in_combat and c.pending_choice is None
+
+# Review focus 3: Brand at 1 HP is lethal before the prompt.
+c = solo(["BRAND", "WOUND", "BASH"]); c.player_hp = 1
+c.play_card(0)
+assert not c.in_combat and c.pending_choice is None
+
+# Review focus 4: an autoplay can't pause. Havoc plays Headbutt and it picks at random.
+c = solo(["HAVOC"]); c.draw_pile = ["HEADBUTT"]; c.discard_pile = ["BASH", "DEFEND_IRONCLAD"]
+c.play_card(0)
+assert c.pending_choice is None and c.in_combat and "HEADBUTT" in c.exhaust_pile and len(c.draw_pile) == 1
+
+# A new fight clears a pending choice.
+c = solo(["BRAND", "WOUND", "BASH"]); c.play_card(0); c.fight("MAWLER_NORMAL")
+assert c.pending_choice is None and not c.choice_log
+
+# Client commands, and all three enter the generated pool and the reward pools.
+client = SimClient(seed=1); client.exec("fight MAWLER_NORMAL"); cc = client._combat
+cc.hand, cc.discard_pile = ["BRAND", "WOUND", "BASH"], []
+client.play(0); assert client.exec("choose 0")["ok"] and cc.exhaust_pile == ["WOUND"]
+cc.hand, cc.discard_pile = ["HEADBUTT"], ["BASH", "WOUND"]
+client.play(0, 1); assert client.exec("choose_discard WOUND")["ok"] and cc.draw_pile[-1] == "WOUND"
+from sim.act import PROMPT_CARDS, REWARD_POOLS
+from sim.cards import CARDS, CHOICE_CARDS, GENERATED
+assert set(CHOICE_CARDS) <= set(GENERATED) and "ARMAMENTS" not in CARDS and PROMPT_CARDS == {"ARMAMENTS": "Skill"}
+assert "HEADBUTT" in REWARD_POOLS["COMMON"] and REWARD_POOLS["COMMON"].count("ARMAMENTS") == 1
+assert "BURNING_PACT" in REWARD_POOLS["UNCOMMON"] and "BRAND" in REWARD_POOLS["RARE"]
+
+# Invalid answers change nothing; so does an answer with no prompt open.
+c = solo(["BRAND", "WOUND", "BASH"]); c.play_card(0)
+assert c.choose_card(2)["error"] == c.choose_card(-1)["error"] == c.choose_discard("WOUND")["error"] == "invalid_choice"
+assert c.pending_choice and c.use_potion(0)["error"] == "choice_pending" and not c.choice_log
+c = solo(["STRIKE_IRONCLAD"])
+assert c.choose_card(0)["error"] == c.choose_discard("BASH")["error"] == "invalid_choice"
+
+# A pause keeps the play open: Rupture's Strength for Brand's HP pays out after the card, and the effect depth
+# comes back to 0 (Unceasing Top needs that). A new fight drops an abandoned play's depth.
+c = solo(["BRAND", "WOUND", "BASH"]); s = c.strength; c.pw["RupturePower"] = 2
+c.play_card(0)
+assert c._effect_depth == 1 and c.strength == s and c.cards_played == 0
+c.choose_card(0)
+assert c._effect_depth == 0 and c.strength == s + 3 and c.cards_played == 1 and c._rupture is None
+c = solo(["BRAND", "WOUND", "BASH"]); c.relics = {"UNCEASING_TOP"}
+c.play_card(0); c.choose_card(0); c.play_card(0, 1)
+assert c.hand == ["DEFEND_IRONCLAD"] and c._effect_depth == 0  # Bash emptied the hand: Top drew
+c = solo(["BRAND", "WOUND", "BASH"]); c.play_card(0); c.fight("MAWLER_NORMAL")
+assert c._effect_depth == 0 and c._rupture is None
+
+# Exhaust goes through the hooks. A lethal exhaust (Charon's Ashes) makes the fight ending: no draw, no Strength.
+c = solo(["BURNING_PACT", "DRUM_OF_BATTLE", "WOUND"]); c.pw["FeelNoPainPower"] = 3
+c.play_card(0); c.choose_card(0)
+assert c.player_block == 3 and c.energy == 4 and c.exhausted_this_turn
+c = solo(["BURNING_PACT", "WOUND", "BASH"]); c.relics = {"CHARONS_ASHES"}; c.enemies[0].hp, c.enemies[0].block = 3, 0
+c.play_card(0); c.choose_card(0)
+assert not c.in_combat and c.won and len(c.hand) == 1
+
+# Headbutt's damage takes Strength and Pen Nib like any attack.
+c = solo(["HEADBUTT"]); c.strength = 2; c.relics, c.relic_state = {"PEN_NIB"}, {"pen_nib": 9}; hp = c.enemies[0].hp
+c.play_card(0, 1)
+assert c.enemies[0].hp == hp - 22
 
 print("sim self-check ok")

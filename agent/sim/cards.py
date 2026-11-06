@@ -2,14 +2,14 @@
 
 Sources (see ../../decompiled/MegaCrit.Sts2.Core.Models.Cards/): the Ironclad
 starter cards, the status cards Act 1 monsters add, and the whole Ironclad pool
-(IroncladCardPool.cs) except Armaments, Headbutt, Brand and Burning Pact (they open a
-card-choice prompt the mod can't answer yet) and the multiplayer-only Demonic Shield and
-Tank. Unupgraded only.
+(IroncladCardPool.cs) except Armaments (it chooses a card to upgrade, and the sim has no
+upgrades) and the multiplayer-only Demonic Shield and Tank. Unupgraded only.
 
 The generic fields resolve in this order, which matches every card using them:
 self HP loss -> block -> damage -> Vulnerable/Weak -> temporary Strength -> draw ->
 energy -> heal -> exhaust a random hand card -> copy to discard -> autoplay -> powers.
 Cards with their own logic (`special`) are handled by id in engine.SimCombat._special.
+CHOICE_CARDS ask the player to choose another card (engine.SimCombat.pending_choice).
 """
 from __future__ import annotations
 
@@ -71,6 +71,7 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("CINDER", "Cinder", "Attack", 2, "AnyEnemy", rarity="Common", damage=18, exhaust_random=True),
     # Havoc's Exhaust is only a hover tip: Havoc itself is discarded; the card it plays is exhausted.
     CardDef("HAVOC", "Havoc", "Skill", 1, "Self", rarity="Common", autoplay_top=True),
+    CardDef("HEADBUTT", "Headbutt", "Attack", 1, "AnyEnemy", rarity="Common", damage=9, special=True),
     CardDef("IRON_WAVE", "Iron Wave", "Attack", 1, "AnyEnemy", rarity="Common", block=5, damage=5),
     CardDef("MOLTEN_FIST", "Molten Fist", "Attack", 1, "AnyEnemy", rarity="Common", damage=10, double_vulnerable=True, exhaust=True),
     CardDef("PERFECTED_STRIKE", "Perfected Strike", "Attack", 2, "AnyEnemy", rarity="Common", damage=6, damage_per_strike=2,
@@ -103,6 +104,7 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("WHIRLWIND", "Whirlwind", "Attack", 0, "AllEnemies", rarity="Uncommon", damage=5, x_cost=True),
     CardDef("BATTLE_TRANCE", "Battle Trance", "Skill", 0, "Self", rarity="Uncommon", draw=3,
             powers=(("NoDrawPower", 1),)),
+    CardDef("BURNING_PACT", "Burning Pact", "Skill", 1, "Self", rarity="Uncommon", special=True),
     CardDef("COLOSSUS", "Colossus", "Skill", 1, "Self", rarity="Uncommon", block=5, powers=(("ColossusPower", 1),)),
     CardDef("DOMINATE", "Dominate", "Skill", 1, "AnyEnemy", rarity="Uncommon", vulnerable=1, exhaust=True, special=True),
     # Its Exhaust is only a hover tip: when something else exhausts it, gain 2 energy.
@@ -134,6 +136,7 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("PACTS_END", "Pact's End", "Attack", 0, "AllEnemies", rarity="Rare", damage=17, special=True),
     CardDef("TEAR_ASUNDER", "Tear Asunder", "Attack", 2, "AnyEnemy", rarity="Rare", damage=5, special=True),
     CardDef("THRASH", "Thrash", "Attack", 1, "AnyEnemy", rarity="Rare", damage=4, hits=2, special=True),
+    CardDef("BRAND", "Brand", "Skill", 0, "Self", rarity="Rare", special=True),
     CardDef("CASCADE", "Cascade", "Skill", 0, "Self", rarity="Rare", x_cost=True, special=True),
     CardDef("IMPERVIOUS", "Impervious", "Skill", 2, "Self", rarity="Rare", block=30, exhaust=True),
     CardDef("NOT_YET", "Not Yet", "Skill", 2, "Self", rarity="Rare", heal=10, exhaust=True, generated=False),
@@ -158,8 +161,9 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
 COMMONS, UNCOMMONS, RARES = (tuple(sorted(cid for cid in CARDS if CARDS[cid].rarity == r))
                               for r in ("Common", "Uncommon", "Rare"))
 # CardFactory.FilterForCombat: what Stoke / Infernal Blade draw from (uniformly, unlocked pool).
-# ponytail: the game's pool also has the 4 prompt cards the sim doesn't model.
+# ponytail: the game's pool also has Armaments, which the sim doesn't model.
 GENERATED = tuple(c for c in COMMONS + UNCOMMONS + RARES if CARDS[c].generated)
+CHOICE_CARDS = ("BRAND", "BURNING_PACT", "HEADBUTT")
 
 
 def starter_deck() -> list[str]:
