@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from .cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
 from .engine import ENCOUNTERS, PLAYER_MAX_HP
+from .events import EVENT_ALLOWED, MODELED_EVENTS
 from .map import ActMap, Node, generate_map
 from .potions import POTION_POOL, POTION_SLOTS, POTIONS
 from .relics import IRONCLAD_RELICS, NOT_IN_SHOPS, RELIC_POOL, RELICS, relic_rarity
@@ -41,6 +42,11 @@ NORMALS = tuple(e for e in ENCOUNTERS if e not in WEAK + ELITES + BOSSES)
 TAGS = {"NIBBITS_WEAK": {"Nibbit"}, "SLIMES_WEAK": {"Slimes"}, "SHRINKER_BEETLE_WEAK": {"Shrinker"},  # EncounterModel.Tags
         "FUZZY_WURM_CRAWLER_WEAK": {"Crawler"}, "SLIMES_NORMAL": {"Slimes"}, "OVERGROWTH_CRAWLERS": {"Crawler", "Shrinker"},
         "FLYCONID_NORMAL": {"Mushroom", "Slimes"}, "SNAPPING_JAXFRUIT_NORMAL": {"Mushroom"}}
+
+
+# Byrdonis Egg and Spoils Map are Unplayable cards that pay off outside what Act 1 models. A Wound does the same
+# in a fight. ponytail: shares Wound's observation slot; give them their own ids if the egg's hatch or Act 2 is modeled.
+QUEST_CARD = "WOUND"
 
 
 def card_type(card_id: str) -> str:
@@ -282,11 +288,19 @@ class Run:
         self.potion_odds = PotionOdds()
         self.potion_drop: str | None = None  # the potion next_reward last surfaced, until taken or skipped
         self.pending: list[tuple[str, object]] = []  # ("cards", offer) | ("potion", pid), in order
+        self.events = sorted(EVENT_ALLOWED)
+        rng.shuffle(self.events)  # ActModel.GenerateRooms
+        self.events_visited = 0  # RoomSet.eventsVisited
+        self.events_seen: list[str] = []  # every event entered, modeled or not
+        self.event: str | None = None  # the modeled event waiting on a choice
+        self.event_opts: list[tuple[int, int, int]] = []  # each option's (HP loss, gold gain, max HP gain)
+        self.event_log: list[tuple] = []  # (event, option, hp, max_hp, gold) at each choice
+        self.bridge_card: int | None = None  # Slippery Bridge: deck index of the card at risk
+        self.bridge_skipped: set[int] = set()
 
     def gain_gold(self, amount: int) -> None:
-        """PlayerCmd.GainGold: Bowler Hat first, truncated; then Dragon Fruit."""
-        if "BOWLER_HAT" in self.relics:
-            amount = amount * 5 // 4
+        """PlayerCmd.GainGold: Bowler Hat on the decimal, then truncated; then Dragon Fruit."""
+        amount = int(amount * 1.25 if "BOWLER_HAT" in self.relics else amount)
         if amount <= 0:
             return
         self.gold += amount
@@ -299,6 +313,15 @@ class Run:
 
     def heal(self, amount: int) -> None:
         self.hp = min(self.max_hp, self.hp + amount)
+
+    def lose_hp(self, amount: int) -> None:
+        """Event damage (CreatureCmd.Damage). Tungsten Rod works anywhere; Beating Remnant only in combat."""
+        self.hp -= max(0, amount - ("TUNGSTEN_ROD" in self.relics))
+        if self.hp <= 0:
+            self.hp = 0
+            if "LIZARD_TAIL" in self.relics and not self.relic_state.get("lizard_used"):  # ShouldDieLate
+                self.relic_state["lizard_used"] = 1
+                self.hp = max(1, self.max_hp * 50 // 100)
 
     def add_card(self, card: str) -> None:
         self.deck.append(card)
@@ -352,6 +375,8 @@ class Run:
             if "MEAL_TICKET" in self.relics:
                 self.heal(15)
             self.shop = make_shop(self.rng, self.card_odds, self.removals, self.bags)
+        elif room == "Event":
+            self.start_event(self.pull_event())
         elif room == "Treasure":
             # OneOffSynchronizer.cs:133: NextInt(42, 53), upper bound exclusive
             relic = self.bags.pull("shared", roll_relic_rarity(self.rng))
@@ -360,6 +385,81 @@ class Run:
         if node.type == "Unknown" and "PLANISPHERE" in self.relics:
             self.heal(5)
         return room
+
+    def pull_event(self) -> str:
+        """RoomSet.EnsureNextEventIsValid: skip what's not allowed or already seen; if nothing's left, repeat."""
+        n = len(self.events)
+        for _ in range(n):
+            event = self.events[self.events_visited % n]
+            if event not in self.events_seen and EVENT_ALLOWED[event](self):
+                break
+            self.events_visited += 1
+        event = self.events[self.events_visited % n]
+        self.events_visited += 1  # RoomSet.MarkVisited
+        self.events_seen.append(event)
+        return event
+
+    def start_event(self, event: str) -> None:
+        """Roll the event's variables (CalculateVars). An unmodeled event leaves self.event None: an empty room."""
+        if event not in MODELED_EVENTS:
+            return
+        self.event = event
+        if event == "BYRDONIS_NEST":
+            self.event_opts = [(0, 0, 7), (0, 0, 0)]
+        elif event == "JUNGLE_MAZE_ADVENTURE":  # decimal gold: gain_gold truncates it
+            self.event_opts = [(18, 150 + self.rng.uniform(-15, 15), 0), (0, 50 + self.rng.uniform(-15, 15), 0)]
+        elif event == "SLIPPERY_BRIDGE":
+            self.bridge_card, self.bridge_skipped = None, set()
+            self._bridge_roll()
+            self.event_opts = [(0, 0, 0), (3, 0, 0)]
+        elif event == "SUNKEN_STATUE":
+            self.event_opts = [(0, 0, 0), (7, 111 + self.rng.randint(-10, 10), 0)]
+        else:  # THE_LEGENDS_WERE_TRUE
+            self.event_opts = [(0, 0, 0), (8, 0, 0)]
+
+    def _bridge_roll(self) -> None:
+        """SlipperyBridge.GetNewRandomCard: skipped copies stay out unless nothing else is left."""
+        cur = self.bridge_card
+        if cur is None:
+            pool = [i for i, c in enumerate(self.deck) if CARDS[c].rarity != "Basic"]
+        else:
+            self.bridge_skipped.add(cur)
+            pool = [i for i, c in enumerate(self.deck) if c != self.deck[cur]]
+        self.bridge_card = self.rng.choice([i for i in pool if i not in self.bridge_skipped] or range(len(self.deck)))
+
+    def choose_event(self, option: int) -> None:
+        """Apply an option. self.event stays set while the event goes on; check hp for a death."""
+        event, (hp, gold, max_hp) = self.event, self.event_opts[option]
+        self.event_log.append((event, option, self.hp, self.max_hp, self.gold))
+        if event == "SLIPPERY_BRIDGE" and option == 1:  # hold on: pay, and a new card is at risk, for 1 HP more
+            self.lose_hp(hp)
+            self.event_opts = [(0, 0, 0), (hp + 1, 0, 0)]
+            self._bridge_roll()
+            return
+        self.event = None
+        if event == "SLIPPERY_BRIDGE":
+            del self.deck[self.bridge_card]
+        elif event == "BYRDONIS_NEST":
+            if option == 0:
+                self.gain_max_hp(max_hp)
+            else:
+                self.add_card(QUEST_CARD)
+        elif event == "JUNGLE_MAZE_ADVENTURE":  # damage first
+            self.lose_hp(hp)
+            if self.hp > 0:
+                self.gain_gold(gold)
+        elif event == "SUNKEN_STATUE":  # gold first
+            if option == 0:
+                self.obtain("SWORD_OF_STONE", "event")  # ponytail: needs 5 elites to do anything; Act 1 never has them
+            else:
+                self.gain_gold(gold)
+                self.lose_hp(hp)
+        elif option == 0:  # The Legends Were True
+            self.add_card(QUEST_CARD)
+        else:
+            self.lose_hp(hp)
+            # a uniform pick over both pools, unlike rolled drops
+            self.pending.append(("potion", self.rng.choice([p for pool in POTION_POOL.values() for p in pool])))
 
     def encounter(self, room: str) -> str:
         if room == "Boss":

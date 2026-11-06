@@ -52,12 +52,12 @@ for i in range(5000):
     seen |= r
 assert seen == set(RELIC_IDS) and {0, 6} <= sizes
 
-from run_env import CARD_INDEX, N_ACTIONS, OBS_DIM, PICK, REMOVE, SHOP, SHOP_LEAVE, SHOP_REMOVE, RunPolicyEnv
+from run_env import CARD_INDEX, EVENT_OBS, N_ACTIONS, OBS_DIM, PICK, REMOVE, SHOP, SHOP_LEAVE, SHOP_REMOVE, RunPolicyEnv
 from sim.act import Shop
 
 from run_env import SHOP_RELIC, potion_take_action, drink_action, POTION_TAKE_2, DRINK_2
 
-assert N_ACTIONS == 120 and OBS_DIM == 1317
+assert N_ACTIONS == 122 and OBS_DIM == 1317 + 12 + len(CARD_INDEX)  # the events block is appended
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -253,7 +253,7 @@ assert renv.run.gold == 10 and renv.run.relics == {"MEMBERSHIP_CARD"}
 renv.run.gold = 60
 assert renv.action_masks()[SHOP_RELIC + 2]  # 120 -> 60: affordable only at half price
 o = renv._obs()
-base = OBS_DIM - 3 * (len(RELIC_IDS) + 2)
+base = OBS_DIM - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)
 assert abs(o[base + 2 * (len(RELIC_IDS) + 2) + len(RELIC_IDS)] - 0.6) < 1e-6
 assert not o[base:base + len(RELIC_IDS)].any() and o[base + len(RELIC_IDS)] > 0  # unmodeled: no one-hot, price shown
 assert o[base - len(RELIC_IDS) + RELIC_IDS.index("MEMBERSHIP_CARD")] == 1
@@ -325,7 +325,7 @@ before = renv._obs()
 renv.run.obtain("POTION_BELT", "elite")
 after = renv._obs()
 assert after.shape == (OBS_DIM,)
-cut = OBS_DIM - (2 * len(POTION_IDS) + len(RELIC_IDS) + 3 * (len(RELIC_IDS) + 2))
+cut = OBS_DIM - EVENT_OBS - (2 * len(POTION_IDS) + len(RELIC_IDS) + 3 * (len(RELIC_IDS) + 2))
 assert (after[:cut] == before[:cut]).all()
 
 # Carry through MapRunModeEnv reset/step.
@@ -378,3 +378,89 @@ assert line == ("honesty: elite n=2 common=100% uncommon=0% rare=0% unmodeled=0%
                 "treasure n=1 common=0% uncommon=0% rare=100% unmodeled=100% (expect 50/33/17, 12.3) | bought n=1"), line
 
 print("run env checks ok")
+
+# --- events ---------------------------------------------------------------------------------------------
+from run_env import EVENT, EVENT_OBS, PATH
+from sim.events import EVENT_OPTIONS, MODELED_EVENTS
+
+assert N_ACTIONS == EVENT + EVENT_OPTIONS == 122 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
+renv = RunPolicyEnv()
+obs, _ = renv.reset(seed=11)
+assert not obs[-EVENT_OBS:].any()  # all zero off an event, so a grown model sees what it knew
+
+
+def enter_event(env, name):
+    """Force the next path step onto `name`, through the real enter()."""
+    node = env.run.choices()[0]
+    node.type = "Unknown"
+    env.run.unknown_odds.roll = lambda rng, block: "Event"
+    env.run.events[:] = [name] + [e for e in env.run.events if e != name]
+    env.run.events_visited = 0
+    env.step(PATH + node.col)
+    assert env.run.events_seen[-1] == name
+
+
+for name in MODELED_EVENTS:
+    renv.reset(seed=11)
+    if name == "SLIPPERY_BRIDGE":
+        for child in renv.run.node.children:
+            child.row = 7
+        renv.run.deck.append("ANGER")
+    enter_event(renv, name)
+    assert renv.decision == "event", name
+    m = renv.action_masks()
+    assert m[EVENT] and m[EVENT + 1] and m.sum() == 2
+    o = renv._obs()
+    tail = o[-EVENT_OBS:]
+    assert tail[0] == 1 and tail[1 + MODELED_EVENTS.index(name)] == 1 and o.shape == (OBS_DIM,)
+    if name == "SLIPPERY_BRIDGE":
+        assert tail[12 + CARD_INDEX["ANGER"]] == 1
+    if name == "SUNKEN_STATUE":
+        assert tail[6 + 3] == 7 / 80 and 1.0 < tail[6 + 4] < 1.3
+
+# The Legends Were True: choosing the potion leads to the potion decision (if modeled), then back to the path.
+for seed in range(40):
+    renv.reset(seed=seed)
+    enter_event(renv, "THE_LEGENDS_WERE_TRUE")
+    renv.step(EVENT + 1)
+    assert renv.run.event is None and renv.decision in ("potion", "path") and not renv.done
+    if renv.decision == "potion":
+        assert renv.run.potion_drop
+        renv.step(renv.action_masks().nonzero()[0][-1])
+    assert renv.decision == "path"
+    assert renv.action_masks()[PATH:PATH + 7].any()
+
+# Dying in an event ends the run like a lost fight, with no clear bonus.
+renv.reset(seed=11)
+renv.run.hp = 5
+enter_event(renv, "SUNKEN_STATUE")
+o, rew, done, trunc, info = renv.step(EVENT + 1)
+assert done and rew == 0 and not info["cleared"] and info["died_at"] == "Event"
+assert info["event_log"][0][:3] == ("SUNKEN_STATUE", 1, 5) and info["events_seen"] == ["SUNKEN_STATUE"]
+assert renv.action_masks().any()
+
+# An unmodeled event is an empty room.
+renv.reset(seed=11)
+enter_event(renv, "TEA_MASTER" if renv.run.gold >= 150 else "THIS_OR_THAT")
+assert renv.decision == "path" and renv.run.event is None
+# Event practice (training only): half of modeled events start from random HP and gold, unmodeled ones never.
+penv = RunPolicyEnv(event_practice=True)
+changed = 0
+for i in range(200):
+    penv.reset(seed=i)
+    penv.run.hp, penv.run.gold = 40, 77
+    enter_event(penv, "THE_LEGENDS_WERE_TRUE")
+    assert penv.decision == "event" and penv.run.event == "THE_LEGENDS_WERE_TRUE"
+    assert 10 <= penv.run.hp <= penv.run.max_hp and 0 <= penv.run.gold <= 400
+    changed += (penv.run.hp, penv.run.gold) != (40, 77)
+assert 70 <= changed <= 130, changed
+penv.reset(seed=1)
+penv.run.hp, penv.run.gold = 40, 77
+enter_event(penv, "THIS_OR_THAT")  # an unmodeled event: an empty room
+assert (penv.run.hp, penv.run.gold) == (40, 77)
+for i in range(20):  # off by default, so evaluation stays on real runs
+    renv.reset(seed=i)
+    renv.run.hp, renv.run.gold = 40, 77
+    enter_event(renv, "THE_LEGENDS_WERE_TRUE")
+    assert (renv.run.hp, renv.run.gold) == (40, 77)
+print("event env checks ok")

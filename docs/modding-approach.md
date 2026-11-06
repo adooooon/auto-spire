@@ -641,6 +641,12 @@ The sim now models 12 Act 1 potions: drops, shop potions, 3 slots, drinking in c
   These are low because the random decks are weaker than decks built over a run. They still show 2 potions roughly double or triple the win rate.
 - **Rounds:** a second round (v12, then v4) gained nothing. Both rows are within about 1 point of 66.6%, while one standard error is about 2 points. So the rounds stopped, and v11 + v3 is the model to keep.
 
+### 2026-11-05: Events
+
+The sim now models 5 of the 21 events that can appear in Act 1, in the sim only. The other 16 stay in the pool as empty rooms. The rules are in `docs/game-architecture.md`, "Events".
+
+The run policy learned a near-fixed answer for most events, and the clear rate stayed level: v13 + v6p 79.8% against 80.0% before events. The goal was choices that change with HP and gold, and two training rounds didn't reach it. Tables and the HP and gold probe are in `docs/superpowers/specs/2026-11-05-events-design.md`, "Results".
+
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
 Built a first Gymnasium env (`agent/`) using `fight NIBBITS_WEAK` (via `/exec`) as the episode-reset mechanism, since `EnterRoomDebug` (which both the `fight` and `room` console commands call) does `ClearScreens()` before entering — meaning it force-dismisses any pending reward/game-over screen and drops straight into a fresh combat, no UI clicking ever required. This part works great and is validated: a random-action agent completed a real win (44 steps) with correct energy/damage/HP bookkeeping the whole way.

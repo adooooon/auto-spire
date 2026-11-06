@@ -45,6 +45,8 @@ def main():
     parser.add_argument("--run-policy", action="store_true",
                         help="sim only: train the run policy (run_env.py) over a frozen --combat-model")
     parser.add_argument("--combat-model", default=None, help="combat model zip that plays fights for --run-policy")
+    parser.add_argument("--event-practice", action="store_true",
+                        help="--run-policy: half of modeled events start from random HP and gold")
     parser.add_argument("--run-model", default=None,
                         help="with --run-mode: train combat on generated maps, run decisions by this run policy")
     parser.add_argument("--n-envs", type=int, default=1, help="parallel sim envs (sim backend only)")
@@ -69,7 +71,7 @@ def main():
 
     if sim and args.run_policy:
         from run_env import RunPolicyEnv
-        env = make_vec_env(lambda: RunPolicyEnv(combat_model=args.combat_model), n_envs=args.n_envs,
+        env = make_vec_env(lambda: RunPolicyEnv(combat_model=args.combat_model, event_practice=args.event_practice), n_envs=args.n_envs,
                            vec_env_cls=SubprocVecEnv if args.n_envs > 1 else None)
     elif sim and args.run_mode:
         from run import MapRunModeEnv, RunModeEnv
