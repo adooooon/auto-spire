@@ -13,10 +13,10 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from env import CARD_IDS, STS2CombatEnv
+from env import CARD_IDS, HIVE_CARDS, STS2CombatEnv
 from grow import insert_map
 from picker import play_fight
-from sim.act import BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Run
+from sim.act import ALL_BOSSES, BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Run
 from sim.cards import CARDS, CHOICE_CARDS
 from sim.engine import SimClient
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
@@ -78,8 +78,8 @@ POTION_OBS = 1 + POTION_SLOTS * len(POTION_IDS) + len(POTION_IDS) + SHOP_POTIONS
 RELIC_OBS = (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS) + len(RELIC_IDS) + SHOP_RELICS * SHOP_RELIC_FEATURES
 # Appended after that: event-decision flag, which event, each option's HP loss / gold / max HP, Slippery Bridge's card.
 EVENT_OBS = 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3 + len(CARD_IDS)
-OBS_DIM = (len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(BOSSES) + len(SHOP_SLOTS) * SLOT_FEATURES + 2
-           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS + EVENT_OBS)
+OBS_DIM = (len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(ALL_BOSSES) + len(SHOP_SLOTS) * SLOT_FEATURES + 2
+           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS + EVENT_OBS + 1)  # + 1: which act
 FLOOR_REWARD, CLEAR_REWARD = 0.1, 1.0
 MAX_DECISIONS = 500  # a run is ~40 decisions; this only stops a broken env
 
@@ -118,7 +118,7 @@ class RunPolicyEnv(gym.Env):
         self.run = Run(random.Random(int(self.np_random.integers(2**31))))
         self.fight_env.client = SimClient(seed=self.run.rng.randrange(2**31))
         self.decision, self.offered, self.room, self.back = "path", [], "Ancient", "path"
-        self.done, self.cleared, self.steps = False, False, 0
+        self.done, self.cleared, self.steps, self.acts_cleared = False, False, 0, 0
         self.used: Counter = Counter()  # potion uses this run, by id
         self.choice_log: list = []  # (source, picked, options) of every card prompt in this run's fights
         return self._obs(), {}
@@ -157,11 +157,16 @@ class RunPolicyEnv(gym.Env):
             self.done = True
             return 0.0, True
         offered = self.run.win(self.room)
+        reward = FLOOR_REWARD
         if self.room == "Boss":
-            self.done = self.cleared = True
-            return FLOOR_REWARD + CLEAR_REWARD, True
+            reward += CLEAR_REWARD
+            if self.run.act == 1:  # Act 2's boss: the end of the sim's run
+                self.done = self.cleared = True
+                return reward, True
+            self.acts_cleared += 1
+            self.run.next_act()
         self.offered, self.decision, self.back = offered, "pick", "path"
-        return FLOOR_REWARD, False
+        return reward, False
 
     def play(self, encounter: str) -> bool:
         """One fight with HP, max HP, deck and potions carried in and out. A sim error ends it as a loss."""
@@ -179,6 +184,8 @@ class RunPolicyEnv(gym.Env):
         combat = env.client._combat
         self.choice_log += combat.choice_log
         run.hp, run.max_hp, run.potions = combat.player_hp, combat.player_max_hp, list(combat.potions)
+        for card in combat.stolen:  # Thieving Hopper escaped with it
+            run.deck.remove(card)
         self.used += before - Counter(p for p in run.potions if p)
         return won
 
@@ -231,7 +238,7 @@ class RunPolicyEnv(gym.Env):
                 self.run.remove(CARD_IDS[a - REMOVE])
             self.decision = "shop"
         truncated = not self.done and self.steps >= MAX_DECISIONS
-        info = {"floor": self.run.node.row, "cleared": self.cleared, "gold": self.run.gold, "spent": self.run.spent,
+        info = {"act": self.run.act, "acts_cleared": self.acts_cleared + self.cleared, "floor": self.run.node.row, "cleared": self.cleared, "gold": self.run.gold, "spent": self.run.spent,
                 "died_at": self.room if self.done and not self.cleared else None, "deck": list(self.run.deck),
                 "potions_used": sum(self.used.values()), "potions_held": sum(p is not None for p in self.run.potions),
                 "used": dict(self.used), "relic_log": list(self.run.relic_log),
@@ -282,7 +289,7 @@ class RunPolicyEnv(gym.Env):
         deck = np.zeros(len(CARD_IDS))
         for c in run.deck:
             deck[CARD_INDEX[c]] += 0.5
-        boss = [float(b == run.boss) for b in BOSSES]
+        boss = [float(b == run.boss) for b in ALL_BOSSES]
         slots = np.zeros((len(SHOP_SLOTS), SLOT_FEATURES))
         removal = [0.0, 0.0]
         if self.decision == "pick":
@@ -336,12 +343,12 @@ class RunPolicyEnv(gym.Env):
             if run.event == "SLIPPERY_BRIDGE":
                 event_obs[k + 3 * EVENT_OPTIONS + CARD_INDEX[run.deck[run.bridge_card]]] = 1
         return np.concatenate([head, np.minimum(deck, 10), boss, slots.ravel(), removal, grid.ravel(),
-                               potion_obs, belt, held, shop_r.ravel(), event_obs]).astype(np.float32)
+                               potion_obs, belt, held, shop_r.ravel(), event_obs, [float(getattr(run, "act", 0))]]).astype(np.float32)
 
 
 def run_maps() -> tuple[list[int], list[int]]:
-    """(obs_map, act_map) for grow.py: where a run policy trained before the three prompt cards keeps its inputs."""
-    old_ids = sorted(set(CARD_IDS) - set(CHOICE_CARDS))
+    """(obs_map, act_map) for grow.py: where a run policy trained before Act 2 keeps its inputs and actions."""
+    old_ids = sorted(set(CARD_IDS) - HIVE_CARDS)
     tail = 2 + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS + 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3
-    obs = [len(HEAD_DECISIONS) + 5, "cards", len(BOSSES)] + ["cards", 2] * len(SHOP_SLOTS) + [tail, "cards"]
+    obs = [len(HEAD_DECISIONS) + 5, "cards", (list(BOSSES), list(ALL_BOSSES))] + ["cards", 2] * len(SHOP_SLOTS) + [tail, "cards"]
     return insert_map(obs, old_ids, CARD_IDS), insert_map([REMOVE, "cards", N_ACTIONS - REMOVE - len(CARD_IDS)], old_ids, CARD_IDS)

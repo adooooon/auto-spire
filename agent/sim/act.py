@@ -8,8 +8,8 @@ import random
 from dataclasses import dataclass, field
 
 from .cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
-from .engine import ENCOUNTERS, PLAYER_MAX_HP
-from .events import EVENT_ALLOWED, MODELED_EVENTS
+from .engine import ENCOUNTERS, HIVE_BOSSES, HIVE_ELITES, HIVE_NORMALS, HIVE_WEAK, PLAYER_MAX_HP
+from .events import EVENT_ALLOWED, HIVE_EVENT_ALLOWED, MODELED_EVENTS
 from .map import ActMap, Node, generate_map
 from .potions import POTION_POOL, POTION_SLOTS, POTIONS
 from .relics import IRONCLAD_RELICS, NOT_IN_SHOPS, RELIC_POOL, RELICS, relic_rarity
@@ -37,10 +37,13 @@ REWARD_POOLS = {"COMMON": COMMONS + ("ARMAMENTS",), "UNCOMMON": UNCOMMONS, "RARE
 WEAK = tuple(e for e in ENCOUNTERS if e.endswith("_WEAK"))
 ELITES = tuple(e for e in ENCOUNTERS if e.endswith("_ELITE"))
 BOSSES = tuple(e for e in ENCOUNTERS if e.endswith("_BOSS"))
+ALL_BOSSES = BOSSES + HIVE_BOSSES
 NORMALS = tuple(e for e in ENCOUNTERS if e not in WEAK + ELITES + BOSSES)
 TAGS = {"NIBBITS_WEAK": {"Nibbit"}, "SLIMES_WEAK": {"Slimes"}, "SHRINKER_BEETLE_WEAK": {"Shrinker"},  # EncounterModel.Tags
         "FUZZY_WURM_CRAWLER_WEAK": {"Crawler"}, "SLIMES_NORMAL": {"Slimes"}, "OVERGROWTH_CRAWLERS": {"Crawler", "Shrinker"},
-        "FLYCONID_NORMAL": {"Mushroom", "Slimes"}, "SNAPPING_JAXFRUIT_NORMAL": {"Mushroom"}}
+        "FLYCONID_NORMAL": {"Mushroom", "Slimes"}, "SNAPPING_JAXFRUIT_NORMAL": {"Mushroom"},
+        "BOWLBUGS_WEAK": {"Workers"}, "BOWLBUGS_NORMAL": {"Workers"}, "SLUMBERING_BEETLE_NORMAL": {"Workers"},
+        "CHOMPERS_NORMAL": {"Chomper"}, "EXOSKELETONS_WEAK": {"Exoskeletons"}, "EXOSKELETONS_NORMAL": {"Exoskeletons"}}
 
 
 # Byrdonis Egg and Spoils Map are Unplayable cards that pay off outside what Act 1 models. A Wound does the same
@@ -131,21 +134,22 @@ def _grab(rng: random.Random, bag: list[str], pool: tuple[str, ...], last: str |
     return e
 
 
-def encounter_queue(rng: random.Random, rooms: int = 15, weak: int = 3) -> tuple[list[str], list[str], str]:
+def encounter_queue(rng: random.Random, rooms: int = 15, weak: int = 3, weak_pool: tuple = WEAK, normal_pool: tuple = NORMALS,
+                    elite_pool: tuple = ELITES, boss_pool: tuple = BOSSES) -> tuple[list[str], list[str], str]:
     """ActModel.GenerateRooms: monster rooms draw 3 weak then regular encounters, elites from
     their own bag; the boss is fixed at run start."""
     normals: list[str] = []
     bag: list[str] = []
     for _ in range(weak):
-        normals.append(_grab(rng, bag, WEAK, normals[-1] if normals else None))
+        normals.append(_grab(rng, bag, weak_pool, normals[-1] if normals else None))
     bag = []
     for _ in range(weak, rooms):
-        normals.append(_grab(rng, bag, NORMALS, normals[-1]))
+        normals.append(_grab(rng, bag, normal_pool, normals[-1]))
     elites: list[str] = []
     bag = []
     for _ in range(15):
-        elites.append(_grab(rng, bag, ELITES, elites[-1] if elites else None))
-    return normals, elites, rng.choice(BOSSES)
+        elites.append(_grab(rng, bag, elite_pool, elites[-1] if elites else None))
+    return normals, elites, rng.choice(boss_pool)
 
 
 class UnknownOdds:
@@ -270,6 +274,8 @@ class Run:
 
     def __init__(self, rng: random.Random):
         self.rng = rng
+        self.act = 0
+        self.normal_pool, self.elite_pool, self.event_allowed = NORMALS, ELITES, EVENT_ALLOWED
         self.map: ActMap = generate_map(rng)
         self.normals, self.elites, self.boss = encounter_queue(rng)
         self.bags = RelicBags(rng)  # after the map and queue, so a seed keeps its map
@@ -390,7 +396,7 @@ class Run:
         n = len(self.events)
         for _ in range(n):
             event = self.events[self.events_visited % n]
-            if event not in self.events_seen and EVENT_ALLOWED[event](self):
+            if event not in self.events_seen and self.event_allowed[event](self):
                 break
             self.events_visited += 1
         event = self.events[self.events_visited % n]
@@ -463,7 +469,7 @@ class Run:
     def encounter(self, room: str) -> str:
         if room == "Boss":
             return self.boss
-        queue, pool = (self.elites, ELITES) if room == "Elite" else (self.normals, NORMALS)
+        queue, pool = (self.elites, self.elite_pool) if room == "Elite" else (self.normals, self.normal_pool)
         return queue.pop(0) if queue else self.rng.choice(pool)
 
     def win(self, room: str) -> list[str]:
@@ -473,8 +479,13 @@ class Run:
         self.gain_gold(self.rng.randint(*GOLD[room]))
         if "AMETHYST_AUBERGINE" in self.relics:
             self.gain_gold(15)
-        if room == "Boss":
+        if room == "Boss" and self.act == 1:  # where the sim's run ends
             return []
+        if room == "Boss":  # RewardsSet: gold, a potion roll and an all-Rare card offer, and no relic
+            potion = roll_potions(self.rng)[0] if self.potion_odds.roll(self.rng, False, False) else None
+            if potion:
+                self.pending.append(("potion", potion))
+            return offer(self.rng, self.card_odds, boss=True)
         # Rewards are generated (and modified by held relics) before the elite's relic is picked up.
         force, wheel, star = (r in self.relics for r in ("WHITE_BEAST_STATUE", "PRAYER_WHEEL", "WHITE_STAR"))
         if room == "Elite":
@@ -488,6 +499,20 @@ class Run:
         if potion:
             self.pending.append(("potion", potion))
         return offered
+
+    def next_act(self) -> None:
+        """RunManager.EnterAct, then Act 2's Ancient: a new map, rooms and events, healed to full (A0). Its relic
+        offer isn't modeled. Deck, relics, potions, gold, rarity and potion odds carry over."""
+        self.act = 1
+        self.map = generate_map(self.rng, hive=True)
+        self.node = self.map.start
+        self.normal_pool, self.elite_pool, self.event_allowed = HIVE_NORMALS, HIVE_ELITES, HIVE_EVENT_ALLOWED
+        self.normals, self.elites, self.boss = encounter_queue(self.rng, 14, 2, HIVE_WEAK, HIVE_NORMALS, HIVE_ELITES, HIVE_BOSSES)
+        self.events = sorted(HIVE_EVENT_ALLOWED)
+        self.rng.shuffle(self.events)
+        self.events_visited = 0
+        self.unknown_odds, self.last_room, self.shop = UnknownOdds(), None, None
+        self.hp = self.max_hp
 
     def buy(self, slot: int) -> None:
         s = self.shop

@@ -3,7 +3,7 @@ from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
 from sim.potions import POTION_IDS
-assert COMBAT_OBS == 1574 and COMBAT_ACTIONS == 158
+assert COMBAT_OBS == 1952 and COMBAT_ACTIONS == 190
 from env import CHOICE_FEATURES, POTION_FEATURES, RELIC_FEATURES
 POT0 = COMBAT_OBS - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
 from sim.engine import SimClient, SimLoopError
@@ -59,7 +59,7 @@ from sim.act import Shop
 
 from run_env import SHOP_RELIC, potion_take_action, drink_action, POTION_TAKE_2, DRINK_2
 
-assert N_ACTIONS == 125 and OBS_DIM == 1335 + 12 + len(CARD_INDEX)  # the events block is appended
+assert N_ACTIONS == 127 and OBS_DIM == 1452  # Act 2: 3 more bosses, an act flag, 2 more card ids
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -151,12 +151,12 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == 158 and COMBAT_OBS == 1574
+assert cenv.action_space.n == COMBAT_ACTIONS == 190 and COMBAT_OBS == 1952
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()
 cenv._combat["potionSlots"] = ["FIRE_POTION", "ATTACK_POTION", "BLOCK_POTION"]
-assert np.flatnonzero(cenv.action_masks()[POTION_ACTION:]).tolist() == [0, 1, 8]  # Fire x2 targets, Block on 0
+assert np.flatnonzero(cenv.action_masks()[POTION_ACTION:]).tolist() == [0, 1, 2 * MAX_ENEMIES]  # Fire x2 targets, Block on 0
 # Review focus 2: a potion that ends the fight is a win, minus the use cost.
 cenv.potions = ["EXPLOSIVE_AMPOULE", None, None]
 obs, _ = cenv.reset(seed=0)
@@ -255,7 +255,7 @@ assert renv.run.gold == 10 and renv.run.relics == {"MEMBERSHIP_CARD"}
 renv.run.gold = 60
 assert renv.action_masks()[SHOP_RELIC + 2]  # 120 -> 60: affordable only at half price
 o = renv._obs()
-base = OBS_DIM - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)
+base = OBS_DIM - 1 - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)
 assert abs(o[base + 2 * (len(RELIC_IDS) + 2) + len(RELIC_IDS)] - 0.6) < 1e-6
 assert not o[base:base + len(RELIC_IDS)].any() and o[base + len(RELIC_IDS)] > 0  # unmodeled: no one-hot, price shown
 assert o[base - len(RELIC_IDS) + RELIC_IDS.index("MEMBERSHIP_CARD")] == 1
@@ -327,7 +327,7 @@ before = renv._obs()
 renv.run.obtain("POTION_BELT", "elite")
 after = renv._obs()
 assert after.shape == (OBS_DIM,)
-cut = OBS_DIM - EVENT_OBS - (2 * len(POTION_IDS) + len(RELIC_IDS) + 3 * (len(RELIC_IDS) + 2))
+cut = OBS_DIM - 1 - EVENT_OBS - (2 * len(POTION_IDS) + len(RELIC_IDS) + 3 * (len(RELIC_IDS) + 2))
 assert (after[:cut] == before[:cut]).all()
 
 # Carry through MapRunModeEnv reset/step.
@@ -385,10 +385,10 @@ print("run env checks ok")
 from run_env import EVENT, EVENT_OBS, PATH
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 
-assert N_ACTIONS == EVENT + EVENT_OPTIONS == 125 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
+assert N_ACTIONS == EVENT + EVENT_OPTIONS == 127 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
 renv = RunPolicyEnv()
 obs, _ = renv.reset(seed=11)
-assert not obs[-EVENT_OBS:].any()  # all zero off an event, so a grown model sees what it knew
+assert not obs[-EVENT_OBS - 1:-1].any()  # all zero off an event, so a grown model sees what it knew
 
 
 def enter_event(env, name):
@@ -413,7 +413,7 @@ for name in MODELED_EVENTS:
     m = renv.action_masks()
     assert m[EVENT] and m[EVENT + 1] and m.sum() == 2
     o = renv._obs()
-    tail = o[-EVENT_OBS:]
+    tail = o[-EVENT_OBS - 1:-1]
     assert tail[0] == 1 and tail[1 + MODELED_EVENTS.index(name)] == 1 and o.shape == (OBS_DIM,)
     if name == "SLIPPERY_BRIDGE":
         assert tail[12 + CARD_INDEX["ANGER"]] == 1
@@ -478,7 +478,7 @@ obs_map, act_map = combat_maps()
 new_obs = _encode(fx["combat"])
 assert np.array_equal(new_obs[obs_map], fx["combat_obs"])
 assert not np.delete(new_obs, obs_map).any()
-assert act_map == list(range(CHOOSE_HAND)) and COMBAT_OBS == len(new_obs)
+assert len(act_map) == 158 and COMBAT_OBS == len(new_obs)  # the pre-Act 2 action count
 
 
 def choice_env(hand, discard=()):
@@ -536,7 +536,7 @@ new_obs = renv._obs()
 assert np.array_equal(new_obs[obs_map], fx["run_obs"])
 assert not np.delete(new_obs, obs_map).any()
 assert np.array_equal(renv.action_masks()[act_map], fx["run_mask"])
-old_ids = sorted(set(CARD_IDS) - set(CHOICE_CARDS))
+old_ids = sorted(set(CARD_IDS) - {"TOXIC", "FRANTIC_ESCAPE"})
 assert act_map[REMOVE + old_ids.index("TRUE_GRIT")] == REMOVE + CARD_IDS.index("TRUE_GRIT")
 
 # The three cards can be picked; Armaments can't.

@@ -136,11 +136,13 @@ for seed in range(200):
     s = make_shop(random.Random(seed), RarityOdds(), 0, RelicBags(random.Random(seed)))
     assert len(s.potions) == 3 and len(set(s.potions)) == 3
     assert all(band[potion_rarity(p)][0] <= c <= band[potion_rarity(p)][1] for p, c in zip(s.potions, s.potion_prices))
-# Run: no potion roll after the boss; drink Blood; buy into a free slot.
+# Run: no potion roll after the last boss; drink Blood; buy into a free slot.
 run = Run(random.Random(5))
 assert run.potions == [None, None, None] and run.potion_drop is None
 v = run.potion_odds.value
+run.act = 1
 run.win("Boss")
+run.act = 0
 assert run.potion_odds.value == v and run.potion_drop is None
 drops = 0
 for _ in range(400):
@@ -570,3 +572,26 @@ r = Run(random.Random(5))
 r.start_event("TEA_MASTER")
 assert r.event is None
 print("event checks ok")
+
+# --- Act 2 ------------------------------------------------------------------------------------
+from sim.act import HIVE_BOSSES, HIVE_ELITES, HIVE_NORMALS, HIVE_WEAK
+from sim.events import HIVE_EVENT_ALLOWED
+
+run = Run(random.Random(7))
+run.hp, run.gold = 30, 200
+deck = list(run.deck)
+offered = run.win("Boss")
+assert run.gold >= 300 and len(offered) == 3 and all(CARDS[c].rarity == "Rare" for c in offered if c in CARDS), offered
+run.next_act()
+m = run.map
+assert run.act == 1 and run.node is m.start and run.hp == run.max_hp and run.deck == deck
+assert m.boss.row == 15 and all(n.row <= 14 for n in m.nodes()) and all(n.type == "RestSite" for n in m.row(14))
+assert all(n.type == "Treasure" for n in m.row(8)) and all(n.type == "Monster" for n in m.row(1))  # GetRowCount - 7
+assert run.boss in HIVE_BOSSES and set(run.normals[:2]) <= set(HIVE_WEAK) and set(run.normals[2:]) <= set(HIVE_NORMALS)
+assert set(run.elites) <= set(HIVE_ELITES) and len(run.normals) == 14
+assert set(run.events) == set(HIVE_EVENT_ALLOWED) and "THE_LEGENDS_WERE_TRUE" not in run.events
+assert run.encounter("Boss") == run.boss and run.encounter("Elite") in HIVE_ELITES
+assert run.win("Boss") == []  # after Act 2's boss the sim's run ends
+# A seed's Act 1 map doesn't change for having an Act 2.
+assert [(n.col, n.row, n.type) for n in Run(random.Random(3)).map.nodes()] == [(n.col, n.row, n.type) for n in generate_map(random.Random(3)).nodes()]
+print("act 2 checks ok")

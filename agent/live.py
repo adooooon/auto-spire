@@ -1,4 +1,4 @@
-"""One real Act 1 in the live game: the run policy walks the game's own map, rewards, shops, events,
+"""One real run through Acts 1 and 2 in the live game: the run policy walks the game's own map, rewards, shops, events,
 rest sites and treasure, and the combat model plays its fights. Nothing is staged with debug commands.
 
 LiveRun fills the fields of sim.act.Run that RunPolicyEnv reads, so the policy sees the same observation
@@ -27,6 +27,7 @@ from sim.potions import POTIONS
 from sim.relics import RELICS
 
 SAFE_WORDS = ("LEAVE", "SKIP", "IGNORE", "REFUSE", "DECLINE", "WALK", "PASS")
+LAST_ACT = 1  # the Hive: the sim, and so the policies, stop after its boss
 BUSY_LIMIT = 90.0  # seconds with no screen to act on before giving up
 
 
@@ -35,6 +36,7 @@ class LiveRun:
 
     def __init__(self):
         self.hp = self.max_hp = self.gold = self.removals = 0
+        self.act = 0
         self.deck, self.potions = [], []
         self.relics, self.relic_state = set(), {}
         self.node = self.map = self.boss = self.shop = None
@@ -281,8 +283,9 @@ class LiveGame:
 
     # --- the run ------------------------------------------------------------------------------------
 
-    def play(self) -> bool:
-        self.client.full_restart()
+    def play(self, restart: bool = True) -> bool:
+        if restart:
+            self.client.full_restart()
         idle_since = time.monotonic()
         while True:
             s = self.client.state()
@@ -302,8 +305,11 @@ class LiveGame:
                         return False
                     print(f"  won, {p['hp']}/{p['maxHp']} HP")
                     if room == "Boss":
-                        print(f"Act 1 cleared: {p['hp']}/{p['maxHp']} HP, {len(p['deck'])} cards, relics {sorted(self.run.relics)}")
-                        return True
+                        act = self.client.state()["actIndex"]
+                        print(f"Act {act + 1} cleared: {p['hp']}/{p['maxHp']} HP, {len(p['deck'])} cards, relics {sorted(self.run.relics)}")
+                        if act == LAST_ACT:
+                            return True
+                        self.run.act, self.run.removals = act + 1, self.run.removals
                 else:
                     print(f"died on floor {self.floor}")
                     return False

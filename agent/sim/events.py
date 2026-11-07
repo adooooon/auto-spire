@@ -39,3 +39,25 @@ EVENT_ALLOWED = {
     "THE_LEGENDS_WERE_TRUE": lambda run: bool(run.deck) and run.hp >= 10,
     "THIS_OR_THAT": _always,
 }
+
+# Act 2's pool: Hive.AllEvents + the shared events allowed there. Only Slippery Bridge is modeled; the rest are empty
+# rooms, as in Act 1. ponytail: IsAllowed conditions that need unmodeled state (Ranwid's relics, Fake Merchant,
+# Amalgamator's Strikes and Defends, Field of Holes' enchantable cards) count as always true.
+HIVE_EVENT_ALLOWED = {
+    "AMALGAMATOR": _always, "BUGSLAYER": _always, "COLORFUL_PHILOSOPHERS": _always,
+    "COLOSSAL_FLOWER": lambda run: run.hp >= 19,
+    "FIELD_OF_MAN_SIZED_HOLES": _always, "INFESTED_AUTOMATON": _always, "LOST_WISP": _always, "SPIRIT_GRAFTER": _always,
+    "THE_LANTERN_KEY": _always, "ZEN_WEAVER": _always,
+    "BRAIN_LEECH": _always,
+    "CRYSTAL_SPHERE": lambda run: run.gold >= 100,
+    "DOLL_ROOM": _always, "FAKE_MERCHANT": _always, "POTION_COURIER": _always, "RANWID_THE_ELDER": _always,
+    "RELIC_TRADER": lambda run: len(run.relics) >= 5,
+    "ROOM_FULL_OF_CHEESE": _always, "SELF_HELP_BOOK": _always,
+    "SLIPPERY_BRIDGE": lambda run: bool(run.deck),
+    "STONE_OF_ALL_TIME": lambda run: any(run.potions),
+    "SYMBIOTE": _always,
+    "TEA_MASTER": lambda run: run.gold >= 150,
+    "THE_FUTURE_OF_POTIONS": lambda run: sum(p is not None for p in run.potions) >= 2,
+    "THIS_OR_THAT": _always,
+    "WELCOME_TO_WONGOS": lambda run: run.gold >= 100,
+}

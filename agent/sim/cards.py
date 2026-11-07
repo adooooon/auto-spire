@@ -62,6 +62,9 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("INFECTION", "Infection", "Status", -1, "None", rarity="Status", end_turn_damage=3),
     # Vantom's Dismember: Unplayable, does nothing else.
     CardDef("WOUND", "Wound", "Status", -1, "None", rarity="Status"),
+    CardDef("TOXIC", "Toxic", "Status", 1, "None", rarity="Status", exhaust=True, end_turn_damage=5, generated=False),
+    # Each copy costs 1 more each time it's played (engine: CardCopy).
+    CardDef("FRANTIC_ESCAPE", "Frantic Escape", "Status", 1, "Self", rarity="Status", special=True, generated=False),
     # Ironclad Commons.
     CardDef("ANGER", "Anger", "Attack", 0, "AnyEnemy", rarity="Common", damage=6, copy_to_discard=True),
     CardDef("BLOOD_WALL", "Blood Wall", "Skill", 2, "Self", rarity="Common", hp_loss=2, block=16),

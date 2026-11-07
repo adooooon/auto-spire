@@ -137,6 +137,8 @@ class MapRunModeEnv(STS2CombatEnv):
         if terminated or truncated:
             run, combat = self.driver.run, self.client._combat
             run.hp, run.max_hp, run.potions = combat.player_hp, combat.player_max_hp, list(combat.potions)
+            for card in combat.stolen:  # Thieving Hopper escaped with it
+                run.deck.remove(card)
             self.driver.after_fight(bool(info.get("won")) and not truncated)
         return obs, reward, terminated, truncated, info
 

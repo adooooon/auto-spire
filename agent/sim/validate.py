@@ -26,7 +26,7 @@ from client import AutoSpireClient
 from env import PLAYER_POWERS, STS2CombatEnv, _power, _ready, parse_encounters
 
 from .cards import CARDS, CHOICE_CARDS, RARES, UNCOMMONS
-from .engine import HISTORY_FIELDS, MONSTERS, WRIGGLER_SLOT_OPENERS, SimCombat, _Enemy, legal_moves
+from .engine import frantic_escape, BRANCHES, ENEMY_PW, HISTORY_FIELDS, MONSTERS, WRIGGLER_SLOT_OPENERS, SimCombat, _Enemy, legal_moves
 
 # Random enemy picks (compared only with one hittable enemy): the cards, and powers that hit or
 # autoplay at random.
@@ -40,7 +40,8 @@ RANDOM_PILE_POWERS = {"AggressionPower", "StampedePower"}
 def ids(cards) -> list[str]:
     """Card ids; ones this check doesn't model (the prompt cards, which pause for a choice the live game
     makes and the replay can't mirror) become an inert Wound so pile sizes still line up."""
-    return [x["id"] if x["id"] in CARDS and x["id"] not in CHOICE_CARDS else "WOUND" for x in cards]
+    return [(frantic_escape(x["cost"] - 1) if x["id"] == "FRANTIC_ESCAPE" else x["id"])
+            if x["id"] in CARDS and x["id"] not in CHOICE_CARDS else "WOUND" for x in cards]
 
 
 def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> SimCombat:
@@ -50,7 +51,7 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
         player_hp=p["hp"], player_max_hp=p["maxHp"], player_block=p["block"], energy=p["energy"],
         shrunk=_power(p, "ShrinkPower") != 0, vulnerable=_power(p, "VulnerablePower"), frail=_power(p, "FrailPower"),
         tangled=_power(p, "TangledPower"), constrict=_power(p, "ConstrictPower"),
-        strength=_power(p, "StrengthPower"), temp_strength=_power(p, "SetupStrikePower"),
+        strength=_power(p, "StrengthPower"), temp_strength=_power(p, "SetupStrikePower"), dexterity=_power(p, "DexterityPower"),
         weak=_power(p, "WeakPower"), ringing=_power(p, "RingingPower") != 0, cards_played=c.get("cardsPlayedThisTurn", 0),
         round=c["round"], in_combat=True, is_play_phase=True,
         # /combat lists the draw pile top-first; the sim draws from the end.
@@ -74,6 +75,8 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
                                   vulnerable=_power(e, "VulnerablePower"), artifact=_power(e, "ArtifactPower"),
                                   slippery=_power(e, "SlipperyPower"), plow=_power(e, "PlowPower"),
                                   weak=_power(e, "WeakPower"), mangle=_power(e, "ManglePower"),
+                                  pw={x["name"]: x["amount"] for x in e["powers"] if x["name"] in ENEMY_PW}
+                                  | ({"reviving": 1} if e["hp"] <= 0 and MONSTERS[e["modelId"]].reattach else {}),
                                   log=list(logs[e["combatId"]])))
     # Stun follow-ups aren't in the move graph: the Beast's STUNNED leads into phase 2, and a
     # still-stunned Wriggler resumes with its slot's opener (Wriggler.cs INIT_MOVE).
@@ -117,7 +120,7 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs, skip: set
         live = _power(p, f"{name.capitalize()}Power")
         if getattr(sim, name) != live:
             out.append(f"player {name}: sim={getattr(sim, name)} live={live}")
-    for status in () if "piles" in skip else ("SLIMED", "DAZED", "INFECTION", "WOUND"):
+    for status in () if "piles" in skip else ("SLIMED", "DAZED", "INFECTION", "WOUND", "TOXIC", "FRANTIC_ESCAPE"):
         count = lambda pl: sum(i == status for k in ("hand", "drawPile", "discardPile") for i in ids(pl[k]))  # noqa: E731
         if count(s["player"]) != count(p):
             out.append(f"live {status} in deck: sim={count(s['player'])} live={count(p)}")
@@ -135,7 +138,11 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs, skip: set
         cid = le["combatId"]
         if cid not in before_ids:  # spawned this step: HP is a fresh random roll
             continue
-        if se.hp != le["hp"]:
+        prev_move = logs[cid][-1] if logs[cid] else None
+        for name in ENEMY_PW:
+            if se.pw.get(name, 0) != _power(le, name):
+                out.append(f"{se.defn.model_id}#{cid} {name}: sim={se.pw.get(name, 0)} live={_power(le, name)}")
+        if se.hp != le["hp"] and prev_move != "HATCH_MOVE":  # a hatchling's HP is rolled
             out.append(f"{se.defn.model_id}#{cid}.hp: sim={se.hp} live={le['hp']}")
         if not le["isAlive"]:
             continue
@@ -153,7 +160,12 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs, skip: set
             out.append(f"{se.defn.model_id}#{cid} intent damage: sim={atk(sim._enemy_dict(0, se))} live={atk(le)}")
         if action == "end" and logs[cid] and logs[cid][-1] in se.defn.follow:  # (stun follow-ups are overrides)
             prev = logs[cid][-1]  # move just performed
-            legal = legal_moves(se.defn.follow[prev], logs[cid])
+            follow = se.defn.follow[prev]
+            legal = BRANCHES.get(follow) if isinstance(follow, str) and follow in BRANCHES else legal_moves(follow, logs[cid])
+            if prev == "SNORE_MOVE":  # asleep until Slumber runs out
+                legal = ["SNORE_MOVE", "ROLL_OUT_MOVE"]
+            if "ImbalancedPower" in se.pw:  # a fully blocked Headbutt
+                legal = [*legal, "STUNNED"]
             if le["intent"]["moveId"] not in legal:
                 out.append(f"{se.defn.model_id}#{cid} next move: live={le['intent']['moveId']} legal={legal}")
     return out
@@ -163,6 +175,10 @@ def wait_ready(client) -> dict:
     deadline = time.monotonic() + 20.0
     while time.monotonic() < deadline:
         c = client.combat()
+        choice = c.get("choice") or {}
+        if choice.get("kind") == "deck":  # Knowledge Demon's curse: the sim takes the first option too
+            client.exec("choose_option 0")
+            continue
         if not c.get("inCombat") or _ready(c):
             return c
         time.sleep(0.05)

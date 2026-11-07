@@ -30,12 +30,12 @@ from gymnasium import spaces
 from client import AutoSpireClient
 from grow import insert_map
 from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
-from sim.engine import MONSTERS, SimLoopError
+from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, HIVE_MONSTERS, MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
 from sim.relics import RELIC_IDS
 
 MAX_HAND = 10
-MAX_ENEMIES = 4  # SLIMES_NORMAL
+MAX_ENEMIES = 6  # OvicopterNormal.Slots
 ENCOUNTER = "NIBBITS_WEAK"
 WEAK_ENCOUNTERS = ("NIBBITS_WEAK", "SLIMES_WEAK", "SHRINKER_BEETLE_WEAK", "FUZZY_WURM_CRAWLER_WEAK")
 NORMAL_ENCOUNTERS = ("NIBBITS_NORMAL", "SLIMES_NORMAL", "OVERGROWTH_CRAWLERS",
@@ -44,7 +44,7 @@ NORMAL_ENCOUNTERS = ("NIBBITS_NORMAL", "SLIMES_NORMAL", "OVERGROWTH_CRAWLERS",
                      "SNAPPING_JAXFRUIT_NORMAL", "SLITHERING_STRANGLER_NORMAL")
 ELITE_ENCOUNTERS = ("BYGONE_EFFIGY_ELITE", "BYRDONIS_ELITE", "PHROG_PARASITE_ELITE")
 BOSS_ENCOUNTERS = ("VANTOM_BOSS", "CEREMONIAL_BEAST_BOSS", "THE_KIN_BOSS")
-ENCOUNTER_GROUPS = {"weak": WEAK_ENCOUNTERS, "normal": NORMAL_ENCOUNTERS, "hallway": WEAK_ENCOUNTERS + NORMAL_ENCOUNTERS,
+ENCOUNTER_GROUPS = {"hive": HIVE_ENCOUNTERS, "weak": WEAK_ENCOUNTERS, "normal": NORMAL_ENCOUNTERS, "hallway": WEAK_ENCOUNTERS + NORMAL_ENCOUNTERS,
                     "elite": ELITE_ENCOUNTERS, "boss": BOSS_ENCOUNTERS,
                     "act1": WEAK_ENCOUNTERS + NORMAL_ENCOUNTERS + ELITE_ENCOUNTERS + BOSS_ENCOUNTERS}
 
@@ -63,12 +63,13 @@ CARD_FEATURES = 6 + len(CARD_IDS)  # cost, can_play, is_attack, is_skill, is_pow
 # hp, block, energy, maxEnergy, shrunk, vulnerable, frail, tangled, constrict, strength, weak,
 # ringing, cards played this turn, round, + the amount of each power the player's cards apply.
 # ponytail: "exhausted / lost HP this turn" (Evil Eye, Spite, ...) aren't in /combat, so not observed.
-PLAYER_POWERS = sorted({name for c in CARDS.values() for name, _ in c.powers} - {"StrengthPower"})
+PLAYER_POWERS = sorted(({name for c in CARDS.values() for name, _ in c.powers} - {"StrengthPower"})
+                       | {"TenderPower", "TaintedPower", "SurroundedPower", "DisintegrationPower"})  # put there by Hive monsters
 PLAYER_FEATURES = 14 + len(PLAYER_POWERS)
 PILE_FEATURES = 3 * len(CARD_IDS)  # per-card counts in draw, discard and exhaust piles
 # hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, strength, artifact, slippery,
 # plow, weak, mangle, is_alive + identity
-ENEMY_FEATURES = 13 + len(MONSTER_IDS)
+ENEMY_FEATURES = 13 + len(MONSTER_IDS) + len(ENEMY_PW)
 # Appended after everything above so grown models keep their old inputs (grow.py):
 # potion slots (one-hot per slot), Dexterity, this-turn Dexterity.
 POTION_FEATURES = POTION_SLOTS * len(POTION_IDS) + 2
@@ -102,12 +103,24 @@ def _encode_card(card: dict) -> list[float]:
     ] + [float(card["id"] == cid) for cid in CARD_IDS]
 
 
+HIVE_PLAYER_POWERS = {"TenderPower", "TaintedPower", "SurroundedPower", "DisintegrationPower"}
+HIVE_CARDS = {"TOXIC", "FRANTIC_ESCAPE"}
+OLD_MAX_ENEMIES = 4
+
+
 def combat_maps() -> tuple[list[int], list[int]]:
-    """(obs_map, act_map) for grow.py: where a model trained before the three prompt cards keeps its inputs."""
-    old_ids = sorted(set(CARD_IDS) - set(CHOICE_CARDS))
-    rest = MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES + RELIC_FEATURES
-    return (insert_map([6, "cards"] * MAX_HAND + [PLAYER_FEATURES] + ["cards"] * 3 + [rest], old_ids, CARD_IDS),
-            list(range(CHOOSE_HAND)))
+    """(obs_map, act_map) for grow.py: where a model trained before Act 2 keeps its inputs and actions."""
+    old_cards = sorted(set(CARD_IDS) - HIVE_CARDS)
+    old_monsters = [m for m in MONSTER_IDS if m not in HIVE_MONSTERS]
+    old_powers = [p for p in PLAYER_POWERS if p not in HIVE_PLAYER_POWERS]
+    enemy = [13, (old_monsters, MONSTER_IDS), ("skip", len(ENEMY_PW))]
+    obs = insert_map([6, "cards"] * MAX_HAND + [PLAYER_FEATURES - len(PLAYER_POWERS), (old_powers, PLAYER_POWERS)] + ["cards"] * 3
+                     + enemy * OLD_MAX_ENEMIES + [("skip", (MAX_ENEMIES - OLD_MAX_ENEMIES) * ENEMY_FEATURES)]
+                     + [POTION_FEATURES + RELIC_FEATURES + CHOICE_FEATURES], old_cards, CARD_IDS)
+    slots = lambda first, n: [first + i * MAX_ENEMIES + s for i in range(n) for s in range(OLD_MAX_ENEMIES)]  # noqa: E731
+    act = slots(0, MAX_HAND) + [END_TURN] + slots(POTION_ACTION, MAX_POTION_SLOTS) + list(range(CHOOSE_HAND, CHOOSE_HAND + MAX_HAND))
+    act += [CHOOSE_DISCARD + CARD_IDS.index(c) for c in old_cards]
+    return obs, act
 
 
 def random_deck(rng: np.random.Generator, prompt_practice: bool = False) -> list[str]:
@@ -197,7 +210,7 @@ def _encode(combat: dict) -> np.ndarray:
                 _power(e, "WeakPower") / 5.0,
                 _power(e, "ManglePower") / 10.0,
                 1.0,
-            ] + [float(e.get("modelId") == mid) for mid in MONSTER_IDS]
+            ] + [float(e.get("modelId") == mid) for mid in MONSTER_IDS] + [min(_power(e, name), 25) / 5.0 for name in ENEMY_PW]
         else:
             enemy_feats += [0.0] * ENEMY_FEATURES
 

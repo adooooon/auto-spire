@@ -44,10 +44,11 @@ class Node:
 
 
 class ActMap:
-    def __init__(self):
+    def __init__(self, last_row: int = LAST_ROW):
+        self.last_row = last_row
         self.grid: dict[tuple[int, int], Node] = {}
         self.start = Node(COLS // 2, 0, "Ancient")
-        self.boss = Node(COLS // 2, BOSS_ROW, "Boss")
+        self.boss = Node(COLS // 2, last_row + 1, "Boss")
 
     def point(self, col: int, row: int) -> Node:
         if (col, row) not in self.grid:
@@ -80,7 +81,7 @@ def _invalid_crossover(m: ActMap, cur: Node, col: int) -> bool:
 
 
 def _path(m: ActMap, rng: random.Random, p: Node) -> None:
-    while p.row < LAST_ROW:
+    while p.row < m.last_row:
         for d in rng.sample((-1, 0, 1), 3):
             col = min(max(p.col + d, 0), COLS - 1)
             if not _invalid_crossover(m, p, col):
@@ -92,10 +93,10 @@ def _path(m: ActMap, rng: random.Random, p: Node) -> None:
         p = nxt
 
 
-def _valid(t: str, n: Node) -> bool:
+def _valid(t: str, n: Node, last_row: int) -> bool:
     if n.row < 6 and t in _LOWER:
         return False
-    if n.row >= LAST_ROW - 2 and t in _UPPER:
+    if n.row >= last_row - 2 and t in _UPPER:
         return False
     if t in _NEIGHBOR and any(o.type == t for o in n.parents + n.children):
         return False
@@ -104,20 +105,22 @@ def _valid(t: str, n: Node) -> bool:
     return True
 
 
-def _next_valid(queue: list[str], n: Node) -> str:
+def _next_valid(queue: list[str], n: Node, last_row: int) -> str:
     """GetNextValidPointType: the first queued type valid here; invalid ones rotate to the back."""
     for _ in range(len(queue)):
         t = queue.pop(0)
-        if _valid(t, n):
+        if _valid(t, n, last_row):
             return t
         queue.append(t)
     return "Unassigned"
 
 
-def generate_map(rng: random.Random) -> ActMap:
-    rests = gaussian_int(rng, 7, 1, 6, 7)  # Overgrowth.GetMapPointTypes
-    unknowns = gaussian_int(rng, 12, 1, 10, 14)  # MapPointTypeCounts.StandardRandomUnknownCount
-    m = ActMap()
+def generate_map(rng: random.Random, hive: bool = False) -> ActMap:
+    """hive: Hive.BaseNumberOfRooms = 14, and its GetMapPointTypes has 6-centered rests and 1 fewer "?"."""
+    rests = gaussian_int(rng, 6 if hive else 7, 1, 6, 7)  # Overgrowth.GetMapPointTypes
+    unknowns = gaussian_int(rng, 12, 1, 10, 14) - hive  # MapPointTypeCounts.StandardRandomUnknownCount
+    last_row = LAST_ROW - hive
+    m = ActMap(last_row)
     starts: list[Node] = []
     for i in range(COLS):
         p = m.point(rng.randrange(COLS), 1)
@@ -127,12 +130,12 @@ def generate_map(rng: random.Random) -> ActMap:
         if p not in starts:
             starts.append(p)
         _path(m, rng, p)
-    for n in m.row(LAST_ROW):
+    for n in m.row(last_row):
         n.add_child(m.boss)
     for n in m.row(1):
         m.start.add_child(n)
 
-    for row, t in ((LAST_ROW, "RestSite"), (TREASURE_ROW, "Treasure"), (1, "Monster")):
+    for row, t in ((last_row, "RestSite"), (last_row + 1 - 7, "Treasure"), (1, "Monster")):
         for n in m.row(row):
             n.type, n.fixed = t, True
     queue = ["RestSite"] * rests + ["Shop"] * NUM_SHOPS + ["Elite"] * NUM_ELITES + ["Unknown"] * unknowns
@@ -144,7 +147,7 @@ def generate_map(rng: random.Random) -> ActMap:
         for n in spots:
             if not queue:
                 break
-            n.type = _next_valid(queue, n)
+            n.type = _next_valid(queue, n, last_row)
     for n in m.nodes():
         if n.type == "Unassigned":
             n.type = "Monster"

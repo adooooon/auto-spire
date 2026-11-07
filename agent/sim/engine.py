@@ -40,6 +40,17 @@ MAX_HAND_SIZE = 10  # CardPile.MaxCardsInHand: draws stop, generated cards go to
 MAX_SHUFFLES = 1000  # per fight; real fights reshuffle a handful of times
 
 
+class CardCopy(str):
+    """A card id whose copy costs more: Frantic Escape adds 1 to the copy that was played (AddThisCombat)."""
+    extra = 0
+
+
+def frantic_escape(extra: int) -> str:
+    copy = CardCopy("FRANTIC_ESCAPE")
+    copy.extra = extra
+    return copy
+
+
 class SimLoopError(RuntimeError):
     """MAX_SHUFFLES reshuffles in one fight: an infinite draw loop (Pillage under Ringing +
     Hellraiser was one). STS2CombatEnv ends the episode instead of hanging training."""
@@ -66,6 +77,8 @@ class Move:
     weak: int = 0  # Weak applied to the player (their attacks x0.75)
     ringing: bool = False  # RingingPower on the player: one card play on their next turn
     plow: int = 0  # PlowPower applied to itself (Ceremonial Beast)
+    toxic: int = 0  # Toxic status cards added to the player's hand
+    effect: str = ""  # move logic that fits no field: SimCombat._move_effect
 
 
 # A RandomBranchState: weighted choice among (move, max consecutive uses[, cooldown[, weight]]).
@@ -97,6 +110,8 @@ class MonsterDef:
     slow: bool = False  # SlowPower: takes +10% damage per card the player played this turn
     territorial: int = 0  # TerritorialPower: gains this much Strength at the end of its turns
     on_death_spawn: tuple[str, ...] = ()  # InfestedPower: monsters spawned (stunned) on death
+    powers: tuple[tuple[str, int], ...] = ()  # applied in AfterAddedToRoom, kept in _Enemy.pw (Hive monsters)
+    reattach: bool = False  # ReattachPower: stays in combat when killed, unhittable, heals back while another segment lives
 
 
 _LEAF_S_RAND: Branch = (("TACKLE_MOVE", 1), ("GOOP_MOVE", 1))
@@ -106,6 +121,10 @@ _FLYCONID_RAND: Branch = (("VULNERABLE_SPORES_MOVE", 1, 3), ("FRAIL_SPORES_MOVE"
 _INKLET_RAND: Branch = (("PIERCING_GAZE_MOVE", 1), ("WHIRLWIND_MOVE", 1))
 _FOGMOG_BRANCH: Branch = (("SWIPE_RANDOM_MOVE", 1, 0, 0.4), ("HEADBUTT_MOVE", 1, 0, 0.6))
 _STRANGLER_RAND: Branch = (("THWACK", FOREVER), ("LASH", FOREVER))
+_EXOSKELETON_RAND: Branch = (("SKITTER_MOVE", 1), ("MANDIBLES_MOVE", 1))
+_HUNTER_RAND: Branch = (("BITE_MOVE", 1), ("PUNCTURE_MOVE", 2))
+_OBSCURA_RAND: Branch = (("PIERCING_GAZE_MOVE", 1), ("SAIL_MOVE", 1), ("HARDENING_STRIKE_MOVE", 1))
+_SEGMENT_RAND: Branch = (("WRITHE_MOVE", 1), ("BULK_MOVE", 1), ("CONSTRICT_MOVE", 1))
 # Wriggler.cs INIT_MOVE: by slot, wriggler1/3 BITE and wriggler2/4 WRIGGLE.
 WRIGGLER_SLOT_OPENERS = ("NASTY_BITE_MOVE", "WRIGGLE_MOVE", "NASTY_BITE_MOVE", "WRIGGLE_MOVE")
 
@@ -269,12 +288,201 @@ MONSTERS: dict[str, MonsterDef] = {m.model_id: m for m in [
         "POWER_DANCE_MOVE": Move("Buff", strength=2),
     }, "QUICK_SLASH_MOVE", {"QUICK_SLASH_MOVE": "BOOMERANG_MOVE", "BOOMERANG_MOVE": "POWER_DANCE_MOVE",
                             "POWER_DANCE_MOVE": "QUICK_SLASH_MOVE"}, minion=True),
+    # --- Act 2: the Hive. Ascension 0 values from Models/Monsters.
+    MonsterDef("BOWLBUG_EGG", "Bowlbug Egg", (21, 22), {
+        "BITE_MOVE": Move("Attack", damage=7, block=7),
+    }, "BITE_MOVE", {"BITE_MOVE": "BITE_MOVE"}),
+    MonsterDef("BOWLBUG_NECTAR", "Bowlbug Nectar", (35, 38), {
+        "THRASH_MOVE": Move("Attack", damage=3),
+        "BUFF_MOVE": Move("Buff", strength=15),
+        "THRASH2_MOVE": Move("Attack", damage=3),
+    }, "THRASH_MOVE", {"THRASH_MOVE": "BUFF_MOVE", "BUFF_MOVE": "THRASH2_MOVE", "THRASH2_MOVE": "THRASH2_MOVE"}),
+    # ImbalancedPower: a Headbutt that's fully blocked stuns it (engine: _run_enemy_turn).
+    MonsterDef("BOWLBUG_ROCK", "Bowlbug Rock", (45, 48), {
+        "HEADBUTT_MOVE": Move("Attack", damage=15),
+        "STUNNED": Move("Stun"),
+    }, "HEADBUTT_MOVE", {"HEADBUTT_MOVE": "HEADBUTT_MOVE"}, powers=(("ImbalancedPower", 1),)),
+    MonsterDef("BOWLBUG_SILK", "Bowlbug Silk", (40, 43), {
+        "THRASH_MOVE": Move("Attack", damage=4, hits=2),
+        "TOXIC_SPIT_MOVE": Move("Debuff", weak=1),
+    }, "TOXIC_SPIT_MOVE", {"THRASH_MOVE": "TOXIC_SPIT_MOVE", "TOXIC_SPIT_MOVE": "THRASH_MOVE"}),
+    MonsterDef("CHOMPER", "Chomper", (60, 64), {
+        "CLAMP_MOVE": Move("Attack", damage=8, hits=2),
+        "SCREECH_MOVE": Move("Status", dazed=3),
+    }, "CLAMP_MOVE", {"CLAMP_MOVE": "SCREECH_MOVE", "SCREECH_MOVE": "CLAMP_MOVE"}, artifact=2),
+    MonsterDef("EXOSKELETON", "Exoskeleton", (24, 28), {
+        "SKITTER_MOVE": Move("Attack", damage=1, hits=3),
+        "MANDIBLES_MOVE": Move("Attack", damage=8),
+        "ENRAGE_MOVE": Move("Buff", strength=2),
+    }, _EXOSKELETON_RAND, {"SKITTER_MOVE": _EXOSKELETON_RAND, "MANDIBLES_MOVE": "ENRAGE_MOVE",
+                           "ENRAGE_MOVE": _EXOSKELETON_RAND}, powers=(("HardToKillPower", 9),)),
+    MonsterDef("HUNTER_KILLER", "Hunter Killer", (121, 121), {
+        "TENDERIZING_GOOP_MOVE": Move("Debuff", effect="tender"),
+        "BITE_MOVE": Move("Attack", damage=17),
+        "PUNCTURE_MOVE": Move("Attack", damage=7, hits=3),
+    }, "TENDERIZING_GOOP_MOVE", {"TENDERIZING_GOOP_MOVE": _HUNTER_RAND, "BITE_MOVE": _HUNTER_RAND,
+                                 "PUNCTURE_MOVE": _HUNTER_RAND}),
+    MonsterDef("MYTE", "Myte", (61, 67), {
+        "TOXIC_MOVE": Move("Status", toxic=2),
+        "BITE_MOVE": Move("Attack", damage=13),
+        "SUCK_MOVE": Move("Attack", damage=4, strength=2),
+    }, "TOXIC_MOVE", {"TOXIC_MOVE": "BITE_MOVE", "BITE_MOVE": "SUCK_MOVE", "SUCK_MOVE": "TOXIC_MOVE"}),
+    MonsterDef("SPINY_TOAD", "Spiny Toad", (116, 119), {
+        "PROTRUDING_SPIKES_MOVE": Move("Buff", effect="spikes"),
+        "SPIKE_EXPLOSION_MOVE": Move("Attack", damage=23, effect="unspike"),
+        "TONGUE_LASH_MOVE": Move("Attack", damage=17),
+    }, "PROTRUDING_SPIKES_MOVE", {"PROTRUDING_SPIKES_MOVE": "SPIKE_EXPLOSION_MOVE",
+                                  "SPIKE_EXPLOSION_MOVE": "TONGUE_LASH_MOVE", "TONGUE_LASH_MOVE": "PROTRUDING_SPIKES_MOVE"}),
+    # BurrowedPower: its block doesn't clear; breaking the block stuns it (STUNNED, then BITE_MOVE).
+    MonsterDef("TUNNELER", "Tunneler", (87, 87), {
+        "BITE_MOVE": Move("Attack", damage=13),
+        "BURROW_MOVE": Move("Buff", block=32, effect="burrow"),
+        "BELOW_MOVE": Move("Attack", damage=23),
+        "STUNNED": Move("Stun"),
+    }, "BITE_MOVE", {"BITE_MOVE": "BURROW_MOVE", "BURROW_MOVE": "BELOW_MOVE", "BELOW_MOVE": "BELOW_MOVE"}),
+    # The stolen card is in SimCombat.stolen; killing the Hopper returns it, its escape keeps it.
+    MonsterDef("THIEVING_HOPPER", "Thieving Hopper", (79, 79), {
+        "THIEVERY_MOVE": Move("Attack", damage=17, effect="steal"),
+        "FLUTTER_MOVE": Move("Buff", effect="flutter"),
+        "HAT_TRICK_MOVE": Move("Attack", damage=21),
+        "NAB_MOVE": Move("Attack", damage=14),
+        "ESCAPE_MOVE": Move("Escape", effect="escape"),
+        "STUNNED": Move("Stun"),
+    }, "THIEVERY_MOVE", {"THIEVERY_MOVE": "FLUTTER_MOVE", "FLUTTER_MOVE": "HAT_TRICK_MOVE", "HAT_TRICK_MOVE": "NAB_MOVE",
+                         "NAB_MOVE": "ESCAPE_MOVE", "ESCAPE_MOVE": "ESCAPE_MOVE"}, powers=(("EscapeArtistPower", 5),)),
+    MonsterDef("LOUSE_PROGENITOR", "Louse Progenitor", (134, 136), {
+        "WEB_CANNON_MOVE": Move("Attack", damage=9, frail=2),
+        "CURL_AND_GROW_MOVE": Move("Defend", block=14, strength=5),
+        "POUNCE_MOVE": Move("Attack", damage=14),
+    }, "WEB_CANNON_MOVE", {"WEB_CANNON_MOVE": "CURL_AND_GROW_MOVE", "CURL_AND_GROW_MOVE": "POUNCE_MOVE",
+                           "POUNCE_MOVE": "WEB_CANNON_MOVE"}, powers=(("CurlUpPower", 14),)),
+    # After Tenderizer: Lay Eggs while at most 3 of its side are alive, else Nutritional Paste (_next_move).
+    MonsterDef("OVICOPTER", "Ovicopter", (124, 130), {
+        "LAY_EGGS_MOVE": Move("Summon", effect="lay_eggs"),
+        "SMASH_MOVE": Move("Attack", damage=16),
+        "TENDERIZER_MOVE": Move("Attack", damage=7, vulnerable=2),
+        "NUTRITIONAL_PASTE_MOVE": Move("Buff", strength=3),
+    }, "LAY_EGGS_MOVE", {"LAY_EGGS_MOVE": "SMASH_MOVE", "SMASH_MOVE": "TENDERIZER_MOVE",
+                         "TENDERIZER_MOVE": "SUMMON_BRANCH_STATE", "NUTRITIONAL_PASTE_MOVE": "SMASH_MOVE"}),
+    MonsterDef("TOUGH_EGG", "Tough Egg", (14, 18), {
+        "HATCH_MOVE": Move("Summon", effect="hatch"),
+        "NIBBLE_MOVE": Move("Attack", damage=4),
+    }, "HATCH_MOVE", {"HATCH_MOVE": "NIBBLE_MOVE", "NIBBLE_MOVE": "NIBBLE_MOVE"}, minion=True),
+    # PlatingPower + SlumberPower: asleep until 3 turns pass or 3 hits land (_slumber).
+    MonsterDef("SLUMBERING_BEETLE", "Slumbering Beetle", (86, 86), {
+        "SNORE_MOVE": Move("Sleep"),
+        "ROLL_OUT_MOVE": Move("Attack", damage=16, strength=2),
+        "STUNNED": Move("Stun"),
+    }, "SNORE_MOVE", {"SNORE_MOVE": "SNORE_MOVE", "ROLL_OUT_MOVE": "ROLL_OUT_MOVE"},
+        powers=(("PlatingPower", 15), ("SlumberPower", 3))),
+    MonsterDef("THE_OBSCURA", "The Obscura", (123, 123), {
+        "ILLUSION_MOVE": Move("Summon", summon="PARAFRIGHT"),
+        "PIERCING_GAZE_MOVE": Move("Attack", damage=10),
+        "SAIL_MOVE": Move("Buff", effect="wail"),
+        "HARDENING_STRIKE_MOVE": Move("Attack", damage=6, block=6),
+    }, "ILLUSION_MOVE", {"ILLUSION_MOVE": _OBSCURA_RAND, "PIERCING_GAZE_MOVE": _OBSCURA_RAND, "SAIL_MOVE": _OBSCURA_RAND,
+                         "HARDENING_STRIKE_MOVE": _OBSCURA_RAND}),
+    MonsterDef("PARAFRIGHT", "Parafright", (21, 21), {
+        "SLAM_MOVE": Move("Attack", damage=16),
+        "REVIVE_MOVE": Move("Heal", revive=True),
+    }, "SLAM_MOVE", {"SLAM_MOVE": "SLAM_MOVE", "REVIVE_MOVE": "SLAM_MOVE"}, illusion=True),
+    # --- Act 2 elites ---
+    MonsterDef("ENTOMANCER", "Entomancer", (145, 145), {
+        "PHEROMONE_SPIT_MOVE": Move("Buff", effect="pheromone"),
+        "BEES_MOVE": Move("Attack", damage=3, hits=7),
+        "SPEAR_MOVE": Move("Attack", damage=18),
+    }, "BEES_MOVE", {"BEES_MOVE": "SPEAR_MOVE", "SPEAR_MOVE": "PHEROMONE_SPIT_MOVE", "PHEROMONE_SPIT_MOVE": "BEES_MOVE"},
+        powers=(("PersonalHivePower", 1),)),
+    MonsterDef("INFESTED_PRISM", "Infested Prism", (161, 161), {
+        "JAB_MOVE": Move("Attack", damage=15),
+        "RADIATE_MOVE": Move("Attack", damage=11, block=11),
+        "WHIRLWIND_MOVE": Move("Attack", damage=5, hits=3),
+        "PULSATE_MOVE": Move("Attack", damage=8, block=20, effect="spark"),
+    }, "JAB_MOVE", {"JAB_MOVE": "RADIATE_MOVE", "RADIATE_MOVE": "WHIRLWIND_MOVE", "WHIRLWIND_MOVE": "PULSATE_MOVE",
+                    "PULSATE_MOVE": "JAB_MOVE"}, powers=(("VitalSparkPower", 2),)),
+    *[MonsterDef(f"DECIMILLIPEDE_SEGMENT_{part}", "Decimillipede Segment", (40, 46), {
+        "WRITHE_MOVE": Move("Attack", damage=5, hits=2),
+        "BULK_MOVE": Move("Attack", damage=6, strength=2),
+        "CONSTRICT_MOVE": Move("Attack", damage=8, weak=1),
+        "DEAD_MOVE": Move("Sleep"),
+        "REATTACH_MOVE": Move("Heal", effect="reattach"),
+    }, "WRITHE_MOVE", {"CONSTRICT_MOVE": "BULK_MOVE", "BULK_MOVE": "WRITHE_MOVE", "WRITHE_MOVE": "CONSTRICT_MOVE",
+                       "DEAD_MOVE": "REATTACH_MOVE", "REATTACH_MOVE": _SEGMENT_RAND},
+        powers=(("ReattachPower", 25),), reattach=True) for part in ("FRONT", "MIDDLE", "BACK")],
+    # --- Act 2 bosses ---
+    MonsterDef("CRUSHER", "Crusher", (209, 209), {
+        "THRASH_MOVE": Move("Attack", damage=12),
+        "ENLARGING_STRIKE_MOVE": Move("Attack", damage=4),
+        "BUG_STING_MOVE": Move("Attack", damage=6, hits=2, weak=2, frail=2),
+        "ADAPT_MOVE": Move("Buff", strength=2),
+        "GUARDED_STRIKE_MOVE": Move("Attack", damage=12, block=18),
+    }, "THRASH_MOVE", {"THRASH_MOVE": "ENLARGING_STRIKE_MOVE", "ENLARGING_STRIKE_MOVE": "BUG_STING_MOVE",
+                       "BUG_STING_MOVE": "ADAPT_MOVE", "ADAPT_MOVE": "GUARDED_STRIKE_MOVE", "GUARDED_STRIKE_MOVE": "THRASH_MOVE"},
+        powers=(("BackAttackLeftPower", 1), ("CrabRagePower", 1))),
+    MonsterDef("ROCKET", "Rocket", (199, 199), {
+        "TARGETING_RETICLE_MOVE": Move("Attack", damage=3),
+        "PRECISION_BEAM_MOVE": Move("Attack", damage=18),
+        "CHARGE_UP_MOVE": Move("Buff", strength=2),
+        "LASER_MOVE": Move("Attack", damage=31),
+        "RECHARGE_MOVE": Move("Sleep"),
+    }, "TARGETING_RETICLE_MOVE", {"TARGETING_RETICLE_MOVE": "PRECISION_BEAM_MOVE", "PRECISION_BEAM_MOVE": "CHARGE_UP_MOVE",
+                                  "CHARGE_UP_MOVE": "LASER_MOVE", "LASER_MOVE": "RECHARGE_MOVE", "RECHARGE_MOVE": "TARGETING_RETICLE_MOVE"},
+        powers=(("BackAttackRightPower", 1), ("CrabRagePower", 1))),
+    MonsterDef("KNOWLEDGE_DEMON", "Knowledge Demon", (379, 379), {
+        "CURSE_OF_KNOWLEDGE_MOVE": Move("Debuff", effect="curse"),
+        "SLAP_MOVE": Move("Attack", damage=17),
+        "KNOWLEDGE_OVERWHELMING_MOVE": Move("Attack", damage=8, hits=3),
+        "PONDER_MOVE": Move("Attack", damage=11, strength=2, effect="ponder"),
+    }, "CURSE_OF_KNOWLEDGE_MOVE", {"CURSE_OF_KNOWLEDGE_MOVE": "SLAP_MOVE", "SLAP_MOVE": "KNOWLEDGE_OVERWHELMING_MOVE",
+                                   "KNOWLEDGE_OVERWHELMING_MOVE": "PONDER_MOVE", "PONDER_MOVE": "CURSE_BRANCH"}),
+    MonsterDef("THE_INSATIABLE", "The Insatiable", (321, 321), {
+        "LIQUIFY_GROUND_MOVE": Move("Buff", effect="liquify"),
+        "THRASH_MOVE": Move("Attack", damage=8, hits=2),
+        "THRASH_MOVE_2": Move("Attack", damage=8, hits=2),
+        "LUNGING_BITE_MOVE": Move("Attack", damage=28),
+        "SALIVATE_MOVE": Move("Buff", strength=2),
+    }, "LIQUIFY_GROUND_MOVE", {"LIQUIFY_GROUND_MOVE": "THRASH_MOVE", "THRASH_MOVE": "LUNGING_BITE_MOVE",
+                               "LUNGING_BITE_MOVE": "SALIVATE_MOVE", "SALIVATE_MOVE": "THRASH_MOVE_2", "THRASH_MOVE_2": "THRASH_MOVE"}),
 ]}
+SEGMENT_STARTS = ("WRITHE_MOVE", "BULK_MOVE", "CONSTRICT_MOVE")
 RUBY_RAIDERS = ("AXE_RUBY_RAIDER", "ASSASSIN_RUBY_RAIDER", "BRUTE_RUBY_RAIDER", "CROSSBOW_RUBY_RAIDER", "TRACKER_RUBY_RAIDER")
+
+
+def hive_roster(encounter: str, rng: random.Random) -> list[str]:
+    """Act 2's rosters, apart from encounter_roster because its dict rolls every entry: adding to it would move
+    the RNG of every Act 1 fight."""
+    if encounter == "BOWLBUGS_WEAK":
+        return ["BOWLBUG_ROCK", rng.choice(["BOWLBUG_EGG", "BOWLBUG_NECTAR"])]
+    if encounter == "BOWLBUGS_NORMAL":
+        return ["BOWLBUG_ROCK", *rng.sample(["BOWLBUG_EGG", "BOWLBUG_SILK", "BOWLBUG_NECTAR"], 2)]
+    if encounter == "DECIMILLIPEDE_ELITE":  # the segments open on consecutive moves of Writhe, Bulk, Constrict
+        start = rng.randrange(3)
+        return [f"DECIMILLIPEDE_SEGMENT_{part}:{SEGMENT_STARTS[(start + i) % 3]}" for i, part in enumerate(("FRONT", "MIDDLE", "BACK"))]
+    return {
+        "CHOMPERS_NORMAL": ["CHOMPER", "CHOMPER:SCREECH_MOVE"],
+        "EXOSKELETONS_WEAK": ["EXOSKELETON:SKITTER_MOVE", "EXOSKELETON:MANDIBLES_MOVE", "EXOSKELETON:ENRAGE_MOVE"],
+        "EXOSKELETONS_NORMAL": ["EXOSKELETON:SKITTER_MOVE", "EXOSKELETON:MANDIBLES_MOVE", "EXOSKELETON:ENRAGE_MOVE", "EXOSKELETON"],
+        "HUNTER_KILLER_NORMAL": ["HUNTER_KILLER"],
+        "LOUSE_PROGENITOR_NORMAL": ["LOUSE_PROGENITOR"],
+        "MYTES_NORMAL": ["MYTE:TOXIC_MOVE", "MYTE:SUCK_MOVE"],
+        "OVICOPTER_NORMAL": ["OVICOPTER"],
+        "SLUMBERING_BEETLE_NORMAL": ["BOWLBUG_ROCK", "BOWLBUG_SILK", "SLUMBERING_BEETLE"],
+        "SPINY_TOAD_NORMAL": ["SPINY_TOAD"],
+        "THE_OBSCURA_NORMAL": ["THE_OBSCURA"],
+        "THIEVING_HOPPER_WEAK": ["THIEVING_HOPPER"],
+        "TUNNELER_WEAK": ["TUNNELER"],
+        "ENTOMANCER_ELITE": ["ENTOMANCER"],
+        "INFESTED_PRISMS_ELITE": ["INFESTED_PRISM"],
+        "KAISER_CRAB_BOSS": ["CRUSHER", "ROCKET"],
+        "KNOWLEDGE_DEMON_BOSS": ["KNOWLEDGE_DEMON"],
+        "THE_INSATIABLE_BOSS": ["THE_INSATIABLE"],
+    }[encounter]
 
 
 def encounter_roster(encounter: str, rng: random.Random) -> list[str]:
     """Monster ids in slot order; "ID:MOVE" overrides the opening move."""
+    if encounter in HIVE_ENCOUNTERS:
+        return hive_roster(encounter, rng)
     small = rng.sample(["LEAF_SLIME_S", "TWIG_SLIME_S"], 2)
     if encounter == "SLIMES_WEAK":  # SlimesWeak.cs: small, medium, the *other* small
         return [small[0], rng.choice(["LEAF_SLIME_M", "TWIG_SLIME_M"]), small[1]]
@@ -307,7 +515,7 @@ def encounter_roster(encounter: str, rng: random.Random) -> list[str]:
             [rng.choice(["LEAF_SLIME_S", "TWIG_SLIME_S"]) for _ in range(2)]]) + ["SLITHERING_STRANGLER"],
     }
     if encounter not in rosters:
-        raise ValueError(f"sim does not model encounter {encounter!r} (only {ENCOUNTERS})")
+        raise ValueError(f"sim does not model encounter {encounter!r} (only {ENCOUNTERS + HIVE_ENCOUNTERS})")
     return rosters[encounter]
 
 
@@ -318,6 +526,16 @@ ENCOUNTERS = ("NIBBITS_WEAK", "SLIMES_WEAK", "SHRINKER_BEETLE_WEAK", "FUZZY_WURM
               "SNAPPING_JAXFRUIT_NORMAL", "SLITHERING_STRANGLER_NORMAL",
               "BYGONE_EFFIGY_ELITE", "BYRDONIS_ELITE", "PHROG_PARASITE_ELITE",
               "VANTOM_BOSS", "CEREMONIAL_BEAST_BOSS", "THE_KIN_BOSS")
+HIVE_WEAK = ("BOWLBUGS_WEAK", "EXOSKELETONS_WEAK", "THIEVING_HOPPER_WEAK", "TUNNELER_WEAK")
+HIVE_NORMALS = ("BOWLBUGS_NORMAL", "CHOMPERS_NORMAL", "EXOSKELETONS_NORMAL", "HUNTER_KILLER_NORMAL", "LOUSE_PROGENITOR_NORMAL",
+                "MYTES_NORMAL", "OVICOPTER_NORMAL", "SLUMBERING_BEETLE_NORMAL", "SPINY_TOAD_NORMAL", "THE_OBSCURA_NORMAL")
+HIVE_ELITES = ("DECIMILLIPEDE_ELITE", "ENTOMANCER_ELITE", "INFESTED_PRISMS_ELITE")
+HIVE_BOSSES = ("KAISER_CRAB_BOSS", "KNOWLEDGE_DEMON_BOSS", "THE_INSATIABLE_BOSS")
+HIVE_ENCOUNTERS = HIVE_WEAK + HIVE_NORMALS + HIVE_ELITES + HIVE_BOSSES
+HIVE_MONSTERS = ("BOWLBUG_EGG", "BOWLBUG_NECTAR", "BOWLBUG_ROCK", "BOWLBUG_SILK", "CHOMPER", "EXOSKELETON", "HUNTER_KILLER", "MYTE",
+                 "SPINY_TOAD", "TUNNELER", "THIEVING_HOPPER", "LOUSE_PROGENITOR", "OVICOPTER", "TOUGH_EGG", "SLUMBERING_BEETLE",
+                 "THE_OBSCURA", "PARAFRIGHT", "ENTOMANCER", "INFESTED_PRISM", "DECIMILLIPEDE_SEGMENT_FRONT", "DECIMILLIPEDE_SEGMENT_MIDDLE",
+                 "DECIMILLIPEDE_SEGMENT_BACK", "CRUSHER", "ROCKET", "KNOWLEDGE_DEMON", "THE_INSATIABLE")
 
 
 def branch_weights(spec: str | Branch, log: list[str]) -> dict[str, float]:
@@ -347,14 +565,14 @@ def pick_move(spec: str | Branch, log: list[str], rng: random.Random) -> str:
 
 
 def player_attack_damage(base: int, target_vulnerable: bool, shrunk: bool, weak: bool = False,
-                         slow_cards: int | None = None, cruelty: int = 0, mult: int = 1) -> int:
+                         slow_cards: int | None = None, cruelty: int = 0, mult: int = 1, div: int = 1) -> int:
     """floor(base * (1.5 + cruelty%)[target Vulnerable] * 0.7[Shrink] * 0.75[Weak] * (1 + 0.1n)[target
     Slow, n cards played this turn]) in exact integer math (Hook.ModifyDamage multiplies decimals, then
     truncates). Cruelty raises the Vulnerable multiplier by its amount in percent (CrueltyPower).
     mult: Pen Nib's x2, applied with the other multipliers."""
     num = base * ((150 + cruelty) if target_vulnerable else 100) * (7 if shrunk else 10) * (3 if weak else 4)
     num *= (10 + (slow_cards or 0)) * mult
-    return max(0, num // (100 * 10 * 4 * 10))
+    return max(0, num // (100 * 10 * 4 * 10 * div))
 
 
 @dataclass
@@ -372,6 +590,7 @@ class _Enemy:
     slippery: int = 0
     plow: int = 0
     next_override: str | None = None  # CreatureCmd.Stun's nextMoveId: the move after the current one
+    pw: dict[str, int] = field(default_factory=dict)  # MonsterDef.powers and what they've become
     log: list[str] = field(default_factory=list)  # performed moves, for RandomBranchState repeat rules
 
     @property
@@ -381,20 +600,26 @@ class _Enemy:
     @property
     def in_combat(self) -> bool:
         """Dead illusions stay in combat (IllusionPower.ShouldCreatureBeRemovedFromCombatAfterDeath)."""
-        return self.is_alive or self.defn.illusion
+        return self.is_alive or self.defn.illusion or (self.defn.reattach and "reviving" in self.pw)
 
     @classmethod
     def spawn(cls, d: MonsterDef, rng: random.Random, first: str = "") -> "_Enemy":
         hp = rng.randint(*d.hp)
         return cls(d, hp, hp, first or pick_move(d.first, [], rng), block=d.start_block,
-                   artifact=d.artifact, slippery=d.slippery)
+                   artifact=d.artifact, slippery=d.slippery, pw=dict(d.powers))
 
 
 SINGLE_POWERS = {"BarricadePower", "NoDrawPower", "NoEnergyGainPower", "HellraiserPower"}  # PowerStackType.Single
 # Removed at the end of the player's turn (AfterSideTurnEnd on their side).
 TURN_POWERS = ("RagePower", "NoDrawPower", "NoEnergyGainPower", "OneTwoPunchPower")
 # Combat history the live /combat doesn't expose; sim.validate carries these over between steps.
-HISTORY_FIELDS = ("exhausted_this_turn", "hp_lost_this_turn", "attack_plays", "block_plays", "free_cards",
+# What each Hive conditional branch can lead to (engine: _next_move), for sim.validate.
+BRANCHES = {"SUMMON_BRANCH_STATE": ["LAY_EGGS_MOVE", "NUTRITIONAL_PASTE_MOVE"], "CURSE_BRANCH": ["CURSE_OF_KNOWLEDGE_MOVE", "SLAP_MOVE"]}
+# Powers on Hive monsters, kept in _Enemy.pw. sim.validate loads them from the live /combat.
+ENEMY_PW = ("HardToKillPower", "ThornsPower", "ImbalancedPower", "BurrowedPower", "CurlUpPower", "PlatingPower", "SlumberPower",
+            "PersonalHivePower", "VitalSparkPower", "ReattachPower", "EscapeArtistPower", "FlutterPower", "SwipePower", "HatchPower",
+            "CrabRagePower", "BackAttackLeftPower", "BackAttackRightPower", "SandpitPower")
+HISTORY_FIELDS = ("tender_plays", "facing", "exhausted_this_turn", "hp_lost_this_turn", "attack_plays", "block_plays", "free_cards",
                   "hp_loss_events", "bonus_damage", "crimson_self", "inferno_self")
 
 
@@ -445,6 +670,9 @@ class SimCombat:
     # History ("this turn" = this round's player side, CombatHistoryEntry.HappenedThisTurn).
     exhausted_this_turn: bool = False  # Evil Eye, Forgotten Ritual
     hp_lost_this_turn: bool = False  # Spite
+    tender_plays: int = 0  # TenderPower: Strength and Dexterity lost this turn, returned at its end
+    facing: str = "Right"  # SurroundedPower: x1.5 from the arm behind the player
+    stolen: list = field(default_factory=list)  # Thieving Hopper: cards gone from the deck unless it's killed
     attack_plays: int = 0  # this turn, per play (One-Two Punch counts twice): Stomp, Juggling
     block_plays: list[int] = field(default_factory=list)  # card plays that gained block this turn (Unmovable)
     free_cards: list[str] = field(default_factory=list)  # free this turn (Infernal Blade's card)
@@ -485,6 +713,7 @@ class SimCombat:
 
     def fight(self, encounter: str, deck: list[str] | None = None) -> None:
         # A play abandoned at a prompt never finishes, so its depth and Rupture count go too.
+        self.tender_plays, self.facing, self.stolen = 0, "Right", []
         self.pending_choice, self.choice_log, self._paused, self._effect_depth, self._rupture = None, [], None, 0, None
         self.enemies = []
         for entry in encounter_roster(encounter, self.rng):
@@ -536,6 +765,8 @@ class SimCombat:
         c = CARDS[card_id]
         if c.x_cost or card_id in self.free_cards:
             return 0
+        if card_id == "FRANTIC_ESCAPE":
+            return c.cost + getattr(card_id, "extra", 0)
         if c.type != "Attack":
             return c.cost
         if self.pw.get("FreeAttackPower"):  # TryModifyEnergyCostInCombatLate: after Tangled
@@ -566,6 +797,7 @@ class SimCombat:
             if target is None or not target.is_alive:
                 return {"error": "invalid_target", "targetId": target_id}
 
+            self._face(target)  # SurroundedPower.BeforeCardPlayed
         x = self.energy if card.x_cost else 0
         spent = x if card.x_cost else self.cost(card_id)
         self.energy -= spent
@@ -720,7 +952,7 @@ class SimCombat:
             if card.exhaust or force_exhaust:
                 self._exhaust(card_id)
             else:
-                self.discard_pile.append(card_id)
+                self.discard_pile.append(frantic_escape(getattr(card_id, "extra", 0) + 1) if card_id == "FRANTIC_ESCAPE" else card_id)
         self._check_empty_hand()
 
     def _after_resolve(self, card, mine: int, outer: int | None) -> bool:
@@ -744,6 +976,18 @@ class SimCombat:
             for _ in range(self.pw["JugglingPower"]):
                 self._add_to_hand(card.id)  # CreateClone
         self._gain_strength(owed)
+        if self.rt.pop("curl", None):  # CurlUpPower.AfterCardPlayed
+            for e in self._hittable():
+                if e.pw.get("CurlUpPower"):
+                    e.block += e.pw.pop("CurlUpPower")
+        if self.pw.get("TenderPower"):
+            self.strength -= 1
+            self.dexterity -= 1
+            self.tender_plays += 1
+        if card.type == "Skill":  # VitalSparkPower: every Skill is Tainted while the Prism lives
+            for e in self._hittable():
+                if e.pw.get("VitalSparkPower"):
+                    self._apply_power("TaintedPower", e.pw["VitalSparkPower"])
         self._after_card_relics(card)
         self._check_win()
         return self.in_combat
@@ -877,6 +1121,11 @@ class SimCombat:
                 self._autoplay(top, force_exhaust=True)
 
     def _special(self, cid: str, target: _Enemy | None, x: int) -> None:
+        if cid == "FRANTIC_ESCAPE":  # the sand pit gets 1 further away; this costs 1 more
+            for e in self.enemies:
+                if e.pw.get("SandpitPower"):
+                    e.pw["SandpitPower"] += 1
+            return
         card = CARDS[cid]
         if cid == "ASHEN_STRIKE":
             self._hit(card, target, 6 + 3 * len(self.exhaust_pile))
@@ -1030,9 +1279,14 @@ class SimCombat:
             else:
                 targets = [target] if target and target.is_alive else []
             for t in targets:
-                self._damage_enemy(t, player_attack_damage(
-                    base + self.strength, t.vulnerable > 0, self.shrunk, self.weak > 0,
-                    self.cards_played if t.defn.slow else None, cruelty, mult))
+                if t.pw.get("ThornsPower"):  # BeforeDamageReceived; Unpowered, so block applies
+                    self._damage_player(t.pw["ThornsPower"])
+                    if not self.in_combat:
+                        return
+                dmg = player_attack_damage(base + self.strength, t.vulnerable > 0, self.shrunk, self.weak > 0,
+                                           self.cards_played if t.defn.slow else None, cruelty, mult,
+                                           2 if t.pw.get("FlutterPower") else 1)
+                self._damage_enemy(t, dmg, attack=True)
             if not self.in_combat:
                 return
         self.pw.pop("VigorPower", None)  # AfterAttack: Vigor is spent by the attack
@@ -1185,7 +1439,11 @@ class SimCombat:
 
     # --- damage ----------------------------------------------------------------------------------
 
-    def _damage_enemy(self, e: _Enemy, dmg: int) -> None:
+    def _damage_enemy(self, e: _Enemy, dmg: int, attack: bool = False) -> None:
+        """attack: a card's powered attack, which Flutter, Curl Up and Personal Hive answer."""
+        if e.pw.get("HardToKillPower"):  # ModifyDamageCap
+            dmg = min(dmg, e.pw["HardToKillPower"])
+        had_block = e.block > 0
         absorbed = min(e.block, dmg)
         e.block -= absorbed
         hp_loss = dmg - absorbed
@@ -1198,11 +1456,13 @@ class SimCombat:
             self._gain_energy(1)
             self._draw(1)
         if e.is_alive:
+            self._hive_damage(e, hp_loss, attack, had_block)
             # PlowPower.AfterDamageReceived: at or below its Plow amount, lose all Strength (and its
             # temporary Strength powers) and get stunned (STUNNED, then BEAST_CRY_MOVE: phase 2).
             if e.plow and hp_loss > 0 and e.hp <= e.plow:
                 e.plow, e.strength, e.mangle, e.move, e.next_override = 0, 0, 0, "STUNNED", "BEAST_CRY_MOVE"
             return
+        self._hive_death(e, attack)
         # InfestedPower.AfterDeath: spawns that start stunned, in slots after the dead one.
         for i, mid in enumerate(e.defn.on_death_spawn):
             spawn = _Enemy.spawn(MONSTERS[mid], self.rng)
@@ -1218,6 +1478,149 @@ class SimCombat:
         if e.defn.illusion:  # keeps buffs, loses debuffs, revives on its next turn
             e.vulnerable = e.weak = 0
             e.move = "REVIVE_MOVE"
+
+    # --- Hive monsters -----------------------------------------------------------------------------
+
+    def _stun(self, e: _Enemy, next_move: str) -> None:
+        """CreatureCmd.Stun: a fresh STUNNED state, then next_move."""
+        e.move, e.next_override = "STUNNED", next_move
+
+    def _hive_damage(self, e: _Enemy, hp_loss: int, attack: bool, had_block: bool) -> None:
+        """AfterDamageReceived and AfterBlockBroken, for a monster that survived the hit."""
+        pw = e.pw
+        if pw.get("BurrowedPower") and had_block and e.block == 0:
+            del pw["BurrowedPower"]
+            self._stun(e, "BITE_MOVE")
+        if hp_loss and pw.get("SlumberPower"):
+            pw["SlumberPower"] -= 1
+            if not pw["SlumberPower"]:
+                del pw["SlumberPower"]
+                pw.pop("PlatingPower", None)
+                self._stun(e, "ROLL_OUT_MOVE")
+        if attack and hp_loss and pw.get("FlutterPower"):
+            pw["FlutterPower"] -= 1
+            if not pw["FlutterPower"]:
+                del pw["FlutterPower"]
+                self._stun(e, self._next_move(e, e.log[-1]))
+        if attack:
+            self._hive_attacked(e)
+
+    def _hive_attacked(self, e: _Enemy) -> None:
+        if e.pw.get("CurlUpPower"):  # gains its block once the card that hit it has finished (_after_resolve)
+            self.rt["curl"] = 1
+        for _ in range(e.pw.get("PersonalHivePower", 0)):  # Dazed at a random place in the draw pile
+            self.draw_pile.insert(self.rng.randint(0, len(self.draw_pile)), "DAZED")
+
+    def _hive_death(self, e: _Enemy, attack: bool) -> None:
+        """AfterDeath. A killing blow still counts for Personal Hive (AfterDamageReceived runs first)."""
+        if attack:
+            self._hive_attacked(e)
+        if e.defn.reattach and any(x.is_alive for x in self.enemies if x is not e):
+            e.pw["reviving"] = 1
+            e.move, e.next_override = "DEAD_MOVE", None
+        if e.pw.get("SwipePower"):  # SwipePower.BeforeDeath: the card comes back after the fight
+            self.stolen = []
+        for x in self.enemies:
+            if x is not e and x.is_alive and x.pw.pop("CrabRagePower", None):  # the other arm enrages
+                x.strength += 6
+                x.block += 99
+        if self.pw.get("SurroundedPower"):
+            alive = self._hittable()
+            if alive and (all("BackAttackLeftPower" in x.pw for x in alive) or all("BackAttackRightPower" in x.pw for x in alive)):
+                self._face(alive[0])
+
+    def _face(self, target: _Enemy | None) -> None:
+        """SurroundedPower.UpdateDirection: turn toward what was just targeted."""
+        if not target or not self.pw.get("SurroundedPower"):
+            return
+        if self.facing == "Right" and "BackAttackLeftPower" in target.pw:
+            self.facing = "Left"
+        elif self.facing == "Left" and "BackAttackRightPower" in target.pw:
+            self.facing = "Right"
+
+    def _next_move(self, e: _Enemy, performed: str) -> str:
+        """The move after `performed`: its follow-up, resolving the Hive's conditional branches."""
+        follow = e.defn.follow[performed]
+        if follow == "SUMMON_BRANCH_STATE":  # Ovicopter.CanLay
+            return "LAY_EGGS_MOVE" if sum(x.is_alive for x in self.enemies) <= 3 else "NUTRITIONAL_PASTE_MOVE"
+        if follow == "CURSE_BRANCH":  # Knowledge Demon: 3 curses, then only the rest of the cycle
+            return "CURSE_OF_KNOWLEDGE_MOVE" if e.log.count("CURSE_OF_KNOWLEDGE_MOVE") < 3 else "SLAP_MOVE"
+        return pick_move(follow, e.log, self.rng)
+
+    def _move_effect(self, e: _Enemy, effect: str) -> None:
+        """What a Hive move does beyond damage, block, Strength and status cards."""
+        pw = e.pw
+        if effect == "tender":
+            self._apply_power("TenderPower", 1)
+        elif effect == "spikes":
+            pw["ThornsPower"] = pw.get("ThornsPower", 0) + 5
+        elif effect == "unspike":
+            pw["ThornsPower"] = pw.get("ThornsPower", 0) - 5
+            if not pw["ThornsPower"]:
+                del pw["ThornsPower"]
+        elif effect == "burrow":
+            pw["BurrowedPower"] = 1
+        elif effect == "flutter":
+            pw["FlutterPower"] = 5
+        elif effect == "steal":
+            self._steal(e)
+        elif effect == "escape":
+            self.enemies.remove(e)  # CreatureCmd.Escape: the stolen card leaves with it
+            self._check_win()
+        elif effect == "lay_eggs":
+            # ponytail: new eggs always go in front; the game refills the last free slot, so once some have died
+            # the order on screen can differ (seen once in 238 validated steps; no rule depends on it).
+            for _ in range(3):  # the last free slot first, and the eggs' slots come before Ovicopter's
+                egg = _Enemy.spawn(MONSTERS["TOUGH_EGG"], self.rng)
+                egg.pw["HatchPower"] = 2  # ToughEgg.AfterAddedToRoom, on the enemy's turn
+                self.enemies.insert(0, egg)
+        elif effect == "hatch":  # every power but Minion goes
+            pw.clear()
+            e.strength = e.vulnerable = e.weak = e.mangle = e.artifact = 0
+            e.hp = e.max_hp = self.rng.randint(19, 22)
+        elif effect == "wail":
+            for x in self.enemies:
+                if x.is_alive:
+                    x.strength += 3
+        elif effect == "pheromone":
+            if pw.get("PersonalHivePower", 0) < 3:
+                pw["PersonalHivePower"] = pw.get("PersonalHivePower", 0) + 1
+                e.strength += 1
+            else:
+                e.strength += 2
+        elif effect == "spark":
+            pw["VitalSparkPower"] = pw.get("VitalSparkPower", 0) + 2
+        elif effect == "reattach":
+            pw.pop("reviving", None)
+            if any(x.is_alive for x in self.enemies if x is not e):
+                e.hp = min(e.max_hp, e.hp + pw.get("ReattachPower", 0))
+        elif effect == "curse":
+            # ponytail: always Disintegration, the first option; give the combat model this choice when it's worth it.
+            self._apply_power("DisintegrationPower", (6, 7, 8)[e.log.count("CURSE_OF_KNOWLEDGE_MOVE") - 1])  # this one's in the log
+        elif effect == "ponder":
+            e.hp = min(e.max_hp, e.hp + 30)
+        elif effect == "liquify":
+            pw["SandpitPower"] = 4
+            for _ in range(3):
+                self.draw_pile.insert(self.rng.randint(0, len(self.draw_pile)), "FRANTIC_ESCAPE")
+            self.discard_pile += ["FRANTIC_ESCAPE"] * 3
+        else:
+            raise ValueError(effect)
+
+    def _steal(self, e: _Enemy) -> None:
+        """ThievingHopper._stealPriorities, over cards from the deck in the draw and discard piles."""
+        rarity = lambda c: CARDS[c].rarity  # noqa: E731
+        cards = [(pile, c) for pile in (self.draw_pile, self.discard_pile) for c in pile if rarity(c) not in ("Status", "Token")]
+        for tier in (("Uncommon",), ("Common", "Rare"), ("Basic",)):
+            best = [x for x in cards if rarity(x[1]) in tier]
+            if best:
+                cards = best
+                break
+        if cards:
+            pile, card = self.rng.choice(cards)
+            pile.remove(card)
+            self.stolen.append(card)
+            e.pw["SwipePower"] = 1
 
     def _lose_hp(self, amount: int, from_card: bool = False) -> None:
         """Unblocked HP loss: card self-damage (Unblockable), or the part of a hit block didn't stop."""
@@ -1290,9 +1693,11 @@ class SimCombat:
     def monster_hit_damage(self, e: _Enemy, base: int) -> int:
         """x1.5 player Vulnerable, x0.75 monster Weak, x0.5 if the player has Colossus and the monster
         is Vulnerable (ColossusPower) — one truncation at the end."""
+        base += self.pw.get("TaintedPower", 0)  # ModifyDamageAdditive
+        back = self.pw.get("SurroundedPower") and ("BackAttackLeftPower" if self.facing == "Right" else "BackAttackRightPower") in e.pw
         num = base * (3 if self.vulnerable else 2) * (3 if e.weak else 4) * \
-            (1 if self.pw.get("ColossusPower") and e.vulnerable else 2)
-        return max(0, num // 16)
+            (1 if self.pw.get("ColossusPower") and e.vulnerable else 2) * (3 if back else 2)
+        return max(0, num // 32)
 
     def _end_combat(self, won: bool) -> None:
         self.in_combat = False
@@ -1316,6 +1721,9 @@ class SimCombat:
         # BeforeSideTurnStart. ponytail: per enemy, Bag of Marbles then Red Mask (Artifact: Marbles spends the charge).
         if self.round <= 1:
             for e in self._hittable():
+                e.block += e.pw.get("PlatingPower", 0)  # PlatingPower.BeforeSideTurnStart
+                if "BackAttackRightPower" in e.pw:  # Rocket.AfterAddedToRoom
+                    self.pw["SurroundedPower"] = 1
                 if "BAG_OF_MARBLES" in R:
                     self._debuff(e, "vulnerable", 1, card=False)
                 if "RED_MASK" in R:
@@ -1471,6 +1879,9 @@ class SimCombat:
             if not self.in_combat:
                 return {"ok": True}
         self.tangled = 0
+        self.strength += self.tender_plays  # TenderPower.AfterSideTurnEnd
+        self.dexterity += self.tender_plays
+        self.tender_plays = 0
         self.strength -= self.temp_strength  # TemporaryStrengthPower.AfterSideTurnEnd
         self.temp_strength = 0
         self.dexterity -= self.temp_dexterity  # SpeedPotionPower (TemporaryDexterityPower)
@@ -1489,6 +1900,10 @@ class SimCombat:
             self._check_win()
             if not self.in_combat:
                 return {"ok": True}
+        if self.pw.get("DisintegrationPower"):  # AfterSideTurnEndLate; Unpowered
+            self._damage_player(self.pw["DisintegrationPower"])
+            if not self.in_combat:
+                return {"ok": True}
         self._run_enemy_turn()
         return {"ok": True}
 
@@ -1497,7 +1912,18 @@ class SimCombat:
         # ExecuteEnemyTurn iterates a snapshot: summons act from next turn; dead illusions act (revive).
         alive = [e for e in self.enemies if e.in_combat]
         for e in alive:
-            e.block = 0  # block clears at the start of the enemy's own turn
+            if "BurrowedPower" not in e.pw:  # BurrowedPower.ShouldClearBlock
+                e.block = 0  # block clears at the start of the enemy's own turn
+            if e.pw.get("PlatingPower") and self.round > 1:  # AfterSideTurnStart, not on the first round
+                e.pw["PlatingPower"] -= 1
+                if not e.pw["PlatingPower"]:
+                    del e.pw["PlatingPower"]
+            if e.pw.get("SandpitPower"):  # AfterSideTurnStartLate: at 0 it eats the player
+                e.pw["SandpitPower"] -= 1
+                if not e.pw["SandpitPower"]:
+                    self.player_hp = 0
+                    self._end_combat(won=False)
+                    return
         # PowerCmd.Apply: a debuff newly applied to the player skips its next tick-down,
         # so it survives the end of the enemy turn that applied it.
         fresh = set()
@@ -1505,8 +1931,11 @@ class SimCombat:
             if not e.in_combat:  # killed earlier this turn (Flame Barrier)
                 continue
             mv = e.defn.moves[e.move]
+            fully_blocked = False
             for _ in range(mv.hits if mv.damage else 0):
-                self._damage_player(self.monster_hit_damage(e, mv.damage + e.strength), dealer=e)
+                dmg = self.monster_hit_damage(e, mv.damage + e.strength)
+                fully_blocked = self.player_block >= dmg
+                self._damage_player(dmg, dealer=e)
                 if not self.in_combat:
                     return
                 if not e.is_alive:
@@ -1518,6 +1947,8 @@ class SimCombat:
             self.shrunk |= mv.shrink
             self.discard_pile += ["SLIMED"] * mv.slimed + ["DAZED"] * mv.dazed
             self.discard_pile += ["INFECTION"] * mv.infection + ["WOUND"] * mv.wound
+            for _ in range(mv.toxic):
+                self._add_to_hand("TOXIC")
             self.tangled += mv.tangled
             self.constrict += mv.constrict
             self.ringing |= mv.ringing
@@ -1534,11 +1965,20 @@ class SimCombat:
                     if not getattr(self, name):
                         fresh.add(name)
                     setattr(self, name, getattr(self, name) + getattr(mv, name))
-            e.log.append(e.move)
+            performed = e.move
+            e.log.append(performed)
+            if mv.effect:
+                self._move_effect(e, mv.effect)
+                if not self.in_combat:
+                    return
             if e.next_override:
                 e.move, e.next_override = e.next_override, None
-            else:
-                e.move = pick_move(e.defn.follow[e.move], e.log, self.rng)
+            elif performed in e.defn.follow:
+                e.move = self._next_move(e, performed)
+            if performed == "SNORE_MOVE" and "SlumberPower" not in e.pw:
+                e.move = "ROLL_OUT_MOVE"
+            if fully_blocked and "ImbalancedPower" in e.pw and mv.damage:  # HeadbuttMove: stunned, then the same move
+                self._stun(e, performed)
 
         for e in alive:  # its debuffs tick down after its turn ends; Mangle's Strength comes back
             e.vulnerable = max(0, e.vulnerable - 1)
@@ -1548,6 +1988,20 @@ class SimCombat:
         for e in alive:  # TerritorialPower.AfterSideTurnEnd
             if e.is_alive:
                 e.strength += e.defn.territorial
+                e.block += e.pw.get("PlatingPower", 0)  # BeforeSideTurnEndEarly. ponytail: order against attacks only
+                if e.pw.get("HatchPower"):
+                    e.pw["HatchPower"] -= 1
+                    if not e.pw["HatchPower"]:
+                        del e.pw["HatchPower"]
+                if e.pw.get("EscapeArtistPower", 0) > 1:
+                    e.pw["EscapeArtistPower"] -= 1
+                if e.pw.get("SlumberPower"):  # AfterSideTurnEnd: WakeUpMove, no stun
+                    e.pw["SlumberPower"] -= 1
+                    if not e.pw["SlumberPower"]:
+                        del e.pw["SlumberPower"]
+                        e.pw.pop("PlatingPower", None)
+                        e.move = "ROLL_OUT_MOVE"
+        self.pw.pop("TaintedPower", None)  # TaintedPower.AfterSideTurnEnd, enemy side
         self.pw.pop("FlameBarrierPower", None)  # removed at the end of the other side's turn
         self._decrement("ColossusPower")
         for name in ("vulnerable", "frail", "weak"):  # the player's tick at the same point
@@ -1572,6 +2026,9 @@ class SimCombat:
                 powers.append({"id": name.upper(), "name": name, "type": "Debuff", "amount": amount})
         for name, amount in (("ArtifactPower", e.artifact), ("SlipperyPower", e.slippery), ("PlowPower", e.plow)):
             if amount:
+                powers.append({"id": name.upper(), "name": name, "type": "Buff", "amount": amount})
+        for name, amount in e.pw.items():
+            if name != "reviving":
                 powers.append({"id": name.upper(), "name": name, "type": "Buff", "amount": amount})
         return {
             "combatId": i + 1,

@@ -15,12 +15,18 @@ from sb3_contrib import MaskablePPO
 
 
 def insert_map(segments: list, old_ids: list[str], new_ids: list[str]) -> list[int]:
-    """Each old position's new index. A segment is an int (that many fixed positions) or "cards" (one per card id)."""
+    """Each old position's new index. A segment is an int (that many fixed positions), "cards" (one per card id),
+    a (old, new) pair of name lists, or ("skip", n): n new positions no old one maps to."""
     out, new_at = [], 0
     for seg in segments:
         if seg == "cards":
             out += [new_at + new_ids.index(c) for c in old_ids]
             new_at += len(new_ids)
+        elif isinstance(seg, tuple) and seg[0] == "skip":
+            new_at += seg[1]
+        elif isinstance(seg, tuple):
+            out += [new_at + seg[1].index(c) for c in seg[0]]
+            new_at += len(seg[1])
         else:
             out += range(new_at, new_at + seg)
             new_at += seg
