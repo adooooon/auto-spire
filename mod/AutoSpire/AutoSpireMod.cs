@@ -170,6 +170,7 @@ public static class AutoSpireMod
         {
             screen,
             details = RunBridge.Details(screen, runState),
+            map = RunBridge.MapState(runState),
             choice = RunBridge.Choice(player),
             potionSlots = player?.PotionSlots.Select(p => p?.Id.Entry).ToList(),
             phase = combatMgr.IsInProgress ? "combat" : "map",

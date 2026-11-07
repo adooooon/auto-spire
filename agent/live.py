@@ -36,7 +36,7 @@ class LiveRun:
 
     def __init__(self):
         self.hp = self.max_hp = self.gold = self.removals = 0
-        self.act = 0
+        self.act, self.at_start = 0, False
         self.deck, self.potions = [], []
         self.relics, self.relic_state = set(), {}
         self.node = self.map = self.boss = self.shop = None
@@ -49,6 +49,8 @@ class LiveRun:
         self.deck = [c["id"] for c in p["deck"] if c["id"] in CARD_INDEX]
         self.relics = {r["id"] for r in p["relics"]}
         self.potions = list(state["potionSlots"])
+        if "map" in state:  # asked for before the map screen too: Neow can give rewards
+            self.sync_map(state["map"])
 
     def sync_map(self, details: dict) -> None:
         nodes = {(n["col"], n["row"]): Node(n["col"], n["row"], n["type"]) for n in details["points"]}
@@ -58,6 +60,7 @@ class LiveRun:
         boss = max(nodes.values(), key=lambda n: n.row)
         self.map = SimpleNamespace(grid={k: n for k, n in nodes.items() if n is not boss}, boss=boss)
         self.node = nodes[details["current"]["col"], details["current"]["row"]]
+        self.at_start = details.get("atStart", False)
         self.boss = details["boss"]
 
     def choices(self) -> list[Node]:
@@ -181,7 +184,11 @@ class LiveGame:
             else:
                 print(f"  skipped a {r['type']}")
             return
-        self.act("proceed")
+        if "proceeded" not in self.seen:  # once: loading the next act can take a while, and the button is ours to press
+            self.seen.add("proceeded")
+            self.act("proceed", wait=5.0)
+        else:
+            time.sleep(0.5)
 
     def do_potion(self, i: int, potion: str) -> None:
         if potion not in POTIONS:
@@ -269,8 +276,12 @@ class LiveGame:
         else:
             time.sleep(0.25)
 
-    def do_map(self, d: dict) -> None:
-        self.run.sync_map(d)
+    def do_map(self) -> None:
+        if self.run.at_start:  # no choice to make: a new act opens on its Ancient
+            print(f"act {self.client.state()['actIndex'] + 1}: entering the Ancient ({self.run.hp}/{self.run.max_hp} HP)")
+            self.act(f"map {self.run.node.col} {self.run.node.row}")
+            time.sleep(1.0)  # the room takes a moment to open
+            return
         a = self.ask("path")
         if a >= DRINK:
             slot = drink_slot(a)
@@ -309,7 +320,7 @@ class LiveGame:
                         print(f"Act {act + 1} cleared: {p['hp']}/{p['maxHp']} HP, {len(p['deck'])} cards, relics {sorted(self.run.relics)}")
                         if act == LAST_ACT:
                             return True
-                        self.run.act, self.run.removals = act + 1, self.run.removals
+                        self.run.act = act + 1
                 else:
                     print(f"died on floor {self.floor}")
                     return False
@@ -334,8 +345,8 @@ class LiveGame:
                 self.do_shop(details)
             elif screen == "treasure" and details:
                 self.do_treasure(details)
-            elif screen == "map" and details:
-                self.do_map(details)
+            elif screen == "map":
+                self.do_map()
             else:
                 if time.monotonic() - idle_since > BUSY_LIMIT:
                     raise RuntimeError(f"stuck on screen {screen}: {json.dumps(s)[:600]}")

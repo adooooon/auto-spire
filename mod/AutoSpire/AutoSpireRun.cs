@@ -39,13 +39,11 @@ internal sealed class AgentSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelect
     internal sealed record Pending(List<CardModel> Options, int Min, TaskCompletionSource<IEnumerable<CardModel>> Done);
 
     internal static Pending? Current;
-    private static bool _installed;
-
+    // The game clears the selector stack when a run ends (CardSelectCmd.Reset), so check each time.
     internal static void Install()
     {
-        if (_installed) return;
-        _installed = true;
-        CardSelectCmd.PushSelector(new AgentSelector());
+        Current = null;
+        if (CardSelectCmd.Selector == null) CardSelectCmd.PushSelector(new AgentSelector());
     }
 
     public Task<IEnumerable<CardModel>> GetSelectedCards(IEnumerable<CardModel> options, int minSelect, int maxSelect)
@@ -77,6 +75,8 @@ internal static class RunBridge
         if (top is NGameOverScreen) return "gameOver";
         if (top is NCardRewardSelectionScreen) return "cardReward";
         if (AgentSelector.Current != null && !CombatManager.Instance.IsInProgress) return "choice";
+        // An Ancient opens while the map is still up, at the start of an act.
+        if (rs.CurrentRoom is EventRoom room && !room.LocalMutableEvent.IsFinished) return "event";
         // The rewards screen stays on the overlay stack under an open map.
         if (NMapScreen.Instance?.IsOpen == true) return NMapScreen.Instance.IsTravelEnabled ? "map" : "busy";
         if (top is NRewardsScreen) return "rewards";
@@ -93,7 +93,7 @@ internal static class RunBridge
 
     internal static object? Details(string screen, RunState rs) => screen switch
     {
-        "map" => MapState(rs),
+        "map" => MapState(rs),  // the rl-agent-sim branch's live.py still reads it from here
         "event" => EventState(rs),
         "rest" => new
         {
@@ -105,7 +105,7 @@ internal static class RunBridge
         _ => null,
     };
 
-    private static object MapState(RunState rs)
+    internal static object MapState(RunState rs)
     {
         var map = rs.Map;
         var points = map.GetAllMapPoints().Concat(new[] { map.StartingMapPoint, map.BossMapPoint }).Distinct();
@@ -113,6 +113,7 @@ internal static class RunBridge
         return new
         {
             current = new { cur.coord.col, cur.coord.row },
+            atStart = rs.CurrentMapPoint == null,  // a new act: the first move is onto its Ancient
             points = points.Select(p => new
             {
                 p.coord.col,

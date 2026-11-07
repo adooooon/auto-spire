@@ -239,7 +239,7 @@ class RunPolicyEnv(gym.Env):
             self.decision = "shop"
         truncated = not self.done and self.steps >= MAX_DECISIONS
         info = {"act": self.run.act, "acts_cleared": self.acts_cleared + self.cleared, "floor": self.run.node.row, "cleared": self.cleared, "gold": self.run.gold, "spent": self.run.spent,
-                "died_at": self.room if self.done and not self.cleared else None, "deck": list(self.run.deck),
+                "died_at": f"A{self.run.act + 1}:{self.room}" if self.done and not self.cleared else None, "deck": list(self.run.deck),
                 "potions_used": sum(self.used.values()), "potions_held": sum(p is not None for p in self.run.potions),
                 "used": dict(self.used), "relic_log": list(self.run.relic_log),
                 "relics_held": sorted(self.run.relics), "elites_fought": self.run.elites_fought,

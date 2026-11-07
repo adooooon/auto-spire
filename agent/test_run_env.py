@@ -111,7 +111,7 @@ assert renv.run.max_hp == 90 and renv.fight_env.client._combat.player_max_hp == 
 renv.reset(seed=3)
 renv.fight_env.client.exec = boom
 _, _, done, _, info = renv.step(int(np.flatnonzero(renv.action_masks())[0]))
-assert done and info["died_at"] == "Monster" and not info["cleared"]
+assert done and info["died_at"] == "A1:Monster" and not info["cleared"]
 
 # MapRunModeEnv: fights chain through generated-map runs; HP carries between fights.
 from run import MapRunModeEnv
@@ -437,7 +437,7 @@ renv.reset(seed=11)
 renv.run.hp = 5
 enter_event(renv, "SUNKEN_STATUE")
 o, rew, done, trunc, info = renv.step(EVENT + 1)
-assert done and rew == 0 and not info["cleared"] and info["died_at"] == "Event"
+assert done and rew == 0 and not info["cleared"] and info["died_at"] == "A1:Event"
 assert info["event_log"][0][:3] == ("SUNKEN_STATUE", 1, 5) and info["events_seen"] == ["SUNKEN_STATUE"]
 assert renv.action_masks().any()
 

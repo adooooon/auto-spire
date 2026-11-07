@@ -276,8 +276,8 @@ def main():
             died = Counter(r["died_at"] for r in rs if r["died_at"])
             died_runs = [r for r in rs if r["died_at"]]
             used = sum((Counter(r["used"]) for r in rs), Counter())
-            print(f"{s:8} cleared={np.mean([r['cleared'] for r in rs]):.1%}  floor={np.mean([r['floor'] for r in rs]):.1f}"
-                  f"/16  spent={np.mean([r['spent'] for r in rs]):.0f}  died_at={dict(died)}"
+            print(f"{s:8} act1={np.mean([r['acts_cleared'] >= 1 for r in rs]):.1%}  act2={np.mean([r['cleared'] for r in rs]):.1%}"
+                  f"  floor={np.mean([r['floor'] for r in rs]):.1f}  spent={np.mean([r['spent'] for r in rs]):.0f}  died_at={dict(died)}"
                   f"  stuck={sum(not r['cleared'] and not r['died_at'] for r in rs)}"  # hit MAX_DECISIONS
                   f"  potions_used={np.mean([r['potions_used'] for r in rs]):.2f}"
                   f"  held_at_death={np.mean([r['potions_held'] for r in died_runs]) if died_runs else 0:.2f}"
