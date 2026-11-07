@@ -593,7 +593,7 @@ Known shortcuts are marked `ponytail:` in `engine.py` and `act.py` (grep for the
 
 ## Events
 
-21 events can appear in Act 1: Overgrowth's 13 and 8 shared ones. The pool, each event's `IsAllowed` and the 5 modeled ids are in `agent/sim/events.py`; effects are in `Run` (`agent/sim/act.py`). The sim only models these, and live play doesn't use them.
+21 events can appear in Act 1: Overgrowth's 13 and 8 shared ones. The pool, each event's `IsAllowed` and the 5 modeled ids are in `agent/sim/events.py`; effects are in `Run` (`agent/sim/act.py`). The sim models these, and live play uses the run policy for them.
 
 - **Pool:** `ActModel.GenerateRooms` shuffles `AllEvents + AllSharedEvents`.
 - **Drawing:** `RoomSet.EnsureNextEventIsValid` skips events that are disallowed or already visited. If all are exhausted, they repeat.
@@ -611,6 +611,29 @@ Known shortcuts are marked `ponytail:` in `engine.py` and `act.py` (grep for the
 - **HP loss outside combat:** Tungsten Rod applies, Beating Remnant doesn't (combat only), and Lizard Tail saves the player at max(1, 50% of max HP).
 - **Gold:** `GainGold` truncates decimals. Jungle Maze deals its damage first, so dying there pays no gold.
 - **Sim shortcut:** the egg and the map act as a Wound in fights, which behaves the same and needs no new card id.
+
+## Card choices
+
+Headbutt, Burning Pact and Brand ask the player to choose another card. Both the sim and live play answer them. Armaments also asks, but its choice is which card to upgrade and the sim has no upgrades, so it stays out of the agent's offers and shops.
+
+| Card | Rarity | Cost | Effect, in order |
+|---|---|---|---|
+| Headbutt | Common | 1 | 9 damage, then choose a card from the discard pile to put on top of the draw pile |
+| Burning Pact | Uncommon | 1 | choose a card in hand to exhaust, then draw 2 |
+| Brand | Rare | 0 | lose 1 HP (Unblockable, Unpowered), choose a card in hand to exhaust, then gain 1 Strength |
+
+Rules from `CardSelectCmd` (`decompiled/MegaCrit.Sts2.Core.Commands/CardSelectCmd.cs`):
+
+- The player must choose exactly 1 card, with no cancel.
+- With no legal cards, nothing happens and the rest of the card still resolves.
+- With exactly 1 legal card, it's chosen with no prompt.
+- If combat is ending, there's no prompt, as when Headbutt kills the last enemy.
+
+**Sim:** `SimCombat._ask` holds the play in `pending_choice` until the answer arrives. While it's held, the env masks every action except the legal choices: 10 hand slots, or a discard card by id.
+
+**Sim shortcut:** a prompt card played by an autoplay (Havoc and similar) picks at random, though the game prompts there too. Autoplays nest inside other effects, so holding one would need a stack of paused plays.
+
+**Live:** `CardSelectCmd.Selector`, the game's test hook, answers every prompt without its selection screen. See "2026-11-06" in `docs/modding-approach.md`.
 
 ## File structure
 

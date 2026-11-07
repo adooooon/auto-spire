@@ -13,17 +13,11 @@ Events taught the lesson behind this design: the agent can learn one fixed answe
 
 ## Scope
 
-| Card | Rarity | Cost | Effect, in order |
-|---|---|---|---|
-| Headbutt | Common | 1 | 9 damage, then choose a card from the discard pile to put on top of the draw pile |
-| Burning Pact | Uncommon | 1 | choose a card in hand to exhaust, then draw 2 |
-| Brand | Rare | 0 | lose 1 HP (Unblockable, Unpowered), choose a card in hand to exhaust, then gain 1 Strength |
-
-Rules from `CardSelectCmd` (`decompiled/MegaCrit.Sts2.Core.Commands/CardSelectCmd.cs`): the player must choose exactly 1 card, with no cancel. With no legal cards, nothing happens and the rest of the card still resolves. With exactly 1 legal card, it's chosen with no prompt. If combat is ending, there's no prompt, as when Headbutt kills the last enemy.
+Headbutt, Burning Pact and Brand. The cards and the `CardSelectCmd` rules are in `docs/game-architecture.md`, "Card choices".
 
 **Not in scope (user's choice): Armaments.** Its choice is which card to upgrade, and the sim has no upgrades. It stays unavailable in offers and shops, as it is today. Upgrades are their own later project.
 
-Also not in scope: live play. `mod/` stays as it is, and `live_run` and `sim/validate.py` must keep treating all four cards as unmodeled, because the mod can't answer the prompt.
+Also not in scope: live play. `mod/` stays as it is, and `live_run` and `sim/validate.py` must keep treating all four cards as unmodeled, because the mod can't answer the prompt. (Superseded on 2026-11-06: the mod now answers every prompt, see "Results".)
 
 ## What must be built
 
@@ -71,3 +65,63 @@ Success means all four rows pass. Report the same counts from real runs too, for
 - Retraining both combat and run policy, with the same step counts as relics.
 - Autoplayed prompt cards (Havoc and similar) may resolve their choice at random, with a `ponytail:` comment, if a pending choice can't be held through those paths. The builder should check the source and report it either way.
 - The three cards join `GENERATED` only if the source's filter allows them.
+
+## Results (2026-11-06)
+
+**The choice test was not met: 1 of 4 rows passed.** The clear rate held. The agent is better than the floor on three rows, but its Headbutt choice doesn't respond to HP at all.
+
+### Clear rate
+
+Same 500 generated maps, picker N = 16.
+
+| Pair | Clear | Avg floor | Gold spent | Potions used | Relics | Elites | Relics bought | Died: boss / elite / monster |
+|---|---|---|---|---|---|---|---|---|
+| Reference: grown v13c + v6pc | 80.4% | 15.8 | 126 | 1.99 | 1.68 | 0.54 | 46 | 81 / 7 / 10 |
+| v14 + v7 | 81.4% | 15.8 | 126 | 1.89 | 1.73 | 0.57 | 54 | 77 / 8 / 8 |
+
+The 1.0-point gain is within noise, and well inside the 4-point limit.
+
+### Choice test
+
+The first run had n = 22 on row 2, so the rerun used 1,000 fights each for Burning Pact and Brand and 400 for Headbutt. These are the rerun's numbers. The floor is grown v13c, before any training.
+
+| Row | Floor | v14 | Bar | Result |
+|---|---|---|---|---|
+| 1. Junk over non-junk (n = 290 or more per card) | Pact 33% vs random 38%, Brand 39% vs 37% | Pact 61% vs 46%, Brand 66% vs 42% | over 50% and at least 2× random | FAIL |
+| 2. Swap: moves to a new Wound (n = 106 or more per card) | 0% | Pact 41%, Brand 47% | over 50% | FAIL |
+| 3. Headbutt: non-basic, non-junk (n = 51) | 0% vs 41% | 80% vs 37% | at least 1.5× random | PASS |
+| 4. Headbutt: block card at low HP (n = 314) | 28% at 15% HP, 28% at full | 26% at 15% HP, 26% at full | at least 10 points higher at 15% HP | FAIL |
+
+- **Row 1** clears 50% but reaches only 1.3× and 1.6× random. These test hands hold enough junk that 2× random means 92% and 84%, higher than the "Known limits" section expects. That's a flaw in the bar, but the row fails as written, and row 2 fails with no such bar.
+- **Row 2** is the sharper miss. The agent often keeps its choice when a Wound appears, so it isn't reliably reading junk as junk.
+- **Row 3 changed from the spec's text.** It scores only prompts whose first legal card id is basic or junk. As written, a floor model passed at 80% vs 46%, because card ids are alphabetical and the first legal card is usually a good one. The 1.5× bar is unchanged. Across all 313 mixed prompts, v14 reads 85% vs 46%, for information only.
+- **Row 4** shows no effect from HP. Why isn't tested.
+
+### Real runs
+
+From the 500-map evals, the prompts each card opened:
+
+| Card | Reference prompts | Reference rate | v14 + v7 prompts | v14 + v7 rate |
+|---|---|---|---|---|
+| Headbutt | 370 | non-basic, non-junk 74% of 334 | 459 | 95% of 401 |
+| Burning Pact | 199 | junk 64% of 14 | 6 | no prompt had both |
+| Brand | 17 | junk 0% of 1 | 20 | junk 50% of 2 |
+
+Headbutt is a clear gain in real play. Burning Pact and Brand have too few real choices to judge, so the junk behavior isn't confirmed in real runs. Burning Pact fell from 199 prompts to 6, so the new pair rarely plays it. Why isn't tested.
+
+### What's kept
+
+`ppo_sts2_sim_act1_pc_v14_final` and `ppo_sts2_sim_run_policy_v7_final`, since the clear rate held and Headbutt improved. Act 2 grows from this pair.
+
+### Calls made during the build
+
+| Call | Cost if wrong |
+|---|---|
+| Worked directly on `rl-agent-sim`, not a new worktree; training ran from a detached one | Commits can move to a branch |
+| Started training with no further stop, since the plan was approved | The queue could be stopped with no lost work |
+| `test_engine`'s env test used a test-only answering client until Task 3 | That one test skipped env choice actions until then |
+| Autoplayed prompt cards pick at random | A small gap when Havoc or similar plays one of the three |
+| Row 3 scored on a subset, as above | The subset is small: n = 51 at 400 fights |
+| The queue passed `--headbutt-fights 400`, since the default gave n = 29 | Seconds |
+| `random_agent.py` stays unmasked: a toy script, not used in training | A possible invalid live command if someone runs it |
+| The queue spelled paths `${C}_v13c`, since zsh reads `$C_v13c` as a variable | None |
