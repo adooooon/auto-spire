@@ -28,6 +28,7 @@ Known simplifications:
 from __future__ import annotations
 
 import random
+from collections import Counter
 from dataclasses import dataclass, field
 
 from .cards import CARDS, GENERATED, card_to_dict, starter_deck
@@ -720,6 +721,8 @@ class SimCombat:
             model_id, _, first = entry.partition(":")
             self.enemies.append(_Enemy.spawn(MONSTERS[model_id], self.rng, first))
         self.draw_pile = list(deck or starter_deck())  # draw_pile[-1] is the top card
+        # ponytail: deck copies by id, so a generated copy of a deck card's id can be taken in its place (same effect on the deck).
+        self._deck_left = Counter(self.draw_pile)  # ThievingHopper only takes cards with a DeckVersion
         self.rng.shuffle(self.draw_pile)
         self.hand, self.discard_pile, self.exhaust_pile = [], [], []
         self.player_block = 0
@@ -1610,7 +1613,8 @@ class SimCombat:
     def _steal(self, e: _Enemy) -> None:
         """ThievingHopper._stealPriorities, over cards from the deck in the draw and discard piles."""
         rarity = lambda c: CARDS[c].rarity  # noqa: E731
-        cards = [(pile, c) for pile in (self.draw_pile, self.discard_pile) for c in pile if rarity(c) not in ("Status", "Token")]
+        cards = [(pile, c) for pile in (self.draw_pile, self.discard_pile) for c in pile
+                 if rarity(c) not in ("Status", "Token") and self._deck_left[c] > 0]
         for tier in (("Uncommon",), ("Common", "Rare"), ("Basic",)):
             best = [x for x in cards if rarity(x[1]) in tier]
             if best:
@@ -1619,6 +1623,7 @@ class SimCombat:
         if cards:
             pile, card = self.rng.choice(cards)
             pile.remove(card)
+            self._deck_left[card] -= 1
             self.stolen.append(card)
             e.pw["SwipePower"] = 1
 

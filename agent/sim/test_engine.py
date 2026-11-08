@@ -1488,4 +1488,11 @@ c = solo(["HEADBUTT"]); c.strength = 2; c.relics, c.relic_state = {"PEN_NIB"}, {
 c.play_card(0, 1)
 assert c.enemies[0].hp == hp - 22
 
+# Thieving Hopper takes only cards with a DeckVersion: a generated Uncommon outranks Basics but is never stolen.
+c = SimCombat(rng=random.Random(7))
+c.fight("THIEVING_HOPPER_WEAK", ["STRIKE_IRONCLAD"] * 10)
+c.discard_pile.append("INFERNAL_BLADE")
+c._steal(c.enemies[0])
+assert c.stolen == ["STRIKE_IRONCLAD"] and "INFERNAL_BLADE" in c.discard_pile, c.stolen
+
 print("sim self-check ok")
