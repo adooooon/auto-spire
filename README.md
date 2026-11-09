@@ -166,10 +166,10 @@ cd agent && python random_agent.py
 The env periodically calls `AutoSpireClient.full_restart()` (kill + relaunch + `newrun`, no clicking) instead of the lighter in-combat `fight` reset, since the live game's CPU/animation backlog only clears on a full process restart — see the "Open problem" / "Resolved" entries in `docs/modding-approach.md`.
 ```
 
-Play one real Act 1 in the game, with the run policy making every choice (see "2026-11-06" in `docs/modding-approach.md`):
+Play one real run through Acts 1 and 2 in the game, with the run policy making every choice (see "2026-11-06" in `docs/modding-approach.md`):
 
 ```bash
-cd agent && python run.py --live --model models/ppo_sts2_sim_act1_pc_v13c.zip --run-model models/ppo_sts2_sim_run_policy_v6pc.zip
+cd agent && python run.py --live --model models/ppo_sts2_sim_act2_b_final.zip --run-model models/ppo_sts2_sim_act2_run_v1_final.zip
 ```
 
 ## Key paths

@@ -635,6 +635,25 @@ Rules from `CardSelectCmd` (`decompiled/MegaCrit.Sts2.Core.Commands/CardSelectCm
 
 **Live:** `CardSelectCmd.Selector`, the game's test hook, answers every prompt without its selection screen. See "2026-11-06" in `docs/modding-approach.md`.
 
+## Act 2 (the Hive)
+
+The sim runs on through the Hive, and its run ends at the Act 2 boss. Fights are in `agent/sim/engine.py` (`HIVE_*`), the act change is `Run.next_act` in `agent/sim/act.py`, and Act 1's rules above apply unless noted.
+
+- **Act 1 boss rewards** (`RewardsSet`): 100 gold, a potion roll and a card offer that's all Rare. There's no boss relic.
+- **Act change** (`RunManager.EnterAct`): a new map, encounter queue and event pool. Deck, relics, potions, gold, and the card-rarity and potion odds carry over.
+- **Ancient:** the first room of the new act heals to full (A0) and offers a relic. The sim skips the offer, and live play picks with the Neow rule in `live.py`.
+- **Map:** `Hive.BaseNumberOfRooms` is 14, so the boss is on row 15. Rest sites are N(6,1)∈[6,7] and "?" rooms one fewer than Act 1.
+- **Encounters:** 2 weak, then regular ones.
+  - Weak: Bowlbugs, Exoskeletons, Thieving Hopper, Tunneler.
+  - Regular: Bowlbugs, Chompers, Exoskeletons, Hunter Killer, Louse Progenitor, Mytes, Ovicopter, Slumbering Beetle, Spiny Toad, The Obscura.
+  - Elites: Decimillipede, Entomancer, Infested Prisms.
+  - Bosses: Kaiser Crab, Knowledge Demon, The Insatiable.
+  - New `EncounterTag`s: Workers (Bowlbugs, Slumbering Beetle), Chomper, Exoskeletons.
+- **Monsters:** 26, listed in `HIVE_MONSTERS`.
+- **Thieving Hopper** steals only cards that are in the deck. A generated card has no `DeckVersion`, so it's never taken.
+- **Events:** 26 can appear (`HIVE_EVENT_ALLOWED` in `agent/sim/events.py`). Only Slippery Bridge is modeled, and the rest are empty rooms in the sim.
+- **Sim shortcut:** `IsAllowed` conditions that need state the sim lacks, such as Ranwid's relics or Fake Merchant, always count as true.
+
 ## File structure
 
 ### PCK contents

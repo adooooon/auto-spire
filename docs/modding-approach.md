@@ -729,3 +729,9 @@ First clear (v13c + v6pc): floors 1-16 won, ending at 29/80 HP against Vantom, w
 `agent/live_check.py` stages what a run rarely reaches, using debug commands, and compares it with the sim's rules: the three prompt cards through `env.step`, both options of all five modeled events, relic and removal purchases, dropping a potion and drinking Blood Potion between fights. 16/16 pass. Taking a potion reward with full slots is still only covered in parts (the drop, and the claim).
 
 Where live differs from the sim, all because the sim doesn't model it: Neow and unmodeled events use a fixed rule in `live.py` (leave if allowed, else a modeled relic, else the first safe option), prompts from those take the first card, unmodeled potions are skipped, and rest sites always heal since there are no upgrades, even at full HP. `relicCounters` sends each relic's displayed number, which only matches the sim where they count the same way.
+
+### 2026-11-06: Act 2 (the Hive)
+
+A sim run now continues past the Act 1 boss through the Hive, and `live.py` plays on through the act change and the Ancient. The rules are in `docs/game-architecture.md`, "Act 2 (the Hive)". Models grow into the new inputs and actions, and the sim's Act 1 fights are unchanged, RNG included.
+
+Training on it (2026-11-09) raised the Act 2 clear rate from 0.4% to 2.2%, with Act 1 holding at 79.0% against 81.4%. Most Act 2 deaths are now at the boss. Numbers and the training stages are in the spec's "Results" (`docs/superpowers/specs/2026-11-06-act2-design.md`).
