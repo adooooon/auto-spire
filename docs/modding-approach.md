@@ -403,7 +403,7 @@ Live, 32 fights sampled across all 16 (13 encounters came up): **32/32 wins**, 1
 
 ### 2026-10-16: Decks beyond the starter cards (Ironclad Commons)
 
-The sim now models 18 of the 20 Ironclad Commons (`sim/cards.py`): Anger, Blood Wall, Bloodletting, Body Slam, Breakthrough, Cinder, Havoc, Iron Wave, Molten Fist, Perfected Strike, Pommel Strike, Setup Strike, Shrug It Off, Sword Boomerang, Thunderclap, Tremble, True Grit, Twin Strike. Unupgraded only. **Armaments and Headbutt are left out**: they open a card-choice prompt (`CardSelectCmd`) that the mod has no command to answer.
+The sim now models 18 of the 20 Ironclad Commons (`sim/cards.py`): Anger, Blood Wall, Bloodletting, Body Slam, Breakthrough, Cinder, Havoc, Iron Wave, Molten Fist, Perfected Strike, Pommel Strike, Setup Strike, Shrug It Off, Sword Boomerang, Thunderclap, Tremble, True Grit, Twin Strike. Unupgraded only. **Armaments and Headbutt are left out**: they open a card-choice prompt (`CardSelectCmd`) that the mod had no command to answer at the time. (Headbutt joined the sim on 2026-11-05 and the mod has answered prompts since 2026-11-06. Armaments stays out because the sim has no upgrades.)
 - **Deck control, live**: the dev console's `card <ID> Deck` and `remove_card <ID> Deck` (via `/exec` passthrough) edit the run's deck between fights. Edits persist for the rest of the run, so `AutoSpireClient.set_deck()` diffs against `/state`'s `player.deck` and the env sets the deck every episode. `SimClient.set_deck()` mirrors it.
 - **`env.random_deck`**: the starter deck minus 0–3 Strikes/Defends (never Bash), plus 0–8 random Commons. Use `--random-decks` on train/evaluate. The observation gained a card-identity one-hot per hand slot and player Strength. `MAX_STEPS` went from 60 to 100.
 - **Mod bug found and fixed**: `ExecPlay` auto-targeted any card whose `TargetType` string contained "Enemy". That included `RandomEnemy` (Sword Boomerang), and **the game silently drops a RandomEnemy card played with a target**: `/exec` returned ok, but nothing happened and there was no "playing card" line in `godot.log`. `AllEnemies` escaped by luck, since "Enemies" doesn't contain "Enemy". Now only `AnyEnemy` is auto-targeted.
@@ -422,7 +422,7 @@ v5 (`ppo_sts2_sim_act1_decks_v5_final`, 30M steps with `--random-decks`, 256×25
 - **Reading rewards, live**: `/state` now has `rewards` whenever the post-combat `NRewardsScreen` is the top overlay (`NOverlayStack.Instance.Peek()`). Its `RewardsSet` is the private `_rewardsSet`, read by reflection. Each reward gives its type (`GoldReward`, `PotionReward`, `CardReward`, …), and card rewards also list the offered cards (same shape as hand cards). The agent never clicks the screen: it adds its pick with `card <ID> Deck`, and the next `fight` clears the screen.
 - **Reward generation** (`CardFactory.CreateForReward`, `CardRarityOdds`): 3 distinct cards from the character pool. Each card rolls Rare 3% + a pity offset (starts −5%, +1% per non-Rare roll, cap 40%, reset on a Rare), Uncommon 37%, else Common. Act 1 offers are never upgraded: the upgrade roll's base chance is 0 and only grows with the act index. So most real offers include an Uncommon the sim can't play yet.
 - **The picker**: for each option (skip, or each offered card the sim models), simulate N full-HP fights over the normal encounters with the v5 combat policy, using the same seeds for every option. Take the option with the least mean HP lost (a death counts as all HP lost). Unmodeled offers are never picked. This needs no training; it's a one-step lookahead using the combat policy as the evaluator.
-- **Mini-run harness**: 3 weak + 4 normal fights, HP carries over. Burning Blood (`BurningBlood.cs`, the starter relic) heals 6 after each win, and a rest site partway heals 30% of max HP (`HealRestSiteOption`, 24). Offers use the game's odds. Uncommon/Rare slots are placeholders and Armaments/Headbutt can't be played, so roughly half the slots are unpickable, like live. 200 runs per strategy, N = 24:
+- **Mini-run harness**: 3 weak + 4 normal fights, HP carries over. Burning Blood (`BurningBlood.cs`, the starter relic) heals 6 after each win, and a rest site partway heals 30% of max HP (`HealRestSiteOption`, 24). Offers use the game's odds. Uncommon/Rare slots are placeholders and Armaments/Headbutt couldn't be played yet, so roughly half the slots are unpickable, like live. 200 runs per strategy, N = 24:
 
 | Strategy | Survive all 7 | Fights won | HP at end | Cards added |
 |---|---|---|---|---|
@@ -491,7 +491,7 @@ Live validation (random decks, random play): 196 steps over Phrog/Vantom/Beast/K
 The sim models the whole Ironclad pool: 34 Uncommons and 24 Rares (84 cards with starters, statuses and Primal Force's Giant Rock token).
 
 **Left out:**
-- **Card-choice prompts:** Armaments, Headbutt, Brand and Burning Pact open a prompt the mod can't answer. Offers of them are never picked. The env masks them, since Stoke and Infernal Blade can still generate them live.
+- **Card-choice prompts:** Armaments, Headbutt, Brand and Burning Pact opened a prompt the mod couldn't answer then. Offers of them weren't picked, and the env masked them, since Stoke and Infernal Blade can still generate them live. (Since changed: see "2026-11-05: Prompt cards".)
 - **Multiplayer-only:** Demonic Shield and Tank never appear in single-player rewards (`FilterForPlayerCount`).
 - **Upgrades:** the sim has none, so Aggression returns its card unupgraded.
 
@@ -683,6 +683,12 @@ The sim now models 97 of the 122 relics in the pool, in the sim only. The other 
 The sim now models 5 of the 21 events that can appear in Act 1, in the sim only. The other 16 stay in the pool as empty rooms. The rules are in `docs/game-architecture.md`, "Events".
 
 The run policy learned a near-fixed answer for most events, and the clear rate stayed level: v13 + v6p 79.8% against 80.0% before events. The goal was choices that change with HP and gold, and two training rounds didn't reach it. Tables and the HP and gold probe are in `docs/superpowers/specs/2026-11-05-events-design.md`, "Results".
+
+### 2026-11-05: Prompt cards
+
+The sim now models Headbutt, Burning Pact and Brand, and the agent answers their prompts. The rules are in `docs/game-architecture.md`, "Card choices". `grow.py` gained `--insert-cards`, which maps every old input and action to its new index by name, because new card ids land in the middle of sorted lists.
+
+The clear rate held: v14 + v7 81.4% against 80.4% for the grown reference. The choice test wasn't met, with 1 of 4 rows passing. Headbutt picks improved clearly (95% non-basic, non-junk in real runs), but the agent doesn't reliably exhaust junk, and its Headbutt choice ignores HP. Full numbers are in the spec's "Results" (`docs/superpowers/specs/2026-11-05-prompt-cards-design.md`).
 
 ### Open problem: `fight`/`room` debug commands leak resources under repeated use
 
