@@ -96,6 +96,30 @@ Findings:
 
 Player HP at the start of the last turn of a loss: median 13, 221 of 310 at 20 or less, 19 at 40 or more.
 
+## Part 1 results (2026-11-10)
+
+Both models grew without trouble, but the evals crashed, so there are no clear rates. This section records the crash. Part 3 has no grown reference yet.
+
+Grow commands, run from `agent/`, both exit 0:
+
+- `grow.py models/ppo_sts2_sim_act2_b_final.zip models/ppo_sts2_sim_boss_g1.zip --env combat --insert-cards` gave "grow self-check ok: 1952->1979 inputs, 190->191 actions".
+- `grow.py models/ppo_sts2_sim_act2_run_v1_final.zip models/ppo_sts2_sim_boss_run_g1.zip --env run --insert-cards` gave "grow self-check ok: 1452->1603 inputs, 127->221 actions".
+
+The rest and Smith logits of the grown run model start at zero. Generated-map eval predicts with `deterministic=True`, so at rest sites it picks HEAL, the lowest index, the same as the old auto-heal.
+
+500-map eval (`run.py --model models/ppo_sts2_sim_boss_g1.zip --maps generated --run-model models/ppo_sts2_sim_boss_run_g1.zip --runs 500 --n 16`, under `caffeinate -i`) exited 1 with no table:
+
+| Pair | Act 1 | Act 2 | Avg floor | Gold spent | Potions used | Relics | Died: A1 boss / A2 monster / A2 elite / A2 boss |
+|---|---|---|---|---|---|---|---|
+| act2_b + act2_run_v1 (reference) | 79.0% | 2.2% | 10.9 | 289 | 3.79 | 2.91 | 93 / 205 / 73 / 106 |
+| boss_g1 + boss_run_g1 | no result | no result | no result | no result | no result | no result | no result |
+
+The crash is `ValueError: list.remove(x): x not in list` at `run_env.py:198` (`run.deck.remove(card)` over `combat.stolen`, called from `generated_run` via `RunEnv.play`). `run.py:140` has the same loop. The Thieving Hopper code in `sim/engine.py:1660-1673` records `deck_id(card)` in `stolen`, and that id is apparently not always in `run.deck` now that decks hold upgraded cards. This is a reading of the code, not a confirmed cause. Act 1 against the 79.0% reference, `stuck` and the crash count could not be measured. The eval had at least one crash and no summary line.
+
+The boss analysis (`boss_report.py --model models/ppo_sts2_sim_boss_g1.zip --run-model models/ppo_sts2_sim_boss_run_g1.zip --runs 1500 --n 16 --out .../boss_analysis_g1.jsonl`) hit the same `ValueError` and exited 1. `boss_analysis_g1.jsonl` was not written, so there is no per-boss comparison. Task 1 stays the only data: 21 of 331 fights won, KC 0/104, KD 10/103, TI 11/124.
+
+Nothing was fixed here. The Hopper theft path needs a fix, then both commands need a re-run, before this pair can serve as part 3's starting point.
+
 ## Not in scope
 
 - Act 3, Ascension, other characters.
