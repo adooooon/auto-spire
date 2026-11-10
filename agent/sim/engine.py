@@ -610,7 +610,6 @@ class _Enemy:
                    artifact=d.artifact, slippery=d.slippery, pw=dict(d.powers))
 
 
-SINGLE_POWERS = {"BarricadePower", "NoDrawPower", "NoEnergyGainPower", "HellraiserPower", "TheGambitPower"}  # PowerStackType.Single
 # PowerInstanceType.Instanced: every application is its own power, kept in SimCombat.inst as [Amount, *state]; this is
 # the state a new one starts with (Automation: cards left to draw; Panache: cards left, counting yet; The Bomb: damage).
 INSTANCED = {"AutomationPower": (10,), "PanachePower": (5, 0), "RollingBoulderPower": (), "TheBombPower": (40,)}
@@ -627,7 +626,7 @@ ENEMY_PW = ("HardToKillPower", "ThornsPower", "ImbalancedPower", "BurrowedPower"
             "PersonalHivePower", "VitalSparkPower", "ReattachPower", "EscapeArtistPower", "FlutterPower", "SwipePower", "HatchPower",
             "CrabRagePower", "BackAttackLeftPower", "BackAttackRightPower", "SandpitPower")
 HISTORY_FIELDS = ("tender_plays", "facing", "exhausted_this_turn", "hp_lost_this_turn", "attack_plays", "block_plays", "free_cards",
-                  "hp_loss_events", "bonus_damage", "crimson_self", "inferno_self", "skill_plays", "inst")
+                  "hp_loss_events", "bonus_damage", "crimson_self", "inferno_self", "skill_plays", "inst", "combat_plays")
 
 
 @dataclass
@@ -1572,7 +1571,8 @@ class SimCombat:
         if name in INSTANCED:
             self.inst.setdefault(name, []).append([amount, *INSTANCED[name]])
             return
-        self.pw[name] = 1 if name in SINGLE_POWERS else self.pw.get(name, 0) + amount
+        # PowerCmd.ModifyAmount adds for every StackType: Single (Barricade, The Gambit, ...) only hides the number (NPower).
+        self.pw[name] = self.pw.get(name, 0) + amount
         if name == "CrimsonMantlePower":  # IncrementSelfDamage
             self.crimson_self += 1
         elif name == "InfernoPower":
@@ -1819,8 +1819,7 @@ class SimCombat:
             pw["SlumberPower"] -= 1
             if not pw["SlumberPower"]:
                 del pw["SlumberPower"]
-                pw.pop("PlatingPower", None)
-                self._stun(e, "ROLL_OUT_MOVE")
+                self._stun(e, "ROLL_OUT_MOVE")  # the stun's move is WakeUpMove: Plating goes when it's performed
         if attack and hp_loss and pw.get("FlutterPower"):
             pw["FlutterPower"] -= 1
             if not pw["FlutterPower"]:
@@ -2351,6 +2350,8 @@ class SimCombat:
                     setattr(self, name, getattr(self, name) + getattr(mv, name))
             performed = e.move
             e.log.append(performed)
+            if performed == "STUNNED" and e.defn.model_id == "SLUMBERING_BEETLE":  # SlumberPower's Stun(WakeUpMove)
+                e.pw.pop("PlatingPower", None)
             if mv.effect:
                 self._move_effect(e, mv.effect)
                 if not self.in_combat:

@@ -763,3 +763,37 @@ The sim now plays upgraded cards ("X+" ids, `sim/cards.py` `UPGRADES`) and Armam
 - **Event rewards:** The Legends Were True's "slowly find an exit" waits on its potion reward before the event finishes. Since 2026-11-06 the mod reported an unfinished event ahead of the rewards overlay, so both live play and `live_check` got stuck there. An event now shows as `rewards` while its rewards screen is on top.
 
 `live_check.py` adds Armaments and Armaments+ in a real fight (the hand and block must match `sim.validate.load` after the same play and pick), Smith, Girya's Lift (the counter and the next fight's Strength), Shovel's Dig, an upgraded card reward with all three Eggs, and removing STRIKE from a deck holding STRIKE+ ahead of STRIKE (the plain copy goes). The rest checks go through `LiveGame.do_rest` with a fixed answer that the policy's mask must allow, and they compare the site's options with `Run.rest_options()`. 23/23 pass (the 16 old checks and 7 new, counting the plain-copy removal), with 0 `[ERROR]` lines in `godot.log`. These ran on scratch models grown from the Act 2 pair with `grow.py --insert-cards`, since the run models in `models/` predate the rest decision (Task 7 grows and trains them).
+
+### 2026-11-10: Live play with colorless cards
+
+The mod now answers the colorless prompt kinds the sim has (`combat_dict()["choice"]`), so the env's prompt actions work live:
+- **Prompt kinds come from where the options are.** `AgentSelector` keeps each prompt's max picks (the game's `maxSelect`). If every option is in the hand, the kind is `hand_multi` when more than one pick is allowed and fewer are required (Purity's `FromHand(0, Cards)`), and `hand` otherwise. If every option is in the draw pile, it is `draw` (Secret Weapon, Secret Technique, Seeker Strike). Options in no pile, asked on the player's side with 0 to 1 picks, are `generated` (Discovery's `FromChooseACardScreen(canSkip)`). Knowledge Demon's curse asks the same way on the enemy's side and stays `deck`. A hand prompt with no card play in progress (more `CardPlaysStarted` than `CardPlaysFinished` means a play is running) while EntropyPower is held reports source `ENTROPY`.
+- **New commands:** `choose_generated <i>`, `choose_skip` (only when 0 picks are allowed), `choose_draw <ID>` and `choose_done`. `choose <i>` adds one pick to a `hand_multi` prompt. The prompt ends at its max pick, when the hand runs out, or on `choose_done`. While it is open, `/combat`'s hand leaves out the picks so far, as the sim's does, so hand indices match.
+- **`choose_draw` takes the bottom-most matching copy.** `FromCombatPile` gives the selector the draw pile sorted by rarity and id. LINQ's `OrderBy` is stable, so copies of one card keep the pile's top-first order. The sim's `choose_draw` takes the first copy in its own pile order, which is bottom-first, so the mod takes the last copy. Taking the first copy (the top-most) left a different draw pile whenever another card lay between two copies.
+- **Shops:** `/state`'s shop `cards` is `MerchantInventory.CardEntries`: the 5 character slots, then the 2 colorless ones, as in the sim's `Shop`. `buy card 5|6` buys a colorless slot. `live.py` reads all 7 and maps the colorless ones to `SHOP_COLORLESS_ACTION`.
+
+`live_check.py` adds Discovery (a pick and a skip), Purity (2 picks, then done), Secret Weapon and Thinking Ahead. Each one is played live and in the sim from the same `load()`ed state, through the same `env.step` actions, and the hand (ids and costs), all piles and energy must match. It also adds Hand of Greed's 20 gold from a fatal hit (matching the sim's `gold_gained`) and a shop's colorless slots (ids by rarity, prices within 86 or 172 x 0.95 to 1.05, and a purchase through `LiveGame.do_shop`). `--only <text>` runs just the checks whose name contains it. 30/30 pass (the 23 old checks and 7 new), with 0 `[ERROR]` lines in `godot.log`. Before the mod changes, the 7 new checks failed, and so did "upgraded card reward": an unanswered Discovery prompt wedged the fights after it. Scratch models grown with `grow.py --insert-cards`, as in the entry above.
+
+`sim.validate` answers every prompt kind the same random way on both sides. For Discovery the sim is given the game's offered cards, and for Seeker Strike its random 3. The sim can't pause an autoplayed prompt card or Stratagem's mid-draw pick, so when only the game asks there, the piles aren't compared and no mismatch is reported. Calamity, Entropy and Stratagem are now random-pile powers.
+
+**Live validation** (`python -m sim.validate --colorless --encounters act1,hive --fights 1`): decks of 4 starter cards, 3 other cards and 4 to 8 colorless cards (not Splash or Alchemize), each upgraded with p=0.5.
+- First pass: 748 steps, 45 with mismatches. Every colorless card was played. One rule disagreed with the game. The rest were holes in `validate` itself:
+  - **`load()` dropped history**, fixed:
+    - Gold Axe's play count (`combat_plays` is now in `HISTORY_FIELDS`).
+    - Bolas and Thrumming Hatchet played earlier in the turn, found again by id.
+    - Hidden Gem's Replay, which goes on a random card, so the sim's pick isn't the game's. `/combat` now sends each card's `replay` (`GetEnchantedReplayCount()`), and `load()` reads it.
+    - Prep Time's Vigor (a `RELIC_POWERS` entry, which `load()` skipped).
+    - An instanced power the previous step's sim didn't have, such as a Rolling Boulder that a random autoplay played. It is now taken from `/combat`, with default counters. One such miss used to break the rest of a fight.
+  - **Random effects with no skip rule**, now skipped:
+    - Mayhem's turn-start autoplay after a reshuffle, and its random targets.
+    - Volley's random targets.
+    - Jackpot, Jack of All Trades and Anointed's random cards.
+    - Beat Down and Catastrophe's random autoplays.
+    - A fight ending on a random hit.
+  - **Stun before the enemy's turn:** a stun that lands before the enemy acts (The Bomb breaking the Beast's Plow) leaves the "move just performed" in the log wrong. The sim's own next move now also counts as legal.
+  - **The rule that disagreed:** The Gambit played twice showed Amount 2 live, 1 in the sim. `PowerCmd.Apply` adds to the Amount for every StackType, so the sim no longer caps `PowerStackType.Single` powers at 1 (see `game-architecture.md`).
+  - **Known:** 2 mismatches came from Cascade's reshuffle and Stampede's random pick. 1 was a status that Entropy transformed into Burn, which the sim doesn't have (Task 3's ponytail).
+- Second pass, with those fixes: 765 steps, 4 with mismatches.
+  - 1 was Mayhem's random target, now skipped.
+  - 2 found a second rule that disagreed: a Slumbering Beetle woken by a hit keeps its Plating until its STUNNED move. `SlumberPower` stuns it with `WakeUpMove` as the stunned move, and that move removes Plating. The sim removed Plating at once (now fixed, with a test).
+  - 1 is open: Stomp cost 1 more live than in the sim after a Gold Axe against The Obscura. Stomp lowers its cost in `BeforeCardPlayed` and `AfterCardEnteredCombat`, and the sim uses `cost - attack_plays`. The log doesn't show which earlier play made them differ.

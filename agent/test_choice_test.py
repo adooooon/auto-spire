@@ -26,7 +26,7 @@ assert headbutt_subset([sub("DEFEND_IRONCLAD", "WOUND")]) == []  # no good card
 import numpy as np
 from choice_test import headbutt_subset, score_headbutt_subset, collect, hp_rates, swap_rate
 from env import CHOOSE_DISCARD, CHOOSE_HAND, CARD_IDS, STS2CombatEnv
-from sim.cards import CARDS
+from sim.cards import CARDS, base_id
 from sim.engine import SimClient
 
 
@@ -84,3 +84,15 @@ assert from_card([{"source": "BRAND"}, {"source": "HEADBUTT"}], "BRAND") == [{"s
 assert print_verdict([("a", 100, "x", True), ("b", 29, "y", True)]) == "NOT ALL PASS"
 assert print_verdict([("a", 100, "x", True), ("b", 30, "y", True)]) == "ALL PASS"
 print("choice test fix checks ok")
+
+# The colorless prompts are read by kind: every pick is one of the options, or None for skip / done.
+from env import CHOOSE_DONE, CHOOSE_GENERATED, CHOOSE_SKIP
+seen = set()
+for card in ("DISCOVERY", "PURITY", "SECRET_WEAPON", "THINKING_AHEAD"):
+    for p in from_card(collect(Last(env, False), card, fights=15, seed=4, env=env), card):
+        kind = p["combat"]["choice"]["kind"]
+        seen.add(kind)
+        assert p["picked"] is None and p["pick"] in (CHOOSE_DONE - CHOOSE_HAND, CHOOSE_SKIP - CHOOSE_GENERATED) \
+            or base_id(p["picked"]) in map(base_id, p["options"]), p
+assert seen == {"generated", "hand_multi", "draw", "hand"}, seen
+print("choice test colorless checks ok")

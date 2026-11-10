@@ -14,11 +14,13 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from env import CARD_IDS, CHOOSE_DISCARD, CHOOSE_HAND, MAX_ENEMIES, MAX_HAND, _ready
+from env import (CARD_IDS, CHOOSE_DISCARD, CHOOSE_DONE, CHOOSE_DRAW, CHOOSE_GENERATED, CHOOSE_HAND, CHOOSE_SKIP, MAX_ENEMIES,
+                 MAX_HAND, STS2CombatEnv, _ready)
 from live import LiveGame, _cid, _event_opts
-from run_env import CARD_INDEX, OBS_DIM as RUN_OBS_DIM, PICK, REST, REST_OPTIONS, SMITH
-from sim.act import Run
-from sim.cards import UPGRADABLE
+from run_env import CARD_INDEX, OBS_DIM as RUN_OBS_DIM, PICK, REST, REST_OPTIONS, SHOP_COLORLESS_ACTION, SMITH
+from sim.act import COLORLESS_PRICE, SHOP_COLORLESS, SHOP_SLOTS, Run
+from sim.cards import COLORLESS_RARES, COLORLESS_UNCOMMONS, UPGRADABLE
+from sim.engine import SimClient
 from sim.validate import ids, load
 
 
@@ -50,9 +52,10 @@ def first_pick(mask) -> int:
 
 
 class Check:
-    def __init__(self, game: LiveGame):
+    def __init__(self, game: LiveGame, only: str = ""):
         self.game, self.client = game, game.client
         self.results: list[tuple[str, bool, str]] = []
+        self.only = only  # run just the checks whose name holds this
 
     def do(self, cmd: str, settle: float = 0.3) -> dict:
         r = self.client.exec(cmd, settle=settle)
@@ -69,6 +72,8 @@ class Check:
         raise AssertionError(f"timed out waiting for {what}; screen {s.get('screen')}")
 
     def run(self, name: str, fn) -> None:
+        if self.only not in name:
+            return
         try:
             fn()
             self.results.append((name, True, ""))
@@ -80,11 +85,13 @@ class Check:
 
     # --- prompt cards, through the same env.step the combat model uses ----------------------------------
 
-    def fight_with(self, card: str, discard: tuple[str, ...] = ()) -> tuple:
+    def fight_with(self, card: str, discard: tuple[str, ...] = (), draw: tuple[str, ...] = ()) -> tuple:
         self.do("fight NIBBITS_WEAK", settle=0.5)
         self.client.wait_for(_ready, timeout=30.0)
         for c in discard:
             self.do(f"card {c} Discard")
+        for c in draw:
+            self.do(f"card {c} Draw")
         self.do(f"card {card} Hand")
         self.do("energy 5")
         combat = self.client.wait_for(_ready, timeout=15.0)
@@ -210,6 +217,91 @@ class Check:
     @staticmethod
     def sword(before, p, d, s):
         assert "SWORD_OF_STONE" in {r["id"] for r in p["relics"]}, p["relics"]
+
+    # --- colorless cards: their prompts, Hand of Greed's gold, the shop's colorless slots -------------------
+
+    def colorless_prompt(self, card: str, answers, draw: tuple[str, ...] = ()) -> None:
+        """Play `card` live and in the sim from the same state, through the same env.step actions: `answers` maps each
+        open prompt to the next action. Both must ask the same prompt, allow the action, and end with the same hand
+        (ids and costs), piles and energy."""
+        env, combat, a = self.fight_with(card, draw=draw)
+        sim = SimClient()
+        sim._combat = load(combat, defaultdict(list))
+        senv = STS2CombatEnv(client=sim)
+        senv._combat = sim.combat()
+        senv.step(a)
+        env.step(a)
+        for answer in answers:
+            live, mine = env._combat.get("choice"), senv._combat.get("choice")
+            assert live and mine and (live["kind"], live["source"]) == (mine["kind"], mine["source"]), (live, mine)
+            if live["kind"] == "generated":  # new random cards: the sim offers what the game offered
+                offered = ids({"id": i, "upgraded": u, "cost": 0} for i, u in zip(live["options"], live["upgraded"]))
+                sim._combat._options = mine["options"] = offered
+            elif live["kind"] == "draw":
+                assert sorted(map(_cid, ({"id": i, "upgraded": u} for i, u in zip(live["options"], live["upgraded"])))) \
+                    == sorted(mine["options"]), (live, mine)
+            act = answer(live)
+            assert env.action_masks()[act] and senv.action_masks()[act], (act, live)
+            info = env.step(act)[-1]
+            assert not info.get("aborted"), info
+            senv.step(act)
+        assert not env._combat.get("choice") and not senv._combat.get("choice"), (env._combat.get("choice"), senv._combat.get("choice"))
+        p, s = env._combat["player"], senv._combat["player"]
+        # Discovery's pick is free. Unmodeled cards (Spoils Map) are Wounds in the sim: their cost isn't compared.
+        hand = lambda q: [(i, c["cost"] if i != "WOUND" else None) for i, c in zip(ids(q["hand"]), q["hand"])]  # noqa: E731
+        assert hand(p) == hand(s), (hand(p), hand(s))
+        assert ids(p["drawPile"]) == ids(s["drawPile"])[::-1], (ids(p["drawPile"]), ids(s["drawPile"]))  # live: top first
+        for k in ("discardPile", "exhaustPile"):
+            assert ids(p[k]) == ids(s[k]), (k, ids(p[k]), ids(s[k]))
+        assert p["energy"] == s["energy"], (p["energy"], s["energy"])
+        self.finish_fight()
+
+    def hand_of_greed(self) -> None:
+        """A fatal hit gains Gold 20, as the sim's gold_gained, even though it ends the fight."""
+        env, combat, a = self.fight_with("HAND_OF_GREED")
+        target = next(e for e in combat["enemies"] if e["isAlive"])
+        self.do(f"damage {target['hp'] - 5} {1 + combat['enemies'].index(target)}")  # creature 0 is the player
+        combat = env._combat = self.client.wait_for(
+            lambda c: _ready(c) and any(e["combatId"] == target["combatId"] and e["hp"] == 5 for e in c["enemies"]), timeout=15.0)
+        sim = SimClient()
+        sim._combat = load(combat, defaultdict(list))
+        senv = STS2CombatEnv(client=sim)
+        senv._combat = sim.combat()
+        gold = self.client.state()["player"]["gold"]
+        senv.step(a)
+        env.step(a)
+        s = self.wait(lambda s: s["player"]["gold"] != gold, "Hand of Greed's gold")
+        assert sim._combat.gold_gained == s["player"]["gold"] - gold == 20, (sim._combat.gold_gained, gold, s["player"]["gold"])
+        if self.client.combat().get("inCombat"):
+            self.finish_fight()
+
+    def shop_colorless(self) -> None:
+        """The two colorless slots come after the five typed ones, priced as the sim's; one is bought through
+        LiveGame.do_shop."""
+        s = self.open_shop()
+        cards = s["details"]["cards"]
+        assert len(cards) == len(SHOP_SLOTS) + len(SHOP_COLORLESS), cards
+        for e, rarity in zip(cards[len(SHOP_SLOTS):], SHOP_COLORLESS):
+            assert e["id"] in (COLORLESS_UNCOMMONS if rarity == "Uncommon" else COLORLESS_RARES), (rarity, e)
+            price = COLORLESS_PRICE[rarity]
+            assert round(price * 0.95) <= e["cost"] <= round(price * 1.05), (rarity, e)
+        g = self.game
+        g.run.sync(s)
+        before, gold = Counter(map(_cid, s["player"]["deck"])), s["player"]["gold"]
+        slots = [SHOP_COLORLESS_ACTION + k for k in range(len(SHOP_COLORLESS))]
+        asked = []
+        model, g.run_model = g.run_model, Fixed(lambda m: asked.append(next(a for a in slots if m[a])) or asked[-1])
+        try:
+            g.do_shop(s["details"])
+        finally:
+            g.run_model = model
+        bought = cards[len(SHOP_SLOTS) + asked[0] - SHOP_COLORLESS_ACTION]
+        s = self.wait(lambda s: s["player"]["gold"] != gold, "the purchase")
+        assert s["player"]["gold"] == gold - bought["cost"], (gold, bought)
+        assert Counter(map(_cid, s["player"]["deck"])) - before == Counter([_cid(bought)]), (bought, pile(s["player"], "deck"))
+        assert g.run.shop.cards[len(SHOP_SLOTS):] == [_cid(e) for e in cards[len(SHOP_SLOTS):]], g.run.shop.cards
+        self.do("proceed")
+        self.wait(lambda s: s["screen"] == "map", "the map")
 
     # --- shop and potions ---------------------------------------------------------------------------------
 
@@ -350,13 +442,16 @@ class Check:
         return s, after, sim
 
     def smith(self) -> None:
-        def bash(sim):
-            return SMITH + CARD_INDEX["BASH" if "BASH" in sim.deck else next(c for c in sim.deck if c in UPGRADABLE)]
+        picked = []
+
+        def bash(sim):  # Slippery Bridge can have taken BASH: then the first upgradable card
+            picked.append("BASH" if "BASH" in sim.deck else next(c for c in sim.deck if c in UPGRADABLE))
+            return SMITH + CARD_INDEX[picked[0]]
         before, after, sim = self.rest_site(bash)
         g = self.game
         g.run.sync(after)
         assert Counter(g.run.deck) == Counter(sim.deck), (sorted(g.run.deck), sorted(sim.deck))
-        assert Counter(g.run.deck) - Counter(map(_cid, before["player"]["deck"])) == Counter(["BASH+"]), sorted(g.run.deck)
+        assert Counter(g.run.deck) - Counter(map(_cid, before["player"]["deck"])) == Counter([picked[0] + "+"]), sorted(g.run.deck)
         assert after["player"]["hp"] == before["player"]["hp"]
 
     def lift(self) -> None:
@@ -430,6 +525,15 @@ class Check:
         self.run("rest: Smith", self.smith)
         self.run("rest: Girya's Lift", self.lift)
         self.run("rest: Shovel's Dig", self.dig)
+        self.run("Discovery: pick", lambda: self.colorless_prompt("DISCOVERY", [lambda c: CHOOSE_GENERATED + 1]))
+        self.run("Discovery: skip", lambda: self.colorless_prompt("DISCOVERY", [lambda c: CHOOSE_SKIP]))
+        self.run("Purity: 2 picks, then done", lambda: self.colorless_prompt(
+            "PURITY", [lambda c: CHOOSE_HAND + 0, lambda c: CHOOSE_HAND + 1, lambda c: CHOOSE_DONE]))
+        self.run("Secret Weapon", lambda: self.colorless_prompt(
+            "SECRET_WEAPON", [lambda c: CHOOSE_DRAW + CARD_IDS.index(c["options"][-1])], draw=("STRIKE_IRONCLAD", "BASH")))
+        self.run("Thinking Ahead", lambda: self.colorless_prompt("THINKING_AHEAD", [lambda c: CHOOSE_HAND + 1]))
+        self.run("Hand of Greed: gold from a fatal hit", self.hand_of_greed)
+        self.run("shop: colorless slots", self.shop_colorless)
         self.run("upgraded card reward", self.upgraded_reward)
         failed = [r for r in self.results if not r[1]]
         print(f"{len(self.results) - len(failed)}/{len(self.results)} passed")
@@ -442,5 +546,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--run-model", required=True)
+    ap.add_argument("--only", default="", help="run just the checks whose name holds this")
     args = ap.parse_args()
-    raise SystemExit(min(Check(LiveGame(args.model, args.run_model)).all(), 1))
+    raise SystemExit(min(Check(LiveGame(args.model, args.run_model), args.only).all(), 1))

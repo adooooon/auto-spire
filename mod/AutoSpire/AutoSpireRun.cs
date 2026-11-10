@@ -16,6 +16,7 @@ using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Rewards;
@@ -36,7 +37,13 @@ namespace AutoSpire;
 /// game's own test hook: CardSelectCmd skips its selection screens when a selector is set.
 internal sealed class AgentSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelector
 {
-    internal sealed record Pending(List<CardModel> Options, int Min, TaskCompletionSource<IEnumerable<CardModel>> Done);
+    internal sealed record Pending(List<CardModel> Options, int Min, int Max, TaskCompletionSource<IEnumerable<CardModel>> Done)
+    {
+        // Purity's FromHand (0 to Cards): answered one card at a time, as in the sim. Picks so far are held out of
+        // /combat's hand, as the sim's are; choose_done (or the last pick) ends it.
+        internal bool Multi => Max > 1 && Min < Max;
+        internal readonly List<CardModel> Picked = new();
+    }
 
     internal static Pending? Current;
     // Smith's card, named with `rest SMITH <deck index>`: answers the next prompt that offers it.
@@ -59,7 +66,7 @@ internal sealed class AgentSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelect
             Next = null;
             return Task.FromResult<IEnumerable<CardModel>>(new[] { next });
         }
-        var pending = new Pending(list, minSelect, new TaskCompletionSource<IEnumerable<CardModel>>());
+        var pending = new Pending(list, minSelect, maxSelect, new TaskCompletionSource<IEnumerable<CardModel>>());
         Current = pending;
         return pending.Done.Task;
     }
@@ -165,7 +172,7 @@ internal static class RunBridge
         var removal = inv.CardRemovalEntry;
         return new
         {
-            cards = inv.CharacterCardEntries.Select(e => new
+            cards = inv.CardEntries.Select(e => new  // the 5 character slots, then the 2 colorless ones, as the sim's Shop
             {
                 id = e.IsStocked ? e.CreationResult?.Card.Id.Entry : null,
                 upgraded = e.IsStocked && e.CreationResult?.Card.IsUpgraded == true,
@@ -194,11 +201,19 @@ internal static class RunBridge
         var pending = AgentSelector.Current;
         if (pending == null || player == null) return null;
         var pcs = player.PlayerCombatState;
-        var source = CombatManager.Instance.History.CardPlaysStarted.LastOrDefault()?.CardPlay.Card.Id.Entry;
-        string kind = pcs != null && pending.Options.All(pcs.Hand.Cards.Contains) ? "hand"
-            : pcs != null && pending.Options.All(pcs.DiscardPile.Cards.Contains) ? "discard" : "deck";
+        var history = CombatManager.Instance.History;
+        var source = history.CardPlaysStarted.LastOrDefault()?.CardPlay.Card.Id.Entry;
+        bool In(CardPile? pile) => pile != null && pending.Options.All(pile.Cards.Contains);
+        // FromChooseACardScreen's new cards are in no pile. Discovery asks on the player's side; Knowledge Demon's curse
+        // (no skip) on the enemy's, and stays "deck".
+        bool generated = CombatManager.Instance.DebugOnlyGetState()?.CurrentSide == CombatSide.Player && pending.Min == 0 && pending.Max == 1;
+        string kind = In(pcs?.Hand) ? (pending.Multi ? "hand_multi" : "hand")
+            : In(pcs?.DiscardPile) ? "discard" : In(pcs?.DrawPile) ? "draw" : pcs != null && generated ? "generated" : "deck";
         // ponytail: Armaments is the only modeled card asking FromHandForUpgrade; a Harmony tag on it if more do.
         if (kind == "hand" && source == "ARMAMENTS") kind = "upgrade";
+        // No card play in progress: a turn-start prompt, and Entropy is the only modeled one.
+        if (kind == "hand" && history.CardPlaysStarted.Count() == history.CardPlaysFinished.Count()
+            && player.Creature.Powers.Any(p => p is EntropyPower)) source = "ENTROPY";
         return new
         {
             kind,
@@ -287,13 +302,22 @@ internal static class RunBridge
                 TaskHelper.RunSafely(PotionCmd.Discard(potion));
                 break;
             }
-            case "choose": // hand index, as in the sim
+            case "choose": // hand index, as in the sim (a multi-pick's hand leaves out the picks so far)
             {
-                var hand = me.PlayerCombatState!.Hand.Cards;
-                var options = AgentSelector.Current!.Options;
+                var pending = AgentSelector.Current ?? throw new InvalidOperationException("no_prompt");
+                var hand = CombatHand(me);
+                var left = pending.Options.Except(pending.Picked).ToList();
                 int i = Arg(1);
                 // ponytail: a hand slot the prompt doesn't allow takes its first option; the env's mask opens the whole hand.
-                Resolve(i < hand.Count && options.Contains(hand[i]) ? hand[i] : options[0]);
+                var card = i < hand.Count && left.Contains(hand[i]) ? hand[i] : left[0];
+                if (!pending.Multi)
+                {
+                    Resolve(card);
+                    break;
+                }
+                pending.Picked.Add(card);
+                if (pending.Picked.Count >= pending.Max || left.Count == 1)
+                    Finish(pending.Picked);  // as the sim: it ends at its max, or once the hand is empty
                 break;
             }
             case "choose_discard": // card id, as in the sim: a plain copy first, else an upgraded one
@@ -302,9 +326,30 @@ internal static class RunBridge
                 Resolve(copies.FirstOrDefault(c => !c.IsUpgraded) ?? copies.First());
                 break;
             }
+            case "choose_draw": // the same, but the bottom-most copy, as the sim (FromCombatPile keeps the pile's top-first order per id)
+            {
+                var copies = AgentSelector.Current!.Options.Where(c => c.Id.Entry == parts[1]).ToList();
+                Resolve(copies.LastOrDefault(c => !c.IsUpgraded) ?? copies.Last());
+                break;
+            }
             case "choose_option":
+            case "choose_generated":
                 Resolve(AgentSelector.Current!.Options[Arg(1)]);
                 break;
+            case "choose_done": // ends a multi-pick with the picks so far
+            {
+                var pending = AgentSelector.Current ?? throw new InvalidOperationException("no_prompt");
+                if (!pending.Multi) throw new InvalidOperationException("not_multi");
+                Finish(pending.Picked);
+                break;
+            }
+            case "choose_skip": // a prompt that allows no pick (Discovery's canSkip)
+            {
+                var pending = AgentSelector.Current ?? throw new InvalidOperationException("no_prompt");
+                if (pending.Min > 0) throw new InvalidOperationException("not_skippable");
+                Finish(new List<CardModel>());
+                break;
+            }
             case "upgrade_deck": // a deck card by id, as Smith does; the dev console's `upgrade` takes hand cards only
             {
                 var card = me.Deck.Cards.FirstOrDefault(c => c.Id.Entry == parts[1] && c.IsUpgradable)
@@ -336,11 +381,21 @@ internal static class RunBridge
     private static void Resolve(CardModel card)
     {
         var pending = AgentSelector.Current!;
-        AgentSelector.Current = null;
         var picked = new List<CardModel> { card };
         picked.AddRange(pending.Options.Where(c => c != card).Take(Math.Max(0, pending.Min - 1)));
+        Finish(picked);
+    }
+
+    private static void Finish(List<CardModel> picked)
+    {
+        var pending = AgentSelector.Current!;
+        AgentSelector.Current = null;
         pending.Done.SetResult(picked);
     }
+
+    /// The hand as /combat shows it: a multi-pick's picks so far are out of it, as in the sim.
+    internal static List<CardModel> CombatHand(Player player) =>
+        player.PlayerCombatState!.Hand.Cards.Except(AgentSelector.Current?.Picked ?? new List<CardModel>()).ToList();
 
     private static void Proceed()
     {
@@ -362,7 +417,7 @@ internal static class RunBridge
         var inv = ((MerchantRoom)rs.CurrentRoom!).GetLocalInventory();
         Task<bool> task = what switch
         {
-            "card" => inv.CharacterCardEntries[i].OnTryPurchaseWrapper(inv),
+            "card" => inv.CardEntries.ElementAt(i).OnTryPurchaseWrapper(inv),  // 0-4 character, 5-6 colorless
             "relic" => inv.RelicEntries[i].OnTryPurchaseWrapper(inv),
             "potion" => inv.PotionEntries[i].OnTryPurchaseWrapper(inv),
             "removal" => inv.CardRemovalEntry!.OnTryPurchaseWrapper(inv),

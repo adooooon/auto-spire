@@ -2008,6 +2008,8 @@ c = solo(["THE_GAMBIT"]); c.play_card(0); c.player_block = 0; hurt(c, 3, dealer=
 c = solo(["THE_GAMBIT"]); c.relics = {"LIZARD_TAIL"}; c.play_card(0); c.player_block = 0
 hurt(c, 3); assert c.in_combat and c.player_hp == 40 and "TheGambitPower" not in c.pw
 hurt(c, 3); assert c.in_combat and c.player_hp == 37
+c = solo(["THE_GAMBIT", "THE_GAMBIT"]); c.play_card(0); c.play_card(0)  # a second copy stacks the Amount (seen live)
+assert c.pw["TheGambitPower"] == 2 and _power(c.combat_dict()["player"], "TheGambitPower") == 2
 print("colorless power checks ok")
 
 # --- Colorless prompts (plan task 4), from each <Card>.cs's CardSelectCmd call ---
@@ -2088,4 +2090,34 @@ for seed in range(200):
         assert c.end_turn()["ok"] and c.pending_choice is None and c.in_combat and c.is_play_phase, (seed, cid)
 print("colorless prompt checks ok")
 print("lava lamp engine checks ok")
+
+# validate.load rebuilds every card object, so a Bolas played on an earlier step must still come back next turn.
+from collections import defaultdict  # noqa: E402
+from .validate import load  # noqa: E402
+c = SimCombat(rng=random.Random(1))
+c.fight("NIBBITS_WEAK", ["BOLAS"] + ["DEFEND_IRONCLAD"] * 9)
+if "BOLAS" not in c.hand:
+    c.hand.append(c.draw_pile.pop(c.draw_pile.index("BOLAS")))
+c.play_card(c.hand.index("BOLAS"), 1)
+again = load(c.combat_dict(), defaultdict(list), prev=c)
+again.end_turn()
+assert "BOLAS" in again.hand, again.hand
+assert c.combat_plays == again.combat_plays == 1  # Gold Axe's count (CardPlaysFinished this fight) carries over too
+d = c.combat_dict()  # Hidden Gem's Replay comes from /combat's per-card count (the game's pick is random)
+d["player"]["drawPile"][0]["replay"] = 2  # top first: the sim's last draw-pile card
+again = load(d, defaultdict(list))
+assert list(again.replays.values()) == [2] and id(again.draw_pile[-1]) in again.replays
+d["player"]["powers"] = [{"name": "VigorPower", "amount": 4}]  # Prep Time's Vigor is a RELIC_POWERS entry, not PLAYER_POWERS
+assert load(d, defaultdict(list)).pw.get("VigorPower") == 4
+d["player"]["powers"] = [{"name": "RollingBoulderPower", "amount": 10}]  # an INSTANCED power prev never saw
+assert load(d, defaultdict(list), prev=c).inst["RollingBoulderPower"] == [[10]]
+# A Slumbering Beetle woken by a hit keeps its Plating until its STUNNED move (Stun(WakeUpMove)), as seen live.
+c = solo(["BLUDGEON"], encounter="SLUMBERING_BEETLE_NORMAL")
+c.energy, b = 9, c.enemies[2]
+b.pw["SlumberPower"], b.block = 1, 0
+c.play_card(0, 3)
+assert b.move == "STUNNED" and b.pw.get("PlatingPower") == 15 and "SlumberPower" not in b.pw, (b.move, b.pw)
+c.end_turn()
+assert "PlatingPower" not in b.pw and b.block == 0 and b.move == "ROLL_OUT_MOVE", (b.move, b.pw, b.block)
+print("validate load checks ok")
 print("sim self-check ok")

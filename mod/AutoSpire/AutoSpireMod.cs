@@ -279,7 +279,7 @@ public static class AutoSpireMod
             energy = pcs.Energy,
             maxEnergy = pcs.MaxEnergy,
             stars = pcs.Stars,
-            hand = pcs.Hand.Cards.Select(SerializeCard).ToList(),
+            hand = RunBridge.CombatHand(player).Select(SerializeCard).ToList(),
             drawPile = pcs.DrawPile.Cards.Select(SerializeCard).ToList(),
             discardPile = pcs.DiscardPile.Cards.Select(SerializeCard).ToList(),
             exhaustPile = pcs.ExhaustPile.Cards.Select(SerializeCard).ToList(),
@@ -304,6 +304,7 @@ public static class AutoSpireMod
             targetType = card.TargetType.ToString(),
             upgraded = card.IsUpgraded,
             upgradeLevel = card.CurrentUpgradeLevel,
+            replay = card.GetEnchantedReplayCount(),  // extra plays (Hidden Gem's BaseReplayCount): sim.validate loads them
             keywords = card.Keywords.Select(k => k.ToString()).ToList()
         };
     }
@@ -420,6 +421,7 @@ public static class AutoSpireMod
                 // A real run: map moves, rewards, events, rests, shops, treasure, card prompts.
                 "map" or "close_map" or "reward" or "pick" or "proceed" or "option" or "rest" or "chest" or "chest_relic" or "buy"
                     or "drop_potion" or "choose" or "choose_discard" or "choose_option" or "upgrade_deck"
+                    or "choose_draw" or "choose_generated" or "choose_done" or "choose_skip"
                     => OnMainThread<object>(() => RunBridge.Exec(verb, parts))!,
                 // Pass through to game's dev console (kill, godmode, draw, energy, gold, etc.)
                 _ => ExecConsole(cmd)

@@ -19,9 +19,9 @@ from sb3_contrib import MaskablePPO
 
 from client import AutoSpireClient
 from env import CARD_IDS, STS2CombatEnv, _encode, _ready
-from run_env import (CARD_INDEX, DRINK, EVENT, PATH, PICK, POTION_SKIP, REMOVE, REST, REST_OPTIONS, SHOP, SHOP_LEAVE,
-                     SHOP_POTION, SHOP_RELIC, SHOP_REMOVE, SMITH, RunPolicyEnv, drink_slot, potion_take_slot)
-from sim.act import SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Shop
+from run_env import (CARD_INDEX, DRINK, EVENT, PATH, PICK, POTION_SKIP, REMOVE, REST, REST_OPTIONS, SHOP, SHOP_COLORLESS_ACTION,
+                     SHOP_LEAVE, SHOP_POTION, SHOP_RELIC, SHOP_REMOVE, SMITH, RunPolicyEnv, drink_slot, potion_take_slot)
+from sim.act import SHOP_COLORLESS, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Shop
 from sim.events import MODELED_EVENTS
 from sim.map import Node
 from sim.potions import POTIONS
@@ -92,7 +92,7 @@ def _pad(entries: list[dict], n: int) -> tuple[list, list]:
 
 
 def _shop(d: dict) -> Shop:
-    cards, prices = _pad(d["cards"], len(SHOP_SLOTS))
+    cards, prices = _pad(d["cards"], len(SHOP_SLOTS) + len(SHOP_COLORLESS))  # the mod lists the colorless slots last
     relics, relic_prices = _pad(d["relics"], SHOP_RELICS)
     potions, potion_prices = _pad(d["potions"], SHOP_POTIONS)
     removal = d.get("removal") or {"used": True, "cost": 0}  # the mod leaves out null fields
@@ -169,7 +169,7 @@ class LiveGame:
             while True:
                 choice = env._combat.get("choice")
                 unreadable = choice and (choice["kind"] == "deck" or (
-                    choice["kind"] == "discard" and not set(choice["options"]) & set(CARD_IDS)))
+                    choice["kind"] in ("discard", "draw") and not set(choice["options"]) & set(CARD_IDS)))
                 if unreadable:  # a prompt the combat model has no action for
                     print(f"  prompt from {choice['source']}: took {choice['options'][0]}")
                     self.client.exec("choose_option 0")
@@ -260,6 +260,10 @@ class LiveGame:
             print(f"  shop: remove {self.pending_remove}")
             self.run.removals += 1
             cmd = "buy removal"
+        elif a >= SHOP_COLORLESS_ACTION:
+            slot = len(SHOP_SLOTS) + a - SHOP_COLORLESS_ACTION
+            print(f"  shop: colorless {self.run.shop.cards[slot]}")
+            cmd = f"buy card {slot}"
         elif a >= SHOP_RELIC:
             print(f"  shop: relic {self.run.shop.relics[a - SHOP_RELIC]}")
             cmd = f"buy relic {a - SHOP_RELIC}"

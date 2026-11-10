@@ -11,7 +11,8 @@ import sys
 
 import numpy as np
 
-from env import CARD_IDS, CHOOSE_DISCARD, CHOOSE_HAND, ENCOUNTER_GROUPS, MAX_HAND, STS2CombatEnv, _encode, random_deck
+from env import (CARD_IDS, CHOOSE_DISCARD, CHOOSE_DRAW, CHOOSE_GENERATED, CHOOSE_HAND, CHOOSE_SKIP, ENCOUNTER_GROUPS, MAX_HAND,
+                 STS2CombatEnv, _encode, random_deck)
 from sim.cards import CARDS, base_id, card_to_dict
 
 BASIC = ("STRIKE_IRONCLAD", "DEFEND_IRONCLAD")  # Bash is not basic
@@ -74,12 +75,17 @@ def collect(model, card: str, fights: int = 200, seed: int = 0, env=None) -> lis
             action = int(model.predict(obs, action_masks=mask, deterministic=True)[0])
             c = env._combat
             if c.get("choice") and mask.sum() >= 2:
-                p = c["player"]
-                if c["choice"]["kind"] == "hand":
-                    options, picked, pick = [x["id"] for x in p["hand"][:MAX_HAND]], None, action - CHOOSE_HAND
-                    picked = options[pick]
-                else:
+                p, kind = c["player"], c["choice"]["kind"]
+                if kind in ("hand", "upgrade", "hand_multi"):  # picked None: Purity's done
+                    options, pick = [x["id"] for x in p["hand"][:MAX_HAND]], action - CHOOSE_HAND
+                    picked = options[pick] if action < CHOOSE_DISCARD else None
+                elif kind == "discard":
                     options, picked, pick = [x["id"] for x in p["discardPile"]], CARD_IDS[action - CHOOSE_DISCARD], action
+                elif kind == "generated":  # picked None: skipped
+                    options, pick = c["choice"]["options"], action - CHOOSE_GENERATED
+                    picked = options[pick] if action < CHOOSE_SKIP else None
+                else:  # draw
+                    options, picked, pick = c["choice"]["options"], CARD_IDS[action - CHOOSE_DRAW], action
                 out.append({"source": c["choice"]["source"], "options": options, "picked": picked, "pick": pick,
                             "combat": copy.deepcopy(c)})
             obs, _, term, trunc, _ = env.step(action)

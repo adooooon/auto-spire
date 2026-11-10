@@ -479,7 +479,8 @@ class STS2CombatEnv(gym.Env):
                 mask[CHOOSE_GENERATED:CHOOSE_GENERATED + len(choice["options"][:GENERATED_OPTIONS])] = mask[CHOOSE_SKIP] = True
             elif choice["kind"] == "draw":
                 for cid in choice["options"]:
-                    mask[CHOOSE_DRAW + CARD_IDS.index(base_id(cid))] = True
+                    if base_id(cid) in CARD_IDS:  # live: an unmodeled card can be offered
+                        mask[CHOOSE_DRAW + CARD_IDS.index(base_id(cid))] = True
             elif choice["kind"] == "upgrade":  # the sim's Armaments: the upgradable hand cards
                 for i, c in enumerate(hand[:MAX_HAND]):
                     mask[CHOOSE_HAND + i] = base_id(c["id"]) in UPGRADABLE and not c["upgraded"]

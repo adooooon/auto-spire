@@ -853,7 +853,12 @@ assert live.deck == ["BASH"] and live_env._obs().shape == (RUN_OBS_DIM,)
 assert list(np.flatnonzero(live_env.action_masks())) == [PATH + 2, PATH + 4]
 live.shop = _shop({"cards": [{"id": "BASH", "cost": 50}, {"cost": 60}], "relics": [], "potions": []})
 live_env.decision = "shop"
-assert len(live.shop.cards) == 5 and live.shop.removal_used and live_env.action_masks()[SHOP]
+assert len(live.shop.cards) == 7 and live.shop.removal_used and live_env.action_masks()[SHOP]
+# The mod lists the 5 character slots, then the 2 colorless ones: they map to the colorless actions.
+live.shop = _shop({"cards": [{"cost": 50}] * 5 + [{"id": "FINESSE", "cost": 86}, {"id": "SPLASH", "cost": 170}], "relics": [], "potions": []})
+from run_env import SHOP_COLORLESS_ACTION
+assert live.shop.cards[5:] == ["FINESSE", "SPLASH"] and live.shop.prices[5:] == [86, 170]
+assert list(live_env.action_masks()[SHOP_COLORLESS_ACTION:SHOP_COLORLESS_ACTION + 2]) == [True, False]  # Splash: never bought
 assert _event_opts("JUNGLE_MAZE_ADVENTURE", {"SoloGold": 140, "JoinForcesGold": 55}) == [(18, 140, 0), (0, 55, 0)]
 opt = lambda key, **kw: {"key": key, "locked": False, "kills": False, **kw}
 assert _fallback_option([opt("A"), opt("B.LEAVE")]) == 1
