@@ -168,6 +168,7 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("GIANT_ROCK", "Giant Rock", "Attack", 1, "AnyEnemy", rarity="Token", damage=16),
     # The 53 single-player ColorlessCardPool cards, in pool order (multiplayer-only ones left out). special=True ones are
     # data only until Tasks 2-4 of the colorless plan add their logic.
+    # ponytail: Alchemize procures a random potion; logic comes with potion generation in plan 2b.
     CardDef("ALCHEMIZE", "Alchemize", "Skill", 1, "Self", rarity="Rare", colorless=True, exhaust=True, generated=False, special=True),
     CardDef("ANOINTED", "Anointed", "Skill", 1, "Self", rarity="Rare", colorless=True, exhaust=True, special=True),
     CardDef("AUTOMATION", "Automation", "Power", 1, "Self", rarity="Uncommon", colorless=True, special=True),
@@ -212,6 +213,7 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("SECRET_WEAPON", "Secret Weapon", "Skill", 0, "Self", rarity="Rare", colorless=True, exhaust=True, special=True),
     CardDef("SEEKER_STRIKE", "Seeker Strike", "Attack", 1, "AnyEnemy", rarity="Uncommon", colorless=True, damage=9, strike=True, special=True),
     CardDef("SHOCKWAVE", "Shockwave", "Skill", 2, "AllEnemies", rarity="Uncommon", colorless=True, weak=3, vulnerable=3, exhaust=True),
+    # ponytail: Splash offers 3 other-character Attacks; the sim has Ironclad only, so its logic waits for those cards.
     CardDef("SPLASH", "Splash", "Skill", 1, "Self", rarity="Uncommon", colorless=True, special=True),
     CardDef("STRATAGEM", "Stratagem", "Power", 1, "Self", rarity="Uncommon", colorless=True, special=True),
     CardDef("THE_BOMB", "The Bomb", "Skill", 2, "Self", rarity="Uncommon", colorless=True, special=True),
@@ -361,8 +363,11 @@ GENERATED = tuple(c for c in COMMONS + UNCOMMONS + RARES + ("ARMAMENTS",) if CAR
 COLORLESS_UNCOMMONS, COLORLESS_RARES = (tuple(c for c in CARDS if CARDS[c].colorless and CARDS[c].rarity == r and not is_upgraded(c))
                                         for r in ("Uncommon", "Rare"))
 COLORLESS = COLORLESS_UNCOMMONS + COLORLESS_RARES
+# ponytail: Splash offers other characters' Attacks (the sim has Ironclad only) and Alchemize procures a random potion
+# (modeled in plan 2b); both are unsold and never created until then.
 NOT_BUYABLE = frozenset({"SPLASH", "ALCHEMIZE"})
-# Colorless cards Jack of All Trades etc. can create (CanBeGeneratedInCombat; Splash is left out).
+# Colorless cards Jack of All Trades etc. can create (CanBeGeneratedInCombat).
+# ponytail: Splash is left out (its effect needs other characters' Attacks); add it with those cards.
 COLORLESS_GENERATED = tuple(c for c in COLORLESS if CARDS[c].generated and c != "SPLASH")
 CHOICE_CARDS = ("BRAND", "BURNING_PACT", "HEADBUTT")
 
