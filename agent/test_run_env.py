@@ -510,6 +510,13 @@ assert m.nonzero()[0].tolist() == sorted(CHOOSE_DISCARD + CARD_IDS.index(x) for 
 env.step(CHOOSE_DISCARD + CARD_IDS.index("BASH"))
 assert c.draw_pile[-1] == "BASH"
 
+# An upgrade prompt (Armaments): only the upgradable slots are open, and the action upgrades that slot.
+env, c = choice_env(["ARMAMENTS", "WOUND", "BASH+", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD"])
+env.step(0)
+assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_HAND + 2, CHOOSE_HAND + 3]
+env.step(CHOOSE_HAND + 3)
+assert c.hand == ["WOUND", "BASH+", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD+"] and c.pending_choice is None
+
 # Review focus 5: live has no simRelics, so the three cards stay masked and a live pick can't take them.
 live = {k: v for k, v in env.client.combat().items() if k != "simRelics"}
 live["choice"] = None

@@ -87,8 +87,7 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("TREMBLE", "Tremble", "Skill", 1, "AnyEnemy", rarity="Common", vulnerable=3, exhaust=True),
     CardDef("TRUE_GRIT", "True Grit", "Skill", 1, "Self", rarity="Common", block=7, exhaust_random=True),
     CardDef("TWIN_STRIKE", "Twin Strike", "Attack", 1, "AnyEnemy", rarity="Common", damage=5, hits=2, strike=True),
-    # Chooses a card in hand to upgrade (all of them when upgraded). The block is generic; ponytail: the engine
-    # skips the upgrade until the sim plays upgrades (_special does nothing for it).
+    # Block 5, then chooses a card in hand to upgrade (all of them when upgraded): engine._special.
     CardDef("ARMAMENTS", "Armaments", "Skill", 1, "Self", rarity="Common", block=5, special=True),
     # Ironclad Uncommons. special=True: the engine's _special has the rest of the card.
     CardDef("ASHEN_STRIKE", "Ashen Strike", "Attack", 1, "AnyEnemy", rarity="Uncommon", damage=6, strike=True,
@@ -166,7 +165,7 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
 ]}
 # CardDef field changes for the upgraded card, from each card's OnUpgrade (MaxUpgradeLevel is 1 for all of these;
 # statuses and Wound have 0 and no entry). An empty entry is upgradable, but the upgrade changes no CardDef field: the
-# comment says what the engine (Task 3) must do. For `special` cards the engine hardcodes some numbers; those are named.
+# comment says what the engine does with it. `special` cards read card.damage etc. where a field changes here.
 UPGRADES: dict[str, dict] = {
     "STRIKE_IRONCLAD": dict(damage=9), "DEFEND_IRONCLAD": dict(block=8), "BASH": dict(damage=10, vulnerable=3),
     "ANGER": dict(damage=8), "BLOOD_WALL": dict(block=20), "BLOODLETTING": dict(energy=3),
@@ -177,42 +176,42 @@ UPGRADES: dict[str, dict] = {
     "SWORD_BOOMERANG": dict(hits=4), "THUNDERCLAP": dict(damage=7), "TREMBLE": dict(vulnerable=4),
     "TRUE_GRIT": dict(block=9), "TWIN_STRIKE": dict(damage=7),
     "ARMAMENTS": {},  # engine: upgrade every upgradable card in hand instead of choosing one
-    "ASHEN_STRIKE": {},  # engine: +4 per exhausted card (hardcoded 3)
+    "ASHEN_STRIKE": {},  # engine: +4 per exhausted card
     "BLUDGEON": dict(damage=42),
-    "BULLY": {},  # engine: +3 per Vulnerable (hardcoded 2)
-    "DISMANTLE": dict(damage=10),  # engine hardcodes 8: read card.damage
-    "FIGHT_ME": dict(damage=6),  # engine hardcodes damage 5 and Strength 3/1: upgraded 6, 4 Strength to you, enemy still +1
+    "BULLY": {},  # engine: +3 per Vulnerable
+    "DISMANTLE": dict(damage=10),
+    "FIGHT_ME": dict(damage=6),  # engine: 4 Strength to you, enemy still +1
     "HEMOKINESIS": dict(damage=20), "HOWL_FROM_BEYOND": dict(damage=21),
-    "PILLAGE": dict(damage=9),  # engine hardcodes 6: read card.damage
-    "RAMPAGE": {},  # engine: +9 per play (hardcoded 5)
-    "SPITE": {},  # engine: 3 hits when HP was lost this turn (hardcoded 2)
+    "PILLAGE": dict(damage=9),
+    "RAMPAGE": {},  # engine: +9 per play
+    "SPITE": {},  # engine: 3 hits when HP was lost this turn
     "STOMP": dict(damage=15), "UNRELENTING": dict(damage=20), "UPPERCUT": dict(weak=2, vulnerable=2),
     "WHIRLWIND": dict(damage=8), "BATTLE_TRANCE": dict(draw=4),
-    "BURNING_PACT": {},  # engine: draw 3 (hardcoded 2)
+    "BURNING_PACT": {},  # engine: draw 3
     "COLOSSUS": dict(block=8),
-    "DOMINATE": {},  # engine: 2 Vulnerable (hardcoded 1)
-    "DRUM_OF_BATTLE": {},  # engine: 3 energy when it is exhausted (hardcoded 2)
-    "EVIL_EYE": {},  # engine: block 11 (hardcoded 8)
+    "DOMINATE": {},  # engine: 2 Vulnerable
+    "DRUM_OF_BATTLE": {},  # engine: 3 energy when it is exhausted
+    "EVIL_EYE": {},  # engine: block 11
     "EXPECT_A_FIGHT": dict(cost=1),
     "FLAME_BARRIER": dict(block=16, powers=(("FlameBarrierPower", 6),)),
-    "FORGOTTEN_RITUAL": {},  # engine: 4 energy (hardcoded 3)
+    "FORGOTTEN_RITUAL": {},  # engine: 4 energy
     "INFERNAL_BLADE": dict(cost=0),
     "RAGE": dict(powers=(("RagePower", 5),)),
-    "SECOND_WIND": {},  # engine: 7 block per exhausted card (hardcoded 5)
+    "SECOND_WIND": {},  # engine: 7 block per exhausted card
     "TAUNT": dict(block=8, vulnerable=2),
     "FEEL_NO_PAIN": dict(powers=(("FeelNoPainPower", 4),)), "INFERNO": dict(powers=(("InfernoPower", 9),)),
     "INFLAME": dict(powers=(("StrengthPower", 3),)),
-    "JUGGLING": {},  # engine: Innate (starts in the opening hand); CardDef has no innate field
+    "JUGGLING": {},  # engine: Innate (engine.INNATE: starts in the opening hand)
     "RUPTURE": dict(powers=(("RupturePower", 2),)), "STAMPEDE": dict(cost=1),
     "STONE_ARMOR": dict(powers=(("PlatingPower", 6),)), "VICIOUS": dict(powers=(("ViciousPower", 2),)),
     "CONFLAGRATION": dict(hits=5),
-    "FEED": dict(damage=12),  # engine hardcodes damage 10 and max HP 3: upgraded 12 and 4
-    "FIEND_FIRE": dict(damage=10),  # engine hardcodes 7: read card.damage
-    "MANGLE": dict(damage=20),  # engine hardcodes damage 15 and Strength loss 10: upgraded 20 and 15
-    "PACTS_END": dict(damage=23),  # engine hardcodes 17: read card.damage
-    "TEAR_ASUNDER": dict(damage=7),  # engine hardcodes 5: read card.damage
+    "FEED": dict(damage=12),  # engine: +4 max HP on a kill
+    "FIEND_FIRE": dict(damage=10),
+    "MANGLE": dict(damage=20),  # engine: Strength loss 15
+    "PACTS_END": dict(damage=23),
+    "TEAR_ASUNDER": dict(damage=7),
     "THRASH": dict(damage=6),
-    "BRAND": {},  # engine: gain 2 Strength (hardcoded 1)
+    "BRAND": {},  # engine: gain 2 Strength
     "CASCADE": {},  # engine: upgraded plays X+1 cards (see Cascade.cs IsUpgraded)
     "IMPERVIOUS": dict(block=40), "NOT_YET": dict(heal=13), "OFFERING": dict(draw=5),
     "ONE_TWO_PUNCH": dict(powers=(("OneTwoPunchPower", 2),)),
@@ -249,7 +248,7 @@ def upgrade(cid: str) -> str:
 COMMONS, UNCOMMONS, RARES = (tuple(sorted(cid for cid in CARDS if CARDS[cid].rarity == r and cid != "ARMAMENTS" and not is_upgraded(cid)))
                               for r in ("Common", "Uncommon", "Rare"))
 # CardFactory.FilterForCombat: what Stoke / Infernal Blade draw from (uniformly, unlocked pool).
-# ponytail: the game's pool also has Armaments; left out until the sim plays its upgrade choice.
+# ponytail: the game's pool also has Armaments; left out so seeded Stoke draws (and test_engine's trace) stay as they were.
 GENERATED = tuple(c for c in COMMONS + UNCOMMONS + RARES if CARDS[c].generated)
 CHOICE_CARDS = ("BRAND", "BURNING_PACT", "HEADBUTT")
 

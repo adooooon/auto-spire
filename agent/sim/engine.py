@@ -18,8 +18,9 @@ integer math, so 0.7 * 1.5 products don't hit float error). Damage from powers
 Strength/Vulnerable/Weak.
 
 Known simplifications:
-  - Relics are modeled in sim/relics.py (Burning Blood is applied by run.py between fights); no upgrades; 12 of the potions (sim/potions.py)
-    (Aggression's upgrade of the card it returns is skipped).
+  - Relics are modeled in sim/relics.py (Burning Blood is applied by run.py between fights); 12 of the potions (sim/potions.py).
+  - An upgraded card is the id "X+" (cards.UPGRADES); id checks go through cards.base_id. In-combat upgrades
+    (Armaments, Aggression, Stoke+, Primal Force+) replace the id in its pile for this fight only.
   - Enemy-targeted cards hit the enemy with the given combatId, or the first
     living enemy if none is given (the mod's auto-target,
     combatState.HittableEnemies.FirstOrDefault()).
@@ -31,13 +32,14 @@ import random
 from collections import Counter
 from dataclasses import dataclass, field
 
-from .cards import CARDS, GENERATED, card_to_dict, starter_deck
+from .cards import CARDS, GENERATED, UPGRADABLE, base_id, card_to_dict, is_upgraded, starter_deck, upgrade
 from .potions import MAX_POTION_SLOTS, POTION_SLOTS, POTIONS
 
 PLAYER_MAX_HP = 80
 PLAYER_MAX_ENERGY = 3
 HAND_DRAW_COUNT = 5
 MAX_HAND_SIZE = 10  # CardPile.MaxCardsInHand: draws stop, generated cards go to the discard pile
+INNATE = frozenset({"JUGGLING+", "AGGRESSION+"})  # their OnUpgrade adds CardKeyword.Innate
 MAX_SHUFFLES = 1000  # per fight; real fights reshuffle a handful of times
 
 
@@ -710,7 +712,7 @@ class SimCombat:
                 self._gain_strength(3 if low else -3)
 
     def _is_ethereal(self, card_id: str) -> bool:
-        return CARDS[card_id].ethereal or ("GHOST_SEED" in self.relics and card_id in ("STRIKE_IRONCLAD", "DEFEND_IRONCLAD"))
+        return CARDS[card_id].ethereal or ("GHOST_SEED" in self.relics and base_id(card_id) in ("STRIKE_IRONCLAD", "DEFEND_IRONCLAD"))
 
     def fight(self, encounter: str, deck: list[str] | None = None) -> None:
         # A play abandoned at a prompt never finishes, so its depth and Rupture count go too.
@@ -774,7 +776,7 @@ class SimCombat:
             return c.cost
         if self.pw.get("FreeAttackPower"):  # TryModifyEnergyCostInCombatLate: after Tangled
             return 0
-        base = max(0, c.cost - self.attack_plays) if card_id == "STOMP" else c.cost  # EnergyCost.AddThisTurn
+        base = max(0, c.cost - self.attack_plays) if base_id(card_id) == "STOMP" else c.cost  # EnergyCost.AddThisTurn
         return base + self.tangled  # TangledPower
 
     def can_play(self, card_id: str) -> bool:
@@ -816,11 +818,13 @@ class SimCombat:
         return {"ok": True, "played": card.title, "index": hand_index}
 
     def choose_card(self, hand_index: int) -> dict:
-        """Answer a pending "hand" prompt with the card at hand_index."""
-        if not self.pending_choice or self.pending_choice["kind"] != "hand" or not 0 <= hand_index < len(self.hand):
+        """Answer a pending "hand" or "upgrade" prompt with the card at hand_index (upgrade: an upgradable one)."""
+        kind = (self.pending_choice or {}).get("kind")
+        if kind not in ("hand", "upgrade") or not 0 <= hand_index < len(self.hand) or \
+                (kind == "upgrade" and self.hand[hand_index] not in UPGRADABLE):
             return {"error": "invalid_choice"}
-        options = tuple(self.hand)
-        return self._resume_play(self.hand.pop(hand_index), options)
+        options = tuple(c for c in self.hand if kind == "hand" or c in UPGRADABLE)
+        return self._resume_play(self._take(kind, hand_index), options)
 
     def choose_discard(self, card_id: str) -> dict:
         """Answer a pending "discard" prompt with a card in the discard pile."""
@@ -832,12 +836,11 @@ class SimCombat:
 
     def _resume_play(self, picked: str, options: tuple[str, ...]) -> dict:
         """The rest of the play that stopped at the prompt: AfterCardPlayed, further plays, result pile."""
-        source = self.pending_choice["source"]
-        self.choice_log.append((source, picked, options))
+        self.choice_log.append((self.pending_choice["source"], picked, options))
         self.pending_choice = None
-        self._finish_choice(source, picked)
-        self._effect_depth -= 1
         card_id, target, x, force_exhaust, energy_value, plays_left, mine, outer = self._paused
+        self._finish_choice(card_id, picked)  # only the card being played pauses, so it's the prompt's source
+        self._effect_depth -= 1
         self._paused = None
         self._pausable = True  # One-Two Punch's second play asks again
         if self._after_resolve(CARDS[card_id], mine, outer):
@@ -1124,41 +1127,43 @@ class SimCombat:
                 self._autoplay(top, force_exhaust=True)
 
     def _special(self, cid: str, target: _Enemy | None, x: int) -> None:
+        """Upgraded numbers come from each card's OnUpgrade: a CardDef field (card.damage) where cards.UPGRADES
+        changes it, else `up` (1 for an "X+") times the upgrade step."""
         if cid == "FRANTIC_ESCAPE":  # the sand pit gets 1 further away; this costs 1 more
             for e in self.enemies:
                 if e.pw.get("SandpitPower"):
                     e.pw["SandpitPower"] += 1
             return
-        card = CARDS[cid]
-        if cid == "ASHEN_STRIKE":
-            self._hit(card, target, 6 + 3 * len(self.exhaust_pile))
-        elif cid == "BULLY":
-            self._hit(card, target, 4 + 2 * (target.vulnerable if target else 0))
-        elif cid == "DISMANTLE":
-            self._hit(card, target, 8, 2 if target and target.vulnerable else 1)
-        elif cid == "FIGHT_ME":
-            self._hit(card, target, 5, 2)
-            self._gain_strength(3)
+        card, b, up = CARDS[cid], base_id(cid), int(is_upgraded(cid))
+        if b == "ASHEN_STRIKE":
+            self._hit(card, target, self._ashen_damage(cid))
+        elif b == "BULLY":  # ExtraDamage 2, +1
+            self._hit(card, target, 4 + (2 + up) * (target.vulnerable if target else 0))
+        elif b == "DISMANTLE":
+            self._hit(card, target, card.damage, 2 if target and target.vulnerable else 1)
+        elif b == "FIGHT_ME":  # Strength 3, +1; the enemy's 1 is not upgraded
+            self._hit(card, target, card.damage, 2)
+            self._gain_strength(3 + up)
             if target and target.is_alive:
                 target.strength += 1
-        elif cid == "PILLAGE":  # draw until a non-Attack (or a full hand / nothing to draw)
-            self._hit(card, target, 6)
+        elif b == "PILLAGE":  # draw until a non-Attack (or a full hand / nothing to draw)
+            self._hit(card, target, card.damage)
             # ponytail: capped at one pass over the piles. Uncapped (as in the game's do/while),
             # Hellraiser Strikes that Ringing sends straight to discard reshuffle forever.
             for _ in range(len(self.draw_pile) + len(self.discard_pile)):
                 drawn = self._draw_one()
                 if not (drawn and CARDS[drawn].type == "Attack" and len(self.hand) < MAX_HAND_SIZE and self.in_combat):
                     break
-        elif cid in ("RAMPAGE", "THRASH"):
+        elif b in ("RAMPAGE", "THRASH"):
             self._hit(card, target, card.damage + self.bonus_damage.get(cid, 0), card.hits)
-            if cid == "RAMPAGE":
-                self.bonus_damage[cid] = self.bonus_damage.get(cid, 0) + 5
+            if b == "RAMPAGE":  # Increase 5, +4
+                self.bonus_damage[cid] = self.bonus_damage.get(cid, 0) + 5 + 4 * up
             else:  # exhaust a random Attack in hand; gain its damage (Hook.ModifyDamage, no target)
                 attacks = [i for i, c in enumerate(self.hand) if CARDS[c].type == "Attack"]
                 if attacks:
                     eaten = self.hand.pop(self.rng.choice(attacks))
                     e = CARDS[eaten]
-                    base = 6 + 3 * len(self.exhaust_pile) if eaten == "ASHEN_STRIKE" else \
+                    base = self._ashen_damage(eaten) if base_id(eaten) == "ASHEN_STRIKE" else \
                         e.damage + self.bonus_damage.get(eaten, 0)
                     # Hook.ModifyDamage with the eaten card as source: Strike Dummy, and Pen Nib if it's the 9th Attack.
                     base += 3 if "STRIKE_DUMMY" in self.relics and e.strike else 0
@@ -1167,109 +1172,132 @@ class SimCombat:
                                                 self.relic_state.get("pen_nib") == 9 else 1)
                     self.bonus_damage[cid] = self.bonus_damage.get(cid, 0) + gain
                     self._exhaust(eaten)
-        elif cid == "SPITE":
-            self._hit(card, target, 5, 2 if self.hp_lost_this_turn else 1)
-        elif cid == "FEED":  # ShouldOwnerDeathTriggerFatal: not for minions/illusions
+        elif b == "SPITE":  # Repeat 2, +1
+            self._hit(card, target, card.damage, 2 + up if self.hp_lost_this_turn else 1)
+        elif b == "FEED":  # ShouldOwnerDeathTriggerFatal: not for minions/illusions. MaxHp 3, +1
             fatal = target is not None and target.is_alive and not (target.defn.minion or target.defn.illusion)
-            self._hit(card, target, 10)
+            self._hit(card, target, card.damage)
             if fatal and not target.is_alive:
-                self.player_max_hp += 3  # CreatureCmd.GainMaxHp also heals that much
-                self.heal(3)
-        elif cid == "FIEND_FIRE":
+                self.player_max_hp += 3 + up  # CreatureCmd.GainMaxHp also heals that much
+                self.heal(3 + up)
+        elif b == "FIEND_FIRE":
             n = len(self.hand)
             for c in list(self.hand):  # a snapshot: cards added meanwhile (Burning Sticks) stay
                 self.hand.remove(c)
                 self._exhaust(c)
-            self._hit(card, target, 7, n)
-        elif cid == "MANGLE":
-            self._hit(card, target, 15)
+            self._hit(card, target, card.damage, n)
+        elif b == "MANGLE":  # StrengthLoss 10, +5
+            self._hit(card, target, card.damage)
             if target and target.is_alive:
-                self._debuff(target, "mangle", 10)
-        elif cid == "PACTS_END":
+                self._debuff(target, "mangle", 10 + 5 * up)
+        elif b == "PACTS_END":
             if len(self.exhaust_pile) >= 3:
-                self._hit(card, target, 17)
-        elif cid == "TEAR_ASUNDER":
-            self._hit(card, target, 5, 1 + self.hp_loss_events)
-        elif cid == "DOMINATE":
+                self._hit(card, target, card.damage)
+        elif b == "TEAR_ASUNDER":
+            self._hit(card, target, card.damage, 1 + self.hp_loss_events)
+        elif b == "DOMINATE":  # VulnerablePower 1, +1
             if target and target.is_alive:
-                self._debuff(target, "vulnerable", 1)
+                self._debuff(target, "vulnerable", 1 + up)
                 self._gain_strength(target.vulnerable)
-        elif cid == "EVIL_EYE":
+        elif b == "EVIL_EYE":  # Block 8, +3
             for _ in range(2 if self.exhausted_this_turn else 1):
-                self._gain_block(8, card=True)
-        elif cid == "EXPECT_A_FIGHT":
+                self._gain_block(8 + 3 * up, card=True)
+        elif b == "EXPECT_A_FIGHT":
             self._gain_energy(sum(CARDS[c].type == "Attack" for c in self.hand))
-        elif cid == "FORGOTTEN_RITUAL":
+        elif b == "FORGOTTEN_RITUAL":  # Energy 3, +1
             if self.exhausted_this_turn:
-                self._gain_energy(3)
-        elif cid == "INFERNAL_BLADE":  # a random Ironclad Attack, free this turn
+                self._gain_energy(3 + up)
+        elif b == "INFERNAL_BLADE":  # a random Ironclad Attack, free this turn
             atk = self.rng.choice([c for c in GENERATED if CARDS[c].type == "Attack"])
             self.free_cards.append(atk)
             self._add_to_hand(atk)
-        elif cid == "SECOND_WIND":
+        elif b == "SECOND_WIND":  # Block 5, +2
             for c in [c for c in self.hand if CARDS[c].type != "Attack"]:
                 self.hand.remove(c)
                 self._exhaust(c)
-                self._gain_block(5, card=True)
-        elif cid == "CASCADE":  # AutoPlayFromDrawPile(X, Top, forceExhaust: false)
-            for _ in range(x):
+                self._gain_block(5 + 2 * up, card=True)
+        elif b == "CASCADE":  # AutoPlayFromDrawPile(X, Top, forceExhaust: false); upgraded X + 1
+            for _ in range(x + up):
                 top = self._take_top()
                 if not top or not self.in_combat:
                     break
                 self._autoplay(top)
-        elif cid == "PRIMAL_FORCE":
-            self.hand = ["GIANT_ROCK" if CARDS[c].type == "Attack" else c for c in self.hand]
-        elif cid == "HEADBUTT":
+        elif b == "PRIMAL_FORCE":  # upgraded: the Giant Rocks are upgraded
+            rock = "GIANT_ROCK+" if up else "GIANT_ROCK"
+            self.hand = [rock if CARDS[c].type == "Attack" else c for c in self.hand]
+        elif b == "HEADBUTT":
             self._hit(card, target, card.damage)
             self._ask("discard", cid)
-        elif cid == "BURNING_PACT":
+        elif b == "BURNING_PACT":
             self._ask("hand", cid)
-        elif cid == "BRAND":
+        elif b == "BRAND":
             self._lose_hp(1, from_card=True)
             self._ask("hand", cid)
-        elif cid == "ARMAMENTS":  # ponytail: block only; Task 3 adds the choice of a hand card to upgrade
+        elif b == "ARMAMENTS":
             self._gain_block(card.block, card=True)
-        elif cid == "STOKE":
+            if up:  # every upgradable hand card, no prompt
+                self.hand = [upgrade(c) for c in self.hand]
+            else:
+                self._ask("upgrade", cid)
+        elif b == "STOKE":
             n = len(self.hand)
             for c in list(self.hand):
                 self.hand.remove(c)
                 self._exhaust(c)
-            for _ in range(n):  # CardFactory.GetForCombat: uniform, repeats allowed
-                self._add_to_hand(self.rng.choice(GENERATED))
+            for _ in range(n):  # CardFactory.GetForCombat: uniform, repeats allowed; upgraded: all upgraded
+                c = self.rng.choice(GENERATED)
+                self._add_to_hand(upgrade(c) if up else c)
         else:
             raise KeyError(f"no special logic for {cid}")
 
+    def _ashen_damage(self, cid: str) -> int:
+        """Ashen Strike: 6 + ExtraDamage (3, upgraded +1) per card in the exhaust pile."""
+        return 6 + (3 + is_upgraded(cid)) * len(self.exhaust_pile)
+
     def _ask(self, kind: str, source: str) -> None:
-        """CardSelectCmd.FromHand / FromCombatPile, choosing exactly 1: nothing if the fight is ending or there are no
-        options, no prompt for 1 option, else the player picks and the play stops here until they do."""
-        pile = self.hand if kind == "hand" else self.discard_pile
-        if self._ending() or not pile:
+        """CardSelectCmd.FromHand / FromCombatPile / FromHandForUpgrade, choosing exactly 1: nothing if the fight is
+        ending or there are no options, no prompt for 1 option, else the player picks and the play stops here until
+        they do. kind "upgrade" offers the upgradable hand cards and upgrades the pick in its slot."""
+        pile = self.discard_pile if kind == "discard" else self.hand
+        slots = [i for i, c in enumerate(pile) if kind != "upgrade" or c in UPGRADABLE]
+        if self._ending() or not slots:
             self._finish_choice(source, None)
-        elif len(pile) == 1:
-            self._finish_choice(source, pile.pop())
+        elif len(slots) == 1:
+            self._finish_choice(source, self._take(kind, slots[0]))
         elif self._pausable:
-            self.pending_choice = {"kind": kind, "source": source}
+            self.pending_choice = {"kind": kind, "source": base_id(source)}
         else:
             # ponytail: the game prompts the player here too (only Whispering Earring has a selector). Autoplays
             # nest inside other effects, so pausing one needs a stack of paused plays; add it if Havoc's pick matters.
-            picked = self.rng.choice(pile)
-            pile.remove(picked)
-            self._finish_choice(source, picked)
+            self._finish_choice(source, self._take(kind, self.rng.choice(slots)))
+
+    def _take(self, kind: str, i: int) -> str:
+        """The picked card: out of its pile, or for "upgrade" upgraded where it is. Returns the card as offered."""
+        pile = self.discard_pile if kind == "discard" else self.hand
+        picked = pile[i]
+        if kind == "upgrade":
+            pile[i] = upgrade(picked)
+        else:
+            pile.remove(picked)  # (the first equal copy: same contents)
+        return picked
 
     def _finish_choice(self, source: str, picked: str | None) -> None:
-        """The rest of the card after its prompt. picked is already out of its pile."""
-        if source == "HEADBUTT":
+        """The rest of the card after its prompt. picked is already out of its pile (or upgraded in it)."""
+        b = base_id(source)
+        if b == "HEADBUTT":
             if picked:
                 self.draw_pile.append(picked)  # CardPilePosition.Top
+            return
+        if b == "ARMAMENTS":
             return
         if picked:
             self._exhaust(picked)
         if self._ending():  # CardPileCmd.Draw and PowerCmd.Apply no-op once the fight is ending
             return
-        if source == "BURNING_PACT":
-            self._draw(2)
-        else:  # Brand
-            self._gain_strength(1)
+        if b == "BURNING_PACT":  # Cards 2, +1
+            self._draw(2 + is_upgraded(source))
+        else:  # Brand: Strength 1, +1
+            self._gain_strength(1 + is_upgraded(source))
 
     def _hit(self, card, target: _Enemy | None, base: int, hits: int = 1) -> None:
         # Vigor and Strike Dummy add to the base like Strength; Pen Nib doubles the attack it fires on.
@@ -1418,8 +1446,8 @@ class SimCombat:
                 self._ethereal_exhausts += 1
             else:
                 self._draw(self.pw["DarkEmbracePower"])
-        if card_id == "DRUM_OF_BATTLE":  # its AfterCardExhausted
-            self._gain_energy(2)
+        if base_id(card_id) == "DRUM_OF_BATTLE":  # its AfterCardExhausted. Energy 2, +1
+            self._gain_energy(2 + is_upgraded(card_id))
         # ponytail: relic order assumed Charon's Ashes, Joss Paper, Burning Sticks.
         R = self.relics
         if "CHARONS_ASHES" in R:  # a lethal hit only makes the fight "ending": the rest of the card still runs
@@ -1615,8 +1643,10 @@ class SimCombat:
     def _steal(self, e: _Enemy) -> None:
         """ThievingHopper._stealPriorities, over cards from the deck in the draw and discard piles."""
         rarity = lambda c: CARDS[c].rarity  # noqa: E731
+        # A deck card upgraded this fight (Armaments) is still that deck card.
+        deck_id = lambda c: c if self._deck_left[c] > 0 else base_id(c)  # noqa: E731
         cards = [(pile, c) for pile in (self.draw_pile, self.discard_pile) for c in pile
-                 if rarity(c) not in ("Status", "Token") and self._deck_left[c] > 0]
+                 if rarity(c) not in ("Status", "Token") and self._deck_left[deck_id(c)] > 0]
         for tier in (("Uncommon",), ("Common", "Rare"), ("Basic",)):
             best = [x for x in cards if rarity(x[1]) in tier]
             if best:
@@ -1625,8 +1655,8 @@ class SimCombat:
         if cards:
             pile, card = self.rng.choice(cards)
             pile.remove(card)
-            self._deck_left[card] -= 1
-            self.stolen.append(card)
+            self._deck_left[deck_id(card)] -= 1
+            self.stolen.append(deck_id(card))
             e.pw["SwipePower"] = 1
 
     def _lose_hp(self, amount: int, from_card: bool = False) -> None:
@@ -1752,12 +1782,11 @@ class SimCombat:
         self._check_win()  # Juggernaut can kill off the block; hooks stop once combat is over
         if not self.in_combat:
             return
-        # BeforeSideTurnStart: Aggression moves random Attacks from discard to hand.
-        # ponytail: the game also upgrades them; the sim has no upgrades yet.
+        # BeforeSideTurnStart: Aggression moves random Attacks from discard to hand and upgrades them.
         attacks = [c for c in self.discard_pile if CARDS[c].type == "Attack"]
         for c in self.rng.sample(attacks, min(len(attacks), self.pw.get("AggressionPower", 0))):
             self.discard_pile.remove(c)
-            self._add_to_hand(c)
+            self._add_to_hand(upgrade(c))
         if "ICE_CREAM" in R and self.round > 1:  # ShouldPlayerResetEnergy false: AddMaxEnergyToCurrent
             self.energy += self.max_energy
         else:
@@ -1770,6 +1799,10 @@ class SimCombat:
             st["tea_set"] = 0
         draw = HAND_DRAW_COUNT + (2 if "BAG_OF_PREPARATION" in R and self.round == 1 else 0) + \
             (3 if "POCKETWATCH" in R and self.round > 1 and self.cards_last <= 3 else 0)
+        if self.round == 1:  # Innate cards go on top of the draw pile, and the hand draw is at least that many
+            innate = [c for c in self.draw_pile if c in INNATE]
+            self.draw_pile = [c for c in self.draw_pile if c not in INNATE] + innate
+            draw = min(max(draw, len(innate)), MAX_HAND_SIZE)
         self._draw(draw, hand_draw=True)
         # AfterPlayerTurnStart. ponytail: hook order assumed Crimson Mantle, then Inferno.
         if self.in_combat and self.pw.get("CrimsonMantlePower"):
@@ -1834,9 +1867,9 @@ class SimCombat:
             attacks = [i for i, c in enumerate(self.hand) if CARDS[c].type == "Attack" and CARDS[c].cost >= 0]
             if attacks and self.in_combat:
                 self._autoplay(self.hand.pop(self.rng.choice(attacks)))
-        while "HOWL_FROM_BEYOND" in self.exhaust_pile and self.in_combat:
-            self.exhaust_pile.remove("HOWL_FROM_BEYOND")
-            self._autoplay("HOWL_FROM_BEYOND")
+        while self.in_combat and (howl := next((c for c in self.exhaust_pile if base_id(c) == "HOWL_FROM_BEYOND"), None)):
+            self.exhaust_pile.remove(howl)
+            self._autoplay(howl)
         self._post_play = False
         if not self.in_combat:
             return {"ok": True}

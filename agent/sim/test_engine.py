@@ -511,7 +511,8 @@ def _no_relic_trace() -> str:
     return h.hexdigest()
 
 
-assert _no_relic_trace() == "b373260410a683476a810544b86c91c65e3e3b3061ff8fe2763770e7baa63d93"
+# Aggression now upgrades the Attack it returns; with engine.upgrade a no-op the old hash b3732604... still holds.
+assert _no_relic_trace() == "fa4f8e6a40b79314a410a09a6a79413d010b77e07aa9d82705f55d065df4647d"
 # --- relics (sim/relics.py) ---------------------------------------------------------------------
 from .relics import NOT_MODELED, RELIC_POOL, RELICS, relic_rarity  # noqa: E402
 from .potions import MAX_POTION_SLOTS  # noqa: E402
@@ -1470,7 +1471,7 @@ d = card_to_dict("BASH+", 2, True)
 assert d["id"] == "BASH" and d["upgraded"] and d["upgradeLevel"] == 1 and d["title"] == "Bash+"
 d = card_to_dict("BASH", 2, True)
 assert d["upgraded"] is False and d["upgradeLevel"] == 0 and d["title"] == "Bash"
-# A picked Armaments still plays (block 5; the upgrade choice is the engine's job).
+# Armaments with nothing to upgrade still blocks.
 c = solo(["ARMAMENTS"]); c.play_card(0); assert c.player_block == 5, c.player_block
 assert "BURNING_PACT" in REWARD_POOLS["UNCOMMON"] and "BRAND" in REWARD_POOLS["RARE"]
 
@@ -1513,5 +1514,114 @@ c.fight("THIEVING_HOPPER_WEAK", ["STRIKE_IRONCLAD"] * 10)
 c.discard_pile.append("INFERNAL_BLADE")
 c._steal(c.enemies[0])
 assert c.stolen == ["STRIKE_IRONCLAD"] and "INFERNAL_BLADE" in c.discard_pile, c.stolen
+
+# --- Upgraded cards in combat (each card's OnUpgrade / IsUpgraded branch) ---
+c = SimCombat(rng=random.Random(3))
+c.fight("MAWLER_NORMAL", ["BASH+"] * 10)
+e = c.enemies[0]; hp = e.hp; assert e.block == 0
+c.play_card(0, 1)
+assert hp - e.hp == 10 and e.vulnerable == 3, (hp - e.hp, e.vulnerable)
+
+# Armaments: block 5, then pick one upgradable hand card to upgrade in its slot.
+c = solo(["ARMAMENTS", "WOUND", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD"])
+c.play_card(0)
+assert c.player_block == 5 and c.pending_choice == {"kind": "upgrade", "source": "ARMAMENTS"}
+assert c.choose_card(0)["error"] == "invalid_choice" and c.pending_choice  # Wound can't be upgraded
+assert c.choose_card(2)["ok"] and c.pending_choice is None
+assert c.hand == ["WOUND", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD+"] and c.discard_pile == ["ARMAMENTS"], c.hand
+assert c.choice_log == [("ARMAMENTS", "STRIKE_IRONCLAD", ("DEFEND_IRONCLAD", "STRIKE_IRONCLAD"))]
+c = solo(["ARMAMENTS", "BASH+", "STRIKE_IRONCLAD"]); c.play_card(0)  # one option: no prompt
+assert c.pending_choice is None and c.hand == ["BASH+", "STRIKE_IRONCLAD+"]
+client = SimClient(seed=1); client.exec("fight MAWLER_NORMAL"); cc = client._combat
+cc.hand = ["ARMAMENTS", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD"]
+client.play(0); assert client.exec("choose 1")["ok"] and cc.hand == ["STRIKE_IRONCLAD", "DEFEND_IRONCLAD+"]
+# Armaments+: every upgradable hand card, no prompt.
+c = solo(["ARMAMENTS+", "STRIKE_IRONCLAD", "WOUND", "BASH+", "DEFEND_IRONCLAD"]); c.play_card(0)
+assert c.pending_choice is None and c.player_block == 5
+assert c.hand == ["STRIKE_IRONCLAD+", "WOUND", "BASH+", "DEFEND_IRONCLAD+"] and c.discard_pile == ["ARMAMENTS+"]
+# In-combat upgrades are this fight's only: the deck passed to fight() is untouched.
+deck = ["ARMAMENTS+"] + ["STRIKE_IRONCLAD"] * 9
+c = SimCombat(rng=random.Random(4)); c.fight("MAWLER_NORMAL", deck)
+c.hand = ["ARMAMENTS+", "STRIKE_IRONCLAD"]; c.play_card(0)
+assert c.hand == ["STRIKE_IRONCLAD+"] and deck == ["ARMAMENTS+"] + ["STRIKE_IRONCLAD"] * 9
+
+# Aggression upgrades the Attack it returns (an upgraded one stays as it is).
+c = big(solo([])); c.discard_pile = ["STRIKE_IRONCLAD"]; c.pw["AggressionPower"] = 1
+c.end_turn()
+assert "STRIKE_IRONCLAD+" in c.hand and "STRIKE_IRONCLAD" not in c.hand + c.discard_pile, c.hand
+c = big(solo([])); c.discard_pile = ["BASH+"]; c.pw["AggressionPower"] = 1; c.end_turn()
+assert "BASH+" in c.hand
+# Innate (Aggression+ and Juggling+): in the opening hand.
+for _ in range(5):
+    c = SimCombat(rng=random.Random(_)); c.fight("MAWLER_NORMAL", ["JUGGLING+", "AGGRESSION+"] + ["DEFEND_IRONCLAD"] * 20)
+    assert {"JUGGLING+", "AGGRESSION+"} <= set(c.hand) and len(c.hand) == 5, c.hand
+
+# Thieving Hopper steals the deck's upgraded card as it is.
+c = SimCombat(rng=random.Random(7)); c.fight("THIEVING_HOPPER_WEAK", ["BASH+"] * 10)
+c._steal(c.enemies[0])
+assert c.stolen == ["BASH+"], c.stolen
+
+# Upgraded ids go through every id check: Stomp's discount, Ghost Seed, Howl from Beyond, Thrash eating Ashen Strike.
+c = solo(["STRIKE_IRONCLAD", "STOMP+"]); c.play_card(0, 1); assert c.cost("STOMP+") == 2
+c = solo(["STRIKE_IRONCLAD+"]); c.relics = {"GHOST_SEED"}; assert c._is_ethereal("STRIKE_IRONCLAD+")
+c = big(solo([])); c.exhaust_pile = ["HOWL_FROM_BEYOND+"]; c._run_enemy_turn = lambda: None; c.end_turn()
+assert c.enemies[0].hp == 500 - 21 and c.discard_pile == ["HOWL_FROM_BEYOND+"]
+c = big(solo(["THRASH", "ASHEN_STRIKE+"])); c.exhaust_pile = ["WOUND"] * 2; c.rng = random.Random(0)
+c.play_card(0, 1); assert c.bonus_damage["THRASH"] == 6 + 4 * 2, c.bonus_damage  # read before it joins the exhaust pile
+c = solo(["BURNING_PACT", "DRUM_OF_BATTLE+", "WOUND"]); c.play_card(0); c.choose_card(0)
+assert c.energy == 3 - 1 + 3  # Drum of Battle+'s exhaust: Energy 2, +1
+
+
+def upgraded(cid, hand=(), setup=lambda c: None, target=1, pick=0):
+    """Play cid and cid+ from the same start (after setup); answer a prompt with hand slot / discard pick."""
+    out = []
+    for x in (cid, cid + "+"):
+        c = big(solo([x, *hand], seed=5)); c.energy = 10
+        setup(c)
+        c.play_card(0, target)
+        if c.pending_choice:
+            c.choose_card(pick) if c.pending_choice["kind"] != "discard" else c.choose_discard(c.discard_pile[pick])
+        assert c.pending_choice is None, (x, c.pending_choice)
+        out.append(c)
+    return out
+
+
+dmg = lambda c: 500 - c.enemies[0].hp  # noqa: E731
+vuln2 = lambda c: setattr(c.enemies[0], "vulnerable", 2)  # noqa: E731
+wounds = lambda n: lambda c: setattr(c, "exhaust_pile", ["WOUND"] * n)  # noqa: E731
+# card: (hand, setup, measure, base value, upgraded value), the numbers from <Card>.cs's vars and OnUpgrade.
+SPECIAL = {
+    "ASHEN_STRIKE": ((), wounds(2), dmg, 6 + 3 * 2, 6 + 4 * 2),
+    "BULLY": ((), vuln2, dmg, (4 + 2 * 2) * 3 // 2, (4 + 3 * 2) * 3 // 2),
+    "DISMANTLE": ((), None, dmg, 8, 10),
+    "FIGHT_ME": ((), None, lambda c: (dmg(c), c.strength, c.enemies[0].strength), (10, 3, 1), (12, 4, 1)),
+    "PILLAGE": ((), None, dmg, 6, 9),
+    "RAMPAGE": ((), None, lambda c: (dmg(c), c.bonus_damage), (9, {"RAMPAGE": 5}), (9, {"RAMPAGE+": 9})),
+    "THRASH": ((), None, dmg, 8, 12),
+    "SPITE": ((), lambda c: setattr(c, "hp_lost_this_turn", True), dmg, 10, 15),
+    "FEED": ((), lambda c: setattr(c.enemies[0], "hp", 10), lambda c: c.player_max_hp - PLAYER_MAX_HP, 3, 4),
+    "FIEND_FIRE": (("WOUND", "WOUND"), None, dmg, 14, 20),
+    "MANGLE": ((), None, lambda c: (dmg(c), c.enemies[0].mangle), (15, 10), (20, 15)),
+    "PACTS_END": ((), wounds(3), dmg, 17, 23),
+    "TEAR_ASUNDER": ((), None, dmg, 5, 7),
+    "DOMINATE": ((), None, lambda c: (c.enemies[0].vulnerable, c.strength), (1, 1), (2, 2)),
+    "EVIL_EYE": ((), None, lambda c: c.player_block, 8, 11),
+    "EXPECT_A_FIGHT": (("STRIKE_IRONCLAD",) * 2, None, lambda c: c.energy, 10, 11),
+    "FORGOTTEN_RITUAL": ((), lambda c: setattr(c, "exhausted_this_turn", True), lambda c: c.energy, 12, 13),
+    "INFERNAL_BLADE": ((), None, lambda c: (c.energy, any(x.endswith("+") for x in c.hand)), (9, False), (10, False)),
+    "SECOND_WIND": (("WOUND", "DEFEND_IRONCLAD"), None, lambda c: c.player_block, 10, 14),
+    "CASCADE": ((), lambda c: setattr(c, "energy", 2), lambda c: c.player_block, 10, 15),
+    "PRIMAL_FORCE": (("STRIKE_IRONCLAD",), None, lambda c: c.hand, ["GIANT_ROCK"], ["GIANT_ROCK+"]),
+    "HEADBUTT": ((), None, dmg, 9, 12),
+    "BURNING_PACT": (("WOUND", "STRIKE_IRONCLAD"), None, lambda c: len(c.hand), 3, 4),
+    "BRAND": (("WOUND", "STRIKE_IRONCLAD"), None, lambda c: c.strength, 1, 2),
+    "ARMAMENTS": (("STRIKE_IRONCLAD", "DEFEND_IRONCLAD"), None, lambda c: c.hand,
+                  ["STRIKE_IRONCLAD+", "DEFEND_IRONCLAD"], ["STRIKE_IRONCLAD+", "DEFEND_IRONCLAD+"]),
+    "STOKE": (("WOUND", "WOUND"), None, lambda c: sum(map(is_upgraded, c.hand)), 0, 2),
+}
+assert set(SPECIAL) == {c for c in UPGRADABLE if CARDS[c].special}, set(SPECIAL) ^ {c for c in UPGRADABLE if CARDS[c].special}
+for cid, (hand_, setup, measure, want_b, want_u) in SPECIAL.items():
+    b, u = upgraded(cid, hand_, setup or (lambda c: None))
+    assert (measure(b), measure(u)) == (want_b, want_u), (cid, measure(b), measure(u))
 
 print("sim self-check ok")

@@ -29,7 +29,7 @@ from gymnasium import spaces
 
 from client import AutoSpireClient
 from grow import insert_map
-from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, is_upgraded, starter_deck
+from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, is_upgraded, starter_deck
 from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, HIVE_MONSTERS, MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
 from sim.relics import RELIC_IDS
@@ -435,14 +435,17 @@ class STS2CombatEnv(gym.Env):
         if choice:  # a card prompt is open: only its answers are legal
             if choice["kind"] == "hand":
                 mask[CHOOSE_HAND:CHOOSE_HAND + min(len(hand), MAX_HAND)] = True
+            elif choice["kind"] == "upgrade":  # the sim's Armaments: the upgradable hand cards
+                for i, c in enumerate(hand[:MAX_HAND]):
+                    mask[CHOOSE_HAND + i] = c["id"] in UPGRADABLE and not c["upgraded"]
             else:
                 for c in (self._combat.get("player") or {}).get("discardPile") or []:
                     if c["id"] in CARD_IDS:  # the live game can hold cards the sim doesn't have
                         mask[CHOOSE_DISCARD + CARD_IDS.index(c["id"])] = True
             return mask
         for i, c in enumerate(hand[:MAX_HAND]):
-            # Armaments can't be played (the sim has no upgrades). The other prompt cards need a client that
-            # answers prompts: the sim and the mod report simRelics, older clients don't.
+            # The prompt cards need a client that answers prompts: the sim and the mod report simRelics, older clients
+            # don't.
             if c["canPlay"] and c["id"] in CARDS and (c["id"] not in CHOICE_CARDS or "simRelics" in self._combat):
                 slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
                 mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True

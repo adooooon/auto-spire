@@ -25,7 +25,7 @@ import env as env_module
 from client import AutoSpireClient
 from env import PLAYER_POWERS, STS2CombatEnv, _power, _ready, parse_encounters
 
-from .cards import CARDS, CHOICE_CARDS, RARES, UNCOMMONS
+from .cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, upgrade
 from .engine import frantic_escape, BRANCHES, ENEMY_PW, HISTORY_FIELDS, MONSTERS, WRIGGLER_SLOT_OPENERS, SimCombat, _Enemy, legal_moves
 
 # Random enemy picks (compared only with one hittable enemy): the cards, and powers that hit or
@@ -35,12 +35,13 @@ RANDOM_TARGET_POWERS = {"JuggernautPower", "HellraiserPower", "StampedePower"}
 # Random cards exhausted / generated / moved (pile contents compared only otherwise).
 RANDOM_EXHAUST = {"CINDER", "TRUE_GRIT", "HAVOC", "THRASH", "INFERNAL_BLADE", "STOKE", "CASCADE"}
 RANDOM_PILE_POWERS = {"AggressionPower", "StampedePower"}
+SPECIAL = sorted(c for c in UPGRADABLE if CARDS[c].special and c not in CHOICE_CARDS)  # --upgraded decks
 
 
 def ids(cards) -> list[str]:
-    """Card ids; ones this check doesn't model (the prompt cards, which pause for a choice the live game
-    makes and the replay can't mirror) become an inert Wound so pile sizes still line up."""
-    return [(frantic_escape(x["cost"] - 1) if x["id"] == "FRANTIC_ESCAPE" else x["id"])
+    """Sim card ids ("X+" when upgraded); ones this check doesn't model (the prompt cards, which pause for a
+    choice the live game makes and the replay can't mirror) become an inert Wound so pile sizes still line up."""
+    return [(frantic_escape(x["cost"] - 1) if x["id"] == "FRANTIC_ESCAPE" else x["id"] + "+" * bool(x["upgraded"]))
             if x["id"] in CARDS and x["id"] not in CHOICE_CARDS else "WOUND" for x in cards]
 
 
@@ -66,7 +67,7 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
     sim.attack_plays = min(sim.attack_plays, sim.cards_played)
     # Free-this-turn cards (Infernal Blade's) are visible live: cost 0 where the sim would charge.
     sim.free_cards = []
-    sim.free_cards = [x["id"] for x in p["hand"] if x["cost"] == 0 and x["id"] in CARDS and x["id"] not in CHOICE_CARDS and sim.cost(x["id"]) > 0]
+    sim.free_cards = [c for x, c in zip(p["hand"], ids(p["hand"])) if x["cost"] == 0 and sim.cost(c) > 0]
     # /combat lists exactly the enemies still in combat (dead illusions included), in order,
     # so sim index + 1 lines up with list position.
     for e in c["enemies"]:
@@ -124,10 +125,13 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs, skip: set
         count = lambda pl: sum(i == status for k in ("hand", "drawPile", "discardPile") for i in ids(pl[k]))  # noqa: E731
         if count(s["player"]) != count(p):
             out.append(f"live {status} in deck: sim={count(s['player'])} live={count(p)}")
-    costs = lambda pl: sorted((x["id"], x["cost"], x["canPlay"]) for x in pl["hand"])  # noqa: E731
+    costs = lambda pl: sorted((x["id"], x["upgraded"], x["cost"], x["canPlay"]) for x in pl["hand"])  # noqa: E731
     same_hand = sorted(x["id"] for x in s["player"]["hand"]) == sorted(x["id"] for x in p["hand"])  # not after a draw
     if same_hand and "piles" not in skip and costs(s["player"]) != costs(p):
         out.append(f"hand costs: sim={costs(s['player'])} live={costs(p)}")
+    for x in p["hand"]:  # card_to_dict's upgraded title, e.g. "Bash+"
+        if x["upgraded"] and x["id"] in UPGRADABLE and x["title"] != CARDS[x["id"] + "+"].title:
+            out.append(f"title: sim={CARDS[x['id'] + '+'].title} live={x['title']}")
     if "enemies" in skip:
         return out
     if [e["modelId"] for e in s["enemies"]] != [e["modelId"] for e in after["enemies"]]:
@@ -191,6 +195,8 @@ def main():
     ap.add_argument("--encounters", default="weak")
     ap.add_argument("--deck", help="comma-separated card ids to use instead of random decks")
     ap.add_argument("--new-cards", action="store_true", help="decks of 4 starter cards + 10 Uncommons/Rares")
+    ap.add_argument("--upgraded", action="store_true",
+                    help="decks of 4 starter cards + 6 special cards + 4 others, each upgraded with p=0.5")
     args = ap.parse_args()
     if args.deck:
         env_module.random_deck = lambda rng, *_: args.deck.split(",")
@@ -198,6 +204,11 @@ def main():
         pool = UNCOMMONS + RARES
         env_module.random_deck = lambda rng, *_: ["STRIKE_IRONCLAD", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH"] + \
             [str(c) for c in rng.choice(pool, size=10)]
+    elif args.upgraded:
+        env_module.random_deck = lambda rng, *_: [upgrade(c) if rng.random() < 0.5 else c for c in
+                                                  ["STRIKE_IRONCLAD", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH"]
+                                                  + [str(c) for c in rng.choice(SPECIAL, size=6)]
+                                                  + [str(c) for c in rng.choice(COMMONS + UNCOMMONS + RARES, size=4)]]
     encounters = parse_encounters(args.encounters)
 
     env = STS2CombatEnv(client=AutoSpireClient(), random_decks=True)
@@ -218,15 +229,13 @@ def main():
                 idx = random.choice(playable) if playable and random.random() < 0.85 else None
                 living = [e for e in c["enemies"] if e["isAlive"]]
                 played = hand[idx]["id"] if idx is not None else ""
-                played_ids.add(played)
+                played_ids |= {played} | ({played + "+"} if idx is not None and hand[idx]["upgraded"] else set())
                 powers = {x["name"] for x in c["player"]["powers"]}
                 skip = {"enemies"} if (played in RANDOM_TARGETS or powers & RANDOM_TARGET_POWERS) and \
                     len(living) > 1 else set()
                 skip |= {"piles"} if played in RANDOM_EXHAUST or powers & RANDOM_PILE_POWERS else set()
                 if idx is None and "StampedePower" in powers:  # autoplays a random Attack from hand
                     skip |= {"enemies", "piles"}
-                if idx is not None and hand[idx]["upgraded"]:  # Aggression upgrades; the sim has no upgrades
-                    skip |= {"enemies", "piles", "player"}
                 # Random target exercises targeting.
                 tgt = random.choice(living) if idx is not None and hand[idx]["targetType"] == "AnyEnemy" else None
                 action = "end" if idx is None else f"play {idx}" + ("" if tgt is None else f" @{tgt['modelId']}")
@@ -241,9 +250,19 @@ def main():
                     sim.play_card(idx, None if tgt is None else c["enemies"].index(tgt) + 1)
                     client.play(idx, None if tgt is None else tgt["combatId"])
                 after = wait_ready(client)
+                prompt = [] if bool(sim.pending_choice) == bool(after.get("choice")) else \
+                    [f"prompt: sim={sim.pending_choice} live={after.get('choice')}"]
+                if sim.pending_choice or after.get("choice"):  # Armaments: the same random upgradable slot in both
+                    pick = random.choice([i for i, x in enumerate(sim.hand) if x in UPGRADABLE] or [0])
+                    if sim.pending_choice:
+                        sim.choose_card(pick)
+                    if after.get("choice"):
+                        client.exec(f"choose {pick}")
+                        after = wait_ready(client)
+                    action += f" choose {pick}"
                 if sim.shuffles and "HellraiserPower" in powers:  # drew random cards, and Strikes autoplay
                     skip |= {"enemies", "piles"}
-                problems = diff(c, action, after, sim, logs, skip)
+                problems = prompt + diff(c, action, after, sim, logs, skip)
                 steps += 1
                 if problems:
                     mismatched += 1
@@ -260,6 +279,8 @@ def main():
     print(f"\n{steps} steps compared, {mismatched} with mismatches")
     print(f"cards played: {len(played_ids - {''})}; new cards never played: "
           f"{sorted(set(UNCOMMONS + RARES) - played_ids)}")
+    if args.upgraded:
+        print(f"upgraded special cards never played: {sorted({c + '+' for c in SPECIAL} - played_ids)}")
 
 
 if __name__ == "__main__":
