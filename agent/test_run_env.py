@@ -3,9 +3,9 @@ from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
 from sim.potions import POTION_IDS
-assert COMBAT_OBS == 1976 and COMBAT_ACTIONS == 191
-from env import CHOICE_FEATURES, POTION_FEATURES, RELIC_FEATURES
-POT0 = COMBAT_OBS - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
+assert COMBAT_OBS == 1979 and COMBAT_ACTIONS == 191  # + the upgrade prompt and True Grit / Armaments as its sources
+from env import CHOICE_FEATURES, POTION_FEATURES, RELIC_FEATURES, UPGRADE_FEATURES
+POT0 = COMBAT_OBS - UPGRADE_FEATURES - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
 from sim.engine import SimClient, SimLoopError
 
 # Review focus 1: a sim infinite loop ends the episode as aborted instead of hanging or raising.
@@ -54,12 +54,12 @@ for i in range(5000):
     seen |= r
 assert seen == set(RELIC_IDS) and {0, 6} <= sizes
 
-from run_env import CARD_INDEX, EVENT_OBS, N_ACTIONS, OBS_DIM, PICK, REMOVE, SHOP, SHOP_LEAVE, SHOP_REMOVE, RunPolicyEnv
+from run_env import CARD_INDEX, EVENT_OBS, N_ACTIONS, OBS_DIM, PICK, REMOVE, SHOP, SHOP_LEAVE, SHOP_REMOVE, UPGRADE_OBS, RunPolicyEnv
 from sim.act import Shop
 
 from run_env import SHOP_RELIC, potion_take_action, drink_action, POTION_TAKE_2, DRINK_2
 
-assert N_ACTIONS == 128 and OBS_DIM == 1503  # Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs;  11 relics modeled in Task 4: +11 relic obs in the combat env, +44 in the run env
+assert N_ACTIONS == 221 and OBS_DIM == 1603  # Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs;  11 relics modeled in Task 4: +11 relic obs in the combat env, +44 in the run env; rest: 3 + 90 actions, 5 + 90 + 5 obs
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -151,7 +151,7 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == 191 and COMBAT_OBS == 1976
+assert cenv.action_space.n == COMBAT_ACTIONS == 191 and COMBAT_OBS == 1979
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()
@@ -255,7 +255,7 @@ assert renv.run.gold == 10 and renv.run.relics == {"MEMBERSHIP_CARD"}
 renv.run.gold = 60
 assert renv.action_masks()[SHOP_RELIC + 2]  # 120 -> 60: affordable only at half price
 o = renv._obs()
-base = OBS_DIM - 1 - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)
+base = OBS_DIM - UPGRADE_OBS - 1 - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)
 assert abs(o[base + 2 * (len(RELIC_IDS) + 2) + len(RELIC_IDS)] - 0.6) < 1e-6
 assert not o[base:base + len(RELIC_IDS)].any() and o[base + len(RELIC_IDS)] > 0  # unmodeled: no one-hot, price shown
 assert o[base - len(RELIC_IDS) + RELIC_IDS.index("MEMBERSHIP_CARD")] == 1
@@ -327,7 +327,7 @@ before = renv._obs()
 renv.run.obtain("POTION_BELT", "elite")
 after = renv._obs()
 assert after.shape == (OBS_DIM,)
-cut = OBS_DIM - 1 - EVENT_OBS - (2 * len(POTION_IDS) + len(RELIC_IDS) + 3 * (len(RELIC_IDS) + 2))
+cut = OBS_DIM - UPGRADE_OBS - 1 - EVENT_OBS - (2 * len(POTION_IDS) + len(RELIC_IDS) + 3 * (len(RELIC_IDS) + 2))
 assert (after[:cut] == before[:cut]).all()
 
 # Carry through MapRunModeEnv reset/step.
@@ -382,13 +382,14 @@ assert line == ("honesty: elite n=2 common=100% uncommon=0% rare=0% unmodeled=0%
 print("run env checks ok")
 
 # --- events ---------------------------------------------------------------------------------------------
-from run_env import EVENT, EVENT_OBS, PATH
+from run_env import EVENT, EVENT_OBS, PATH, REST
+E0 = OBS_DIM - UPGRADE_OBS - 1 - EVENT_OBS  # where the event block starts
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 
-assert N_ACTIONS == EVENT + EVENT_OPTIONS == 128 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
+assert REST == EVENT + EVENT_OPTIONS == 128 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
 renv = RunPolicyEnv()
 obs, _ = renv.reset(seed=11)
-assert not obs[-EVENT_OBS - 1:-1].any()  # all zero off an event, so a grown model sees what it knew
+assert not obs[E0:E0 + EVENT_OBS].any()  # all zero off an event, so a grown model sees what it knew
 
 
 def enter_event(env, name):
@@ -413,7 +414,7 @@ for name in MODELED_EVENTS:
     m = renv.action_masks()
     assert m[EVENT] and m[EVENT + 1] and m.sum() == 2
     o = renv._obs()
-    tail = o[-EVENT_OBS - 1:-1]
+    tail = o[E0:E0 + EVENT_OBS]
     assert tail[0] == 1 and tail[1 + MODELED_EVENTS.index(name)] == 1 and o.shape == (OBS_DIM,)
     if name == "SLIPPERY_BRIDGE":
         assert tail[12 + CARD_INDEX["ANGER"]] == 1
@@ -467,18 +468,22 @@ for i in range(20):  # off by default, so evaluation stays on real runs
     assert (renv.run.hp, renv.run.gold) == (40, 77)
 print("event env checks ok")
 
+import gzip
 import pickle
-from env import CHOOSE_DISCARD, CHOOSE_HAND, CHOICE_FEATURES, CARD_IDS, combat_maps, random_deck
+from env import CHOOSE_DISCARD, CHOOSE_HAND, CHOICE_FEATURES, CARD_IDS, UPGRADE_FEATURES, combat_maps, random_deck
 from sim.cards import CHOICE_CARDS
 from sim.cards import card_to_dict
-fx = pickle.load(open("test_data/grow_fixture.pkl", "rb"))
+fx = pickle.load(gzip.open("test_data/grow_fixture.pkl.gz"))  # recorded before upgrades (test_data/record_grow_fixture.py)
 
 # Every old input has the same value at its new index, and new inputs read 0 with no new cards.
 obs_map, act_map = combat_maps()
-new_obs = _encode(fx["combat"])
-assert np.array_equal(new_obs[obs_map], fx["combat_obs"])
-assert not np.delete(new_obs, obs_map).any()
-assert len(act_map) == 158 and COMBAT_OBS == len(new_obs)  # the pre-Act 2 action count
+assert len(fx["combat"]) >= 40 and sum(bool(c.get("choice")) for c, _ in fx["combat"]) >= 5
+for c, old in fx["combat"]:
+    new_obs = _encode(c)
+    assert np.array_equal(new_obs[obs_map], old)
+    assert not np.delete(new_obs, obs_map).any()
+assert len(act_map) == 190 and COMBAT_OBS == len(new_obs)  # the pre-upgrade action count
+assert act_map[:CHOOSE_DISCARD] == list(range(CHOOSE_DISCARD)) and CHOOSE_DISCARD + CARD_IDS.index("ARMAMENTS") not in act_map
 
 
 def choice_env(hand, discard=()):
@@ -498,7 +503,8 @@ env.step(0)
 m = env.action_masks()
 assert m.nonzero()[0].tolist() == [CHOOSE_HAND, CHOOSE_HAND + 1]
 obs = _encode(env._combat)
-assert obs[-CHOICE_FEATURES] == 1 and obs[-CHOICE_FEATURES + 2 + CHOICE_CARDS.index("BURNING_PACT")] == 1
+C0 = COMBAT_OBS - UPGRADE_FEATURES - CHOICE_FEATURES  # where the prompt block starts
+assert obs[C0] == 1 and obs[C0 + 2 + CHOICE_CARDS.index("BURNING_PACT")] == 1 and not obs[C0 + CHOICE_FEATURES:].any()
 env.step(CHOOSE_HAND + 1)
 assert c.exhaust_pile == ["BASH"] and c.pending_choice is None and env.action_masks()[END_TURN]
 
@@ -514,8 +520,17 @@ assert c.draw_pile[-1] == "BASH"
 env, c = choice_env(["ARMAMENTS", "WOUND", "BASH+", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD"])
 env.step(0)
 assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_HAND + 2, CHOOSE_HAND + 3]
+obs = _encode(env._combat)
+assert obs[-UPGRADE_FEATURES:].tolist() == [1, 0, 1]  # the upgrade prompt, asked by Armaments
+assert not obs[-UPGRADE_FEATURES - CHOICE_FEATURES:-UPGRADE_FEATURES].any()  # not a hand or discard prompt
 env.step(CHOOSE_HAND + 3)
 assert c.hand == ["WOUND", "BASH+", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD+"] and c.pending_choice is None
+
+# True Grit+ asks which hand card to exhaust: a hand prompt, with True Grit as its source.
+env, c = choice_env(["TRUE_GRIT+", "WOUND", "BASH"])
+env.step(0)
+obs = _encode(env._combat)
+assert obs[-UPGRADE_FEATURES - CHOICE_FEATURES] == 1 and obs[-UPGRADE_FEATURES:].tolist() == [0, 1, 0]
 
 # Review focus 5: live has no simRelics, so the three cards stay masked and a live pick can't take them.
 live = {k: v for k, v in env.client.combat().items() if k != "simRelics"}
@@ -537,13 +552,39 @@ print("choice env checks ok")
 from run_env import REMOVE, run_maps
 obs_map, act_map = run_maps()
 renv.reset(seed=1)
-renv.run, renv.decision, renv.offered = fx["run"], fx["decision"], fx["offered"]
-renv.back = "path"
-new_obs = renv._obs()
-assert np.array_equal(new_obs[obs_map], fx["run_obs"])
-assert not np.delete(new_obs, obs_map).any()
-assert np.array_equal(renv.action_masks()[act_map], fx["run_mask"])
-old_ids = sorted(set(CARD_IDS) - {"TOXIC", "FRANTIC_ESCAPE", "ARMAMENTS"})
+assert {s["decision"] for s in fx["run_states"]} == {"path", "pick", "shop", "remove", "potion", "event"}
+from run_env import SHOP_RELIC, SLOT_FEATURES
+from sim.act import ALL_BOSSES
+from sim.relics import UPGRADE_RELICS
+S0 = len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(ALL_BOSSES)  # the offer / shop slots
+R0 = OBS_DIM - UPGRADE_OBS - 1 - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)  # the shop's relics
+
+
+def became_modeled(env, decision):
+    """Armaments was a placeholder before upgrades (not in CARDS) and the upgrade relics were unmodeled: an old state's slot
+    holding one read no identity and couldn't be taken. Now it can, so its price / buyable inputs and its action may differ
+    (old indices), and its one-hot is set (a new index). Returns those old-input, new-input and action indices."""
+    shop = decision in ("shop", "remove")
+    cards = env.run.shop.cards if shop else env.offered if decision == "pick" else []
+    arm = [i for i, c in enumerate(cards) if c == "ARMAMENTS"]
+    rel = [k for k, r in enumerate(env.run.shop.relics if shop else []) if r in UPGRADE_RELICS]
+    old = {S0 + i * SLOT_FEATURES + SLOT_FEATURES - j for i in arm for j in (1, 2)} | {R0 + k * (len(RELIC_IDS) + 2) + len(RELIC_IDS) + 1 for k in rel}
+    new = {S0 + i * SLOT_FEATURES + CARD_INDEX["ARMAMENTS"] for i in arm}
+    new |= {R0 + k * (len(RELIC_IDS) + 2) + RELIC_IDS.index(env.run.shop.relics[k]) for k in rel}
+    act = {(SHOP if shop else PICK) + i for i in arm} | {SHOP_RELIC + k for k in rel}
+    return old, new, act
+
+
+not_old = np.isin(np.arange(OBS_DIM), obs_map, invert=True)
+for s in fx["run_states"]:  # old states, read by the new env
+    renv.run, renv.decision, renv.offered, renv.back = s["run"], s["decision"], s["offered"], s["back"]
+    new_obs, new_mask = renv._obs(), renv.action_masks()
+    ok_old, ok_new, ok_act = became_modeled(renv, s["decision"])
+    assert set(np.array(obs_map)[new_obs[obs_map] != s["obs"]]) <= ok_old, s["decision"]
+    assert set(np.flatnonzero(not_old & (new_obs != 0))) <= ok_new, s["decision"]
+    assert set(np.array(act_map)[new_mask[act_map] != s["mask"]]) <= ok_act and not np.delete(new_mask, act_map).any(), s["decision"]
+assert fx["run_obs"].shape == (200, len(obs_map)) and fx["run_mask"].shape == (200, len(act_map)) == (200, 127)
+old_ids = sorted(set(CARD_IDS) - {"ARMAMENTS"})
 assert act_map[REMOVE + old_ids.index("TRUE_GRIT")] == REMOVE + CARD_IDS.index("TRUE_GRIT")
 
 # All three cards can be picked.
@@ -559,6 +600,122 @@ assert "BRAND: 1 (junk 100% of 1)" in line and "HEADBUTT: 1 (non-basic non-junk 
 line = choice_report([{"choice_log": [("HEADBUTT", "WOUND", ("WOUND", "BASH")), ("BRAND", "BASH", ("BASH", "BASH"))]}])
 assert "HEADBUTT: 1 (non-basic non-junk 0% of 1)" in line and "BRAND: 1 (junk n=0)" in line
 print("run choice checks ok")
+
+# --- rest sites and upgraded cards -----------------------------------------------------------------------
+import time
+from collections import Counter
+from run_env import REST, REST_OPTIONS, SMITH
+from sim.act import SHOP_SLOTS
+from sim.cards import is_upgraded, upgrade
+from sim.relics import UPGRADE_RELICS
+
+assert REST_OPTIONS == ("HEAL", "LIFT", "DIG") and SMITH == REST + 3 and N_ACTIONS == SMITH + len(CARD_IDS)
+U0 = OBS_DIM - UPGRADE_OBS  # rest flag, Heal/Smith/Lift/Dig available, deck upgraded counts, slot upgraded flags
+
+
+def enter_rest(env, deck, relics=()):
+    """Through the real enter(): the next path step is a rest site."""
+    env.reset(seed=1)
+    env.run.deck, env.run.hp = list(deck), 30
+    env.run.relics |= set(relics)
+    node = env.run.choices()[0]
+    node.type = "RestSite"
+    env.step(PATH + node.col)
+    assert env.decision == "rest" and env.run.hp == 30  # entering no longer heals
+
+
+# The mask is exactly rest_options(), and Smith only the deck's un-upgraded upgradable base ids.
+enter_rest(renv, ["BASH", "BASH+", "STRIKE_IRONCLAD+", "WOUND", "DEFEND_IRONCLAD"], ["GIRYA"])
+assert renv.run.rest_options() == ["HEAL", "SMITH", "LIFT"]
+assert np.flatnonzero(renv.action_masks()).tolist() == [REST, REST + 1] + sorted(SMITH + CARD_INDEX[c] for c in ("BASH", "DEFEND_IRONCLAD"))
+o = renv._obs()
+assert o.shape == (OBS_DIM,) and o[U0:U0 + 5].tolist() == [1, 1, 1, 1, 0] and not o[:len(HEAD_DECISIONS)].any()
+up = o[U0 + 5:U0 + 5 + len(CARD_IDS)]
+assert up[CARD_INDEX["BASH"]] == up[CARD_INDEX["STRIKE_IRONCLAD"]] == 0.5 and up.sum() == 1
+renv.step(SMITH + CARD_INDEX["BASH"])
+assert sorted(renv.run.deck) == ["BASH+", "BASH+", "DEFEND_IRONCLAD", "STRIKE_IRONCLAD+", "WOUND"] and renv.decision == "path"
+assert renv.run.hp == 30 and not renv._obs()[U0:U0 + 5].any()
+# Nothing to Smith: no Smith actions. Lift counts on Girya; Dig obtains a relic.
+enter_rest(renv, ["BASH+", "WOUND"], ["GIRYA", "SHOVEL"])
+assert np.flatnonzero(renv.action_masks()).tolist() == [REST, REST + 1, REST + 2]
+renv.step(REST + 1)
+assert renv.run.relic_state["girya"] == 1 and renv.run.hp == 30
+enter_rest(renv, ["BASH"], ["SHOVEL"])
+renv.step(REST + 2)
+assert renv.run.relic_log[-1][1] == "dig" and renv.decision in ("path", "pick", "potion")
+enter_rest(renv, ["BASH"])
+assert np.flatnonzero(renv.action_masks()).tolist() == [REST, SMITH + CARD_INDEX["BASH"]]
+renv.step(REST)
+assert renv.run.hp == 30 + int(renv.run.max_hp * 0.3) and renv.decision == "path"
+
+# A deck holding only "BASH+" removes it by the base id.
+renv.reset(seed=1)
+renv.decision, renv.run.gold, renv.run.deck = "shop", 1000, ["BASH+", "STRIKE_IRONCLAD"]
+renv.run.shop = Shop(["ANGER+", "BASH", None, None, None], [50] * 5, 75)
+o = renv._obs()
+assert o[S0 + CARD_INDEX["ANGER"]] == 1 and o[S0 + SLOT_FEATURES - 2] == 0.5 and o[S0 + SLOT_FEATURES + CARD_INDEX["BASH"]] == 1
+assert o[-len(SHOP_SLOTS):].tolist() == [1, 0, 0, 0, 0] and renv.action_masks()[SHOP]
+renv.step(SHOP_REMOVE)
+assert np.flatnonzero(renv.action_masks()).tolist() == sorted(REMOVE + CARD_INDEX[c] for c in ("BASH", "STRIKE_IRONCLAD"))
+renv.step(REMOVE + CARD_INDEX["BASH"])
+assert renv.run.deck == ["STRIKE_IRONCLAD"] and renv.decision == "shop"
+# An upgraded offer: identity at its base id, the flag in its slot, and picking adds the upgraded card.
+renv.decision, renv.offered = "pick", ["ANGER", "BASH+", "NOT_A_CARD"]
+o = renv._obs()
+assert o[S0 + CARD_INDEX["ANGER"]] == 1 and o[S0 + SLOT_FEATURES + CARD_INDEX["BASH"]] == 1
+assert o[-len(SHOP_SLOTS):].tolist() == [0, 1, 0, 0, 0] and renv.action_masks()[PICK + 1] and not renv.action_masks()[PICK + 2]
+renv.step(PICK + 1)
+assert renv.run.deck[-1] == "BASH+"
+
+# Baseline: Heal below half HP, else Smith the first upgradable non-basic card, else Heal.
+brng = __import__("random").Random(0)
+enter_rest(renv, ["STRIKE_IRONCLAD", "WOUND", "ANGER+", "INFLAME", "SHRUG_IT_OFF"])
+renv.run.hp = renv.run.max_hp // 2
+assert runmod.baseline_action(renv, brng, 1) == SMITH + CARD_INDEX["INFLAME"]
+renv.run.hp -= 1
+assert runmod.baseline_action(renv, brng, 1) == REST
+enter_rest(renv, ["STRIKE_IRONCLAD", "BASH", "ANGER+"])
+renv.run.hp = renv.run.max_hp
+assert runmod.baseline_action(renv, brng, 1) == REST
+
+# Review focus 1: 300 random-policy runs, each deck seeded with 6 upgraded cards (a third also hold 3 upgrade relics), end
+# without an exception. Fights are skipped as wins so every run reaches rest sites, shops and Act 2's upgraded offers.
+t0 = time.time()
+fenv, frng, seen = RunPolicyEnv(), np.random.default_rng(5), Counter()
+
+
+def win(encounter):
+    fenv.run.fight_hit = bool(frng.integers(2))  # Lava Lamp lights after a fight with no hit
+    return True
+
+
+fenv.play = win
+for seed in range(300):
+    fenv.reset(seed=seed)
+    run = fenv.run
+    for i in frng.choice(len(run.deck), 6, replace=False):
+        run.deck[i] = upgrade(run.deck[i])
+    if seed % 3 == 0:
+        for r in frng.choice(sorted(UPGRADE_RELICS), 3, replace=False):
+            run.obtain(str(r), "elite")
+    obs, done, trunc = fenv._obs(), False, False
+    while not (done or trunc):
+        mask = fenv.action_masks()
+        assert obs.shape == (OBS_DIM,) and obs.min() >= -1 and obs.max() <= 10 and mask.any(), fenv.decision
+        a, d = int(frng.choice(np.flatnonzero(mask))), fenv.decision
+        seen[d] += 1
+        if d == "rest":
+            seen["SMITH" if a >= SMITH else REST_OPTIONS[a - REST]] += 1
+        elif d == "remove":
+            seen["remove upgraded"] += CARD_IDS[a - REMOVE] not in run.deck
+        elif d == "pick" and a < PICK + 3:
+            seen["pick upgraded"] += is_upgraded(fenv.offered[a - PICK])
+        elif d == "shop" and a < SHOP_REMOVE:
+            seen["buy upgraded"] += is_upgraded(run.shop.cards[a - SHOP])
+        obs, _, done, trunc, info = fenv.step(a)
+    assert done and info["cleared"], seed
+assert all(seen[k] for k in ("HEAL", "SMITH", "LIFT", "DIG", "remove", "remove upgraded", "pick upgraded", "buy upgraded")), seen
+print(f"rest and upgrade checks ok ({time.time() - t0:.0f}s for 300 runs: {dict(seen)})")
 
 # A client without set_relics (the live game) never gets a prompt card in a random deck.
 from sim.cards import CHOICE_CARDS as _CC

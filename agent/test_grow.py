@@ -41,4 +41,23 @@ assert check(small, big, obs_map, act_map)
 with torch.no_grad():
     big.policy.mlp_extractor.policy_net[0].weight[0, 3] += 1.0  # a position that should hold old input 2
 assert not check(small, big, obs_map, act_map)
+
+# The real run policy, grown into the rest and upgrade layout, acts as before on 200 observations its own play recorded
+# before upgrades (test_data/record_grow_fixture.py), whatever the order of the new card and relic ids.
+import gzip
+import pickle
+from run_env import N_ACTIONS, RunPolicyEnv, run_maps
+
+fx = pickle.load(gzip.open("test_data/grow_fixture.pkl.gz"))
+run_old = MaskablePPO.load("models/ppo_sts2_sim_act2_run_v1_final.zip", device="cpu")
+obs_map, act_map = run_maps()
+run_new = grow(run_old, RunPolicyEnv(), obs_map, act_map)
+assert check(run_old, run_new, obs_map, act_map)
+obs = np.zeros((200, run_new.observation_space.shape[0]), np.float32)
+obs[:, obs_map] = fx["run_obs"]
+mask = np.zeros((200, N_ACTIONS), bool)
+mask[:, act_map] = fx["run_mask"]
+before = run_old.predict(fx["run_obs"], action_masks=fx["run_mask"], deterministic=True)[0]
+after = run_new.predict(obs, action_masks=mask, deterministic=True)[0]
+assert (np.array(act_map)[before] == after).all() and len(set(before.tolist())) > 5
 print("grow checks ok")

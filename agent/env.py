@@ -30,7 +30,7 @@ from gymnasium import spaces
 from client import AutoSpireClient
 from grow import insert_map
 from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck
-from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, HIVE_MONSTERS, MONSTERS, SimLoopError
+from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
 from sim.relics import RELIC_IDS, UPGRADE_RELICS
 
@@ -78,10 +78,13 @@ RELIC_COUNTERS = (("pen_nib", 10), ("nunchaku", 10), ("tuning_fork", 10), ("happ
 RELIC_POWERS = (("ThornsPower", 5), ("VigorPower", 10), ("SelfFormingClayPower", 5))
 # Appended after POTION_FEATURES: slots 3-4 one-hot, relic multi-hot, counters, this turn's Attacks and Skills mod 3, powers.
 RELIC_FEATURES = (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS) + len(RELIC_IDS) + len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS)
-# Appended last: a card prompt is open (hand, discard), and which card asked.
+# Appended after that: a card prompt is open (hand, discard), and which card asked.
 CHOICE_FEATURES = 2 + len(CHOICE_CARDS)
+# Appended last: an upgrade prompt is open (Armaments), and the prompt cards that came with upgrades.
+UPGRADE_PROMPT_CARDS = ("TRUE_GRIT", "ARMAMENTS")  # True Grit+ asks a hand prompt
+UPGRADE_FEATURES = 1 + len(UPGRADE_PROMPT_CARDS)
 OBS_DIM = (MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES
-           + RELIC_FEATURES + CHOICE_FEATURES)
+           + RELIC_FEATURES + CHOICE_FEATURES + UPGRADE_FEATURES)
 POTION_ACTION = END_TURN + 1  # potion actions come after END_TURN, so old action indices are unchanged
 # Card prompts: pick hand slot i, or a discard-pile card by id. Appended after the potion block.
 CHOOSE_HAND = POTION_ACTION + MAX_POTION_SLOTS * MAX_ENEMIES  # slots 3-4 extend the potion block
@@ -100,28 +103,21 @@ def _encode_card(card: dict) -> list[float]:
         float(card["type"] == "Skill"),
         float(card["type"] == "Power"),
         float(card["upgraded"]),
-    ] + [float(card["id"] == cid) for cid in CARD_IDS]
+    ] + [float(base_id(card["id"]) == cid) for cid in CARD_IDS]
 
 
-HIVE_PLAYER_POWERS = {"TenderPower", "TaintedPower", "SurroundedPower", "DisintegrationPower"}
-HIVE_CARDS = {"TOXIC", "FRANTIC_ESCAPE", "ARMAMENTS"}  # cards a pre-Act 2 model lacks (Armaments: added with upgrades)
-OLD_MAX_ENEMIES = 4
+UPGRADE_CARDS = {"ARMAMENTS"}  # card ids a model trained before upgrades lacks (UPGRADE_RELICS: its relics)
 
 
 def combat_maps() -> tuple[list[int], list[int]]:
-    """(obs_map, act_map) for grow.py: where a model trained before Act 2 keeps its inputs and actions."""
-    old_cards = sorted(set(CARD_IDS) - HIVE_CARDS)
-    old_monsters = [m for m in MONSTER_IDS if m not in HIVE_MONSTERS]
-    old_powers = [p for p in PLAYER_POWERS if p not in HIVE_PLAYER_POWERS]
+    """(obs_map, act_map) for grow.py: where a model trained before upgrades (Act 2's) keeps its inputs and actions.
+    ponytail: only that layout; an Act 1 model first grows into it with grow.py at 9a11ac8."""
+    old_cards = [c for c in CARD_IDS if c not in UPGRADE_CARDS]
     old_relics = [r for r in RELIC_IDS if r not in UPGRADE_RELICS]
-    enemy = [13, (old_monsters, MONSTER_IDS), ("skip", len(ENEMY_PW))]
-    obs = insert_map([6, "cards"] * MAX_HAND + [PLAYER_FEATURES - len(PLAYER_POWERS), (old_powers, PLAYER_POWERS)] + ["cards"] * 3
-                     + enemy * OLD_MAX_ENEMIES + [("skip", (MAX_ENEMIES - OLD_MAX_ENEMIES) * ENEMY_FEATURES)]
-                     + [POTION_FEATURES + (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS), (old_relics, RELIC_IDS),
-                        len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES], old_cards, CARD_IDS)
-    slots = lambda first, n: [first + i * MAX_ENEMIES + s for i in range(n) for s in range(OLD_MAX_ENEMIES)]  # noqa: E731
-    act = slots(0, MAX_HAND) + [END_TURN] + slots(POTION_ACTION, MAX_POTION_SLOTS) + list(range(CHOOSE_HAND, CHOOSE_HAND + MAX_HAND))
-    act += [CHOOSE_DISCARD + CARD_IDS.index(c) for c in old_cards]
+    obs = insert_map([6, "cards"] * MAX_HAND + [PLAYER_FEATURES] + ["cards"] * 3
+                     + [MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES + (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS),
+                        (old_relics, RELIC_IDS), len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES], old_cards, CARD_IDS)
+    act = list(range(CHOOSE_DISCARD)) + [CHOOSE_DISCARD + CARD_IDS.index(c) for c in old_cards]
     return obs, act
 
 
@@ -188,7 +184,7 @@ def _encode(combat: dict) -> np.ndarray:
         combat.get("cardsPlayedThisTurn", 0) / 10.0,
         combat.get("round", 0) / 20.0,
     ] + [min(_power(player, name), 25) / 5.0 for name in PLAYER_POWERS]
-    pile_feats = [sum(c["id"] == cid for c in player.get(pile) or []) / 5.0
+    pile_feats = [sum(base_id(c["id"]) == cid for c in player.get(pile) or []) / 5.0
                   for pile in ("drawPile", "discardPile", "exhaustPile") for cid in CARD_IDS]
 
     enemy_feats: list[float] = []
@@ -231,6 +227,7 @@ def _encode(combat: dict) -> np.ndarray:
     choice = combat.get("choice") or {}
     choice_feats = [float(choice.get("kind") == "hand"), float(choice.get("kind") == "discard")]
     choice_feats += [float(choice.get("source") == cid) for cid in CHOICE_CARDS]
+    choice_feats += [float(choice.get("kind") == "upgrade")] + [float(choice.get("source") == cid) for cid in UPGRADE_PROMPT_CARDS]
 
     return np.array(hand_feats + player_feats + pile_feats + enemy_feats + potion_feats + relic_feats + choice_feats,
                     dtype=np.float32)
@@ -439,11 +436,11 @@ class STS2CombatEnv(gym.Env):
                 mask[CHOOSE_HAND:CHOOSE_HAND + min(len(hand), MAX_HAND)] = True
             elif choice["kind"] == "upgrade":  # the sim's Armaments: the upgradable hand cards
                 for i, c in enumerate(hand[:MAX_HAND]):
-                    mask[CHOOSE_HAND + i] = c["id"] in UPGRADABLE and not c["upgraded"]
+                    mask[CHOOSE_HAND + i] = base_id(c["id"]) in UPGRADABLE and not c["upgraded"]
             else:
                 for c in (self._combat.get("player") or {}).get("discardPile") or []:
-                    if c["id"] in CARD_IDS:  # the live game can hold cards the sim doesn't have
-                        mask[CHOOSE_DISCARD + CARD_IDS.index(c["id"])] = True
+                    if base_id(c["id"]) in CARD_IDS:  # the live game can hold cards the sim doesn't have
+                        mask[CHOOSE_DISCARD + CARD_IDS.index(base_id(c["id"]))] = True
             return mask
         for i, c in enumerate(hand[:MAX_HAND]):
             # The prompt cards need a client that answers prompts: the sim and the mod report simRelics, older clients

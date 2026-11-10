@@ -28,10 +28,10 @@ from sb3_contrib import MaskablePPO
 
 from env import BOSS_ENCOUNTERS, ELITE_ENCOUNTERS, NORMAL_ENCOUNTERS, WEAK_ENCOUNTERS, STS2CombatEnv
 from picker import RarityOdds, offer, pick, play_fight
-from run_env import (CARD_INDEX, EVENT, PATH, PICK, POTION_SKIP, REMOVE, SHOP_LEAVE, SHOP_REMOVE, RandomCombat,
+from run_env import (CARD_INDEX, EVENT, PATH, PICK, POTION_SKIP, REMOVE, REST, SHOP_LEAVE, SHOP_REMOVE, SMITH, RandomCombat,
                      RunPolicyEnv, potion_take_action)
 from choice_test import is_good, is_junk
-from sim.cards import CARDS, CHOICE_CARDS, starter_deck
+from sim.cards import CARDS, CHOICE_CARDS, UPGRADABLE, starter_deck
 from sim.engine import SimClient
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 from sim.map import COLS
@@ -179,7 +179,8 @@ def sim_run(args: tuple[str, int, int]) -> dict:
 
 
 def baseline_action(env: RunPolicyEnv, rng: random.Random, n: int) -> int:
-    """The pre-run-policy way to play: random path, MC card picks, remove a Strike when affordable."""
+    """The pre-run-policy way to play: random path, MC card picks, remove a Strike when affordable; at a rest site
+    Heal below half HP, else Smith the first upgradable non-basic card, else Heal."""
     mask = env.action_masks()
     if env.decision == "path":
         return int(rng.choice(np.flatnonzero(mask[PATH:PATH + COLS]))) + PATH
@@ -192,6 +193,9 @@ def baseline_action(env: RunPolicyEnv, rng: random.Random, n: int) -> int:
         return EVENT + rng.randrange(EVENT_OPTIONS)
     if env.decision == "potion":  # take it into a free slot, never replace
         return potion_take_action(env.run.potions.index(None)) if None in env.run.potions else POTION_SKIP
+    if env.decision == "rest":
+        smith = [c for c in env.run.deck if c in UPGRADABLE and CARDS[c].rarity != "Basic"]
+        return SMITH + CARD_INDEX[smith[0]] if smith and 2 * env.run.hp >= env.run.max_hp else REST
     return REMOVE + CARD_INDEX["STRIKE_IRONCLAD"]
 
 

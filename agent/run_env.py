@@ -13,19 +13,19 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from env import CARD_IDS, HIVE_CARDS, STS2CombatEnv
+from env import CARD_IDS, UPGRADE_CARDS, STS2CombatEnv
 from grow import insert_map
 from picker import play_fight
-from sim.act import ALL_BOSSES, BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Run
-from sim.cards import CARDS, CHOICE_CARDS, base_id
+from sim.act import ALL_BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Run
+from sim.cards import CARDS, CHOICE_CARDS, UPGRADABLE, base_id, is_upgraded
 from sim.engine import SimClient
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 from sim.map import BOSS_ROW, COLS, ROOM_TYPES
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
 from sim.relics import RELIC_IDS, RELICS, UPGRADE_RELICS
 
-DECISIONS = ("path", "pick", "shop", "remove", "potion")
-HEAD_DECISIONS = DECISIONS[:4]  # the original observation head; "potion" is flagged in the appended block
+DECISIONS = ("path", "pick", "shop", "remove", "potion", "rest")
+HEAD_DECISIONS = DECISIONS[:4]  # the original observation head; the others are flagged in their appended blocks
 # Actions: [path: one per column][pick: 3 cards, skip][shop: one per slot, remove, leave]
 # [remove: one per card id, then an unused cancel slot] -- then, appended for grow.py:
 # [potion: put in slot 0-2, skip][shop: buy potion 0-2][path: drink Blood Potion in slot 0-2]
@@ -44,7 +44,10 @@ SHOP_RELIC = DRINK + POTION_SLOTS
 POTION_TAKE_2 = SHOP_RELIC + SHOP_RELICS
 DRINK_2 = POTION_TAKE_2 + MAX_POTION_SLOTS - POTION_SLOTS
 EVENT = DRINK_2 + MAX_POTION_SLOTS - POTION_SLOTS  # [event: option 0-1]
-N_ACTIONS = EVENT + EVENT_OPTIONS
+REST_OPTIONS = ("HEAL", "LIFT", "DIG")  # [rest: one per option], then [rest: Smith one per card id]
+REST = EVENT + EVENT_OPTIONS
+SMITH = REST + len(REST_OPTIONS)
+N_ACTIONS = SMITH + len(CARD_IDS)
 
 
 def potion_take_action(slot: int) -> int:
@@ -78,8 +81,11 @@ POTION_OBS = 1 + POTION_SLOTS * len(POTION_IDS) + len(POTION_IDS) + SHOP_POTIONS
 RELIC_OBS = (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS) + len(RELIC_IDS) + SHOP_RELICS * SHOP_RELIC_FEATURES
 # Appended after that: event-decision flag, which event, each option's HP loss / gold / max HP, Slippery Bridge's card.
 EVENT_OBS = 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3 + len(CARD_IDS)
+# Appended after the act: rest-decision flag, which of Heal/Smith/Lift/Dig it offers, the deck's upgraded copies per card id,
+# whether each offer / shop slot's card is upgraded.
+UPGRADE_OBS = 1 + 4 + len(CARD_IDS) + len(SHOP_SLOTS)
 OBS_DIM = (len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(ALL_BOSSES) + len(SHOP_SLOTS) * SLOT_FEATURES + 2
-           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS + EVENT_OBS + 1)  # + 1: which act
+           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS + EVENT_OBS + 1 + UPGRADE_OBS)  # + 1: which act
 FLOOR_REWARD, CLEAR_REWARD = 0.1, 1.0
 MAX_DECISIONS = 500  # a run is ~40 decisions; this only stops a broken env
 
@@ -129,12 +135,13 @@ class RunPolicyEnv(gym.Env):
         """Path action: move to the child in that column. The encounter if it's a fight, else None."""
         node = next(n for n in self.run.choices() if n.col == col)
         self.room = self.run.enter(node)
-        if self.room == "RestSite":
-            self.run.rest("HEAL")  # Task 5: the policy picks
         self.run.elites_fought += self.room == "Elite"
         if self.room in FIGHTS:
             return self.run.encounter(self.room)
         self.back = "shop" if self.room == "Shop" else "path"
+        if self.room == "RestSite" and self.run.rest_options():
+            self.decision = "rest"  # Tiny Mailbox's potions come after the choice
+            return None
         if self.run.event:
             self.decision = "event"
             if self.event_practice and self.run.rng.random() < 0.5:  # HP >= 10: The Legends Were True's IsAllowed
@@ -218,6 +225,12 @@ class RunPolicyEnv(gym.Env):
             else:
                 self.run.take_potion(potion_take_slot(a))
             self._advance()
+        elif self.decision == "rest":
+            if a >= SMITH:
+                self.run.rest("SMITH", CARD_IDS[a - SMITH])
+            else:
+                self.run.rest(REST_OPTIONS[a - REST])
+            self._advance()  # Dig's relic and Tiny Mailbox can queue rewards
         elif self.decision == "event":
             self.run.choose_event(a - EVENT)
             if self.run.hp <= 0:
@@ -280,6 +293,13 @@ class RunPolicyEnv(gym.Env):
             m[POTION_SKIP] = True
         elif self.decision == "event":
             m[EVENT:EVENT + EVENT_OPTIONS] = True
+        elif self.decision == "rest":
+            options = run.rest_options()
+            for k, o in enumerate(REST_OPTIONS):
+                m[REST + k] = o in options
+            if "SMITH" in options:
+                for c in set(run.deck) & UPGRADABLE:  # base ids with an un-upgraded copy
+                    m[SMITH + CARD_INDEX[c]] = True
         else:
             for c in set(run.deck):  # no cancel: shop -> remove -> cancel would let a deterministic policy loop
                 m[REMOVE + CARD_INDEX[base_id(c)]] = True
@@ -295,15 +315,17 @@ class RunPolicyEnv(gym.Env):
         boss = [float(b == run.boss) for b in ALL_BOSSES]
         slots = np.zeros((len(SHOP_SLOTS), SLOT_FEATURES))
         removal = [0.0, 0.0]
+        slot_up = np.zeros(len(SHOP_SLOTS))  # the offered id itself: Eggs, Lava Lamp and Act 2's roll upgrade offers
         if self.decision == "pick":
             for i, c in enumerate(self.offered):
-                if c in CARD_INDEX:
-                    slots[i, CARD_INDEX[c]] = 1
+                if c in CARDS:
+                    slots[i, CARD_INDEX[base_id(c)]], slot_up[i] = 1, is_upgraded(c)
         elif self.decision in ("shop", "remove"):
             s = run.shop
             for i, (c, p) in enumerate(zip(s.cards, s.prices)):
-                if c in CARD_INDEX:
-                    slots[i, CARD_INDEX[c]], slots[i, -2], slots[i, -1] = 1, run.price(p) / 100, run.gold >= run.price(p)
+                if c in CARDS:
+                    slots[i, CARD_INDEX[base_id(c)]], slots[i, -2], slots[i, -1] = 1, run.price(p) / 100, run.gold >= run.price(p)
+                    slot_up[i] = is_upgraded(c)
             removal = [run.price(s.removal_price) / 100, float(not s.removal_used and run.gold >= run.price(s.removal_price))]
         grid = np.zeros((LOOKAHEAD, COLS, CELL_FEATURES))
         reach, todo = set(), list(run.node.children)
@@ -345,16 +367,24 @@ class RunPolicyEnv(gym.Env):
                 event_obs[k + 3 * i:k + 3 * i + 3] = hp / 80, gold / 100, max_hp / 80
             if run.event == "SLIPPERY_BRIDGE":
                 event_obs[k + 3 * EVENT_OPTIONS + CARD_INDEX[base_id(run.deck[run.bridge_card])]] = 1
+        rest = [float(self.decision == "rest")]
+        rest += [float(self.decision == "rest" and o in run.rest_options()) for o in ("HEAL", "SMITH", "LIFT", "DIG")]
+        upgraded = np.zeros(len(CARD_IDS))
+        for c in run.deck:
+            if is_upgraded(c):
+                upgraded[CARD_INDEX[base_id(c)]] += 0.5
         return np.concatenate([head, np.minimum(deck, 10), boss, slots.ravel(), removal, grid.ravel(),
-                               potion_obs, belt, held, shop_r.ravel(), event_obs, [float(getattr(run, "act", 0))]]).astype(np.float32)
+                               potion_obs, belt, held, shop_r.ravel(), event_obs, [float(getattr(run, "act", 0))],
+                               rest, np.minimum(upgraded, 10), slot_up]).astype(np.float32)
 
 
 def run_maps() -> tuple[list[int], list[int]]:
-    """(obs_map, act_map) for grow.py: where a run policy trained before Act 2 keeps its inputs and actions."""
-    old_ids = sorted(set(CARD_IDS) - HIVE_CARDS)
+    """(obs_map, act_map) for grow.py: where a run policy trained before upgrades (Act 2's) keeps its inputs and actions.
+    The rest block and the Smith actions are new; nothing maps to them. ponytail: only that layout (see env.combat_maps)."""
+    old_ids = [c for c in CARD_IDS if c not in UPGRADE_CARDS]
     old_relics = [r for r in RELIC_IDS if r not in UPGRADE_RELICS]
     lead = 2 + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS)  # up to the relics held
     tail = 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3  # after the shop's relics
-    obs = [len(HEAD_DECISIONS) + 5, "cards", (list(BOSSES), list(ALL_BOSSES))] + ["cards", 2] * len(SHOP_SLOTS)
-    obs += [lead, (old_relics, RELIC_IDS)] + [(old_relics, RELIC_IDS), 2] * SHOP_RELICS + [tail, "cards"]
-    return insert_map(obs, old_ids, CARD_IDS), insert_map([REMOVE, "cards", N_ACTIONS - REMOVE - len(CARD_IDS)], old_ids, CARD_IDS)
+    obs = [len(HEAD_DECISIONS) + 5, "cards", len(ALL_BOSSES)] + ["cards", 2] * len(SHOP_SLOTS)
+    obs += [lead, (old_relics, RELIC_IDS)] + [(old_relics, RELIC_IDS), 2] * SHOP_RELICS + [tail, "cards", 1]  # 1: the act
+    return insert_map(obs, old_ids, CARD_IDS), insert_map([REMOVE, "cards", REST - REMOVE - len(CARD_IDS)], old_ids, CARD_IDS)

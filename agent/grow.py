@@ -4,7 +4,7 @@ Every old weight is copied (insert_map places old cards and fixed segments among
 model acts exactly like the old one until training moves them. New inputs and actions must be
 appended (old indices unchanged), as env.py and run_env.py do. From agent/:
     python grow.py models/ppo_sts2_sim_act1_map_v10_final.zip models/ppo_sts2_sim_act1_map_v10p.zip --env combat
-    python grow.py models/ppo_sts2_sim_run_policy_v2_final.zip models/ppo_sts2_sim_run_policy_v2p.zip --env run
+    python grow.py models/ppo_sts2_sim_act2_run_v1_final.zip models/ppo_sts2_sim_boss_run_g1.zip --env run --insert-cards
 """
 from __future__ import annotations
 
@@ -86,7 +86,8 @@ def main():
     ap.add_argument("old")
     ap.add_argument("new")
     ap.add_argument("--env", choices=["combat", "run"], required=True)
-    ap.add_argument("--insert-cards", action="store_true", help="old model predates the Headbutt/Burning Pact/Brand inputs")
+    ap.add_argument("--insert-cards", action="store_true", help="old model predates card upgrades (Armaments, the upgrade relics, rest choices): "
+                    "env.combat_maps / run_env.run_maps place its inputs and actions by name")
     args = ap.parse_args()
     maps = (None, None)
     if args.env == "combat":
