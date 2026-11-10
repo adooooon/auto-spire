@@ -80,15 +80,21 @@ Mean HP lost on each turn, over fights that lasted past that turn (turns 1 to 6)
 | Knowledge Demon | 0.2 | 16.8 | 22.6 | 9.9 | 3.0 | 20.7 |
 | The Insatiable | 0.5 | 10.5 | 20.9 | 0.5 | 14.3 | 9.1 |
 
+Ten most common cards in the decks, with copy counts over all fights at that boss:
+
+- Kaiser Crab: Strike 513, Defend 403, Anger 162, Bash 102, Twin Strike 80, Pommel Strike 70, Perfected Strike 69, Iron Wave 65, Shrug It Off 56, Unrelenting 54.
+- Knowledge Demon: Strike 511, Defend 402, Anger 161, Bash 103, Twin Strike 84, Iron Wave 68, Pommel Strike 64, Fight Me 62, Taunt 58, Inflame 57.
+- The Insatiable: Strike 613, Defend 486, Anger 183, Bash 124, Iron Wave 101, Twin Strike 96, Pommel Strike 74, Inflame 71, Unrelenting 69, Rage 68.
+
 Findings:
 
 1. The bot wins 21 of 331 boss fights (6%). Kaiser Crab is never beaten (0 of 104).
-2. Damage comes in spikes. Kaiser Crab costs 19.7 HP on turn 2 and 26.0 on turn 4, against 6.5 on turn 3. The Insatiable costs 20.9 on turn 3 and 0.5 on turn 4. Knowledge Demon costs 22.6 on turn 3 and 20.7 on turn 6. Deaths follow these turns: the median loss ends on turn 5 or 6.
-3. Arrival HP matters. Fights that start at 75 HP or more are won 16 of 129 times (12%). Fights that start below 75 are won 5 of 202 times (2.5%). Mean arrival HP is 77.9 in wins and 63.3 in losses, while max HP is about 82 in both.
+2. Damage comes in spikes. Kaiser Crab costs 19.7 HP on turn 2 and 26.0 on turn 4, against 6.5 on turn 3. The Insatiable costs 20.9 on turn 3 and 0.5 on turn 4. Knowledge Demon costs 22.6 on turn 3 and 20.7 on turn 6. Median death is turn 5 or 6.
+3. Fights that start with more HP are won more often. Fights that start at 75 HP or more are won 16 of 129 times (12%). Fights that start below 75 are won 5 of 202 times (2.5%). Mean arrival HP is 77.9 in wins and 63.3 in losses, while max HP is about 82 in both.
 4. Decks do not separate wins from losses. Wins average 24.3 cards and 8.8 Strikes and Defends. Losses average 24.8 cards and 8.9. Strike and Defend are the two most common cards at every boss.
-5. Potions are rarely left unused. The bot holds 0.6 to 0.9 potions on arrival and uses almost all of them. A potion was unused at death in 18 of 310 losses (1 Kaiser Crab, 4 Knowledge Demon, 13 The Insatiable).
+5. Potions are rarely left unused. The bot holds 0.6 to 0.9 potions on arrival. A potion was unused at death in 18 of 310 losses (1 Kaiser Crab, 4 Knowledge Demon, 13 The Insatiable).
 
-Most losses are not close in the other direction either: the median loss starts its last turn at 13 HP, and 221 of 310 start it at 20 HP or less. Only 19 start it at 40 or more.
+Player HP at the start of the last turn of a loss: median 13, 221 of 310 at 20 or less, 19 at 40 or more.
 
 ## Not in scope
 
