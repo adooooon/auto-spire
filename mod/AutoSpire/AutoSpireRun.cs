@@ -296,9 +296,12 @@ internal static class RunBridge
                 Resolve(i < hand.Count && options.Contains(hand[i]) ? hand[i] : options[0]);
                 break;
             }
-            case "choose_discard": // card id, as in the sim
-                Resolve(AgentSelector.Current!.Options.First(c => c.Id.Entry == parts[1]));
+            case "choose_discard": // card id, as in the sim: a plain copy first, else an upgraded one
+            {
+                var copies = AgentSelector.Current!.Options.Where(c => c.Id.Entry == parts[1]).ToList();
+                Resolve(copies.FirstOrDefault(c => !c.IsUpgraded) ?? copies.First());
                 break;
+            }
             case "choose_option":
                 Resolve(AgentSelector.Current!.Options[Arg(1)]);
                 break;
