@@ -839,8 +839,8 @@ class SimCombat:
         if not self.pending_choice or self.pending_choice["kind"] != "discard" or card_id not in self.discard_pile:
             return {"error": "invalid_choice"}
         options = tuple(self.discard_pile)
-        self.discard_pile.remove(card_id)
-        return self._resume_play(card_id, options)
+        picked = self.discard_pile.pop(self.discard_pile.index(card_id))  # keeps the DeckCard, so Hopper can steal it
+        return self._resume_play(picked, options)
 
     def _resume_play(self, picked: str, options: tuple[str, ...]) -> dict:
         """The rest of the play that stopped at the prompt: AfterCardPlayed, further plays, result pile."""

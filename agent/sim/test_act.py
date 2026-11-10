@@ -627,7 +627,9 @@ assert not any(is_upgraded(c) for s in range(30) for c in offer(random.Random(s)
 # Reward upgrades: act x 0.25 for non-Rares, never Rares.
 rng, odds, tot, up, rare_up = random.Random(5), RarityOdds(), 0, 0, 0
 for _ in range(4000):
-    for c in offer(rng, odds, act=1):
+    o = offer(rng, odds, act=1)
+    assert len({base_id(c) for c in o}) == len(o), o  # the game blacklists by base card
+    for c in o:
         if CARDS[base_id(c)].rarity == "Rare":
             rare_up += is_upgraded(c)
         else:

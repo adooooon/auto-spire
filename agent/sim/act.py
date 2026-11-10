@@ -91,7 +91,8 @@ def offer(rng: random.Random, odds: RarityOdds, elite: bool = False, boss: bool 
     out: list[str] = []
     for _ in range(3):
         rarity = odds.roll_base(rng) if base else odds.roll(rng, elite, boss)
-        card = rng.choice([c for c in REWARD_POOLS[rarity] if c not in out])
+        seen = {base_id(c) for c in out}  # the game blacklists by base card
+        card = rng.choice([c for c in REWARD_POOLS[rarity] if c not in seen])
         out.append(card)
         if rarity != "RARE" and act and card in UPGRADABLE and rng.random() <= act * UPGRADE_ODDS_PER_ACT:
             out[-1] = upgrade(card)
@@ -349,7 +350,7 @@ class Run:
 
     def add_card(self, card: str) -> None:
         if any(r in self.relics and CARDS[card].type == t for r, t in EGGS.items()):
-            card = upgrade(card)  # Molten / Toxic / Frozen Egg; a shop card is upgraded as it is bought
+            card = upgrade(card)  # Molten / Toxic / Frozen Egg; also covers shop cards (Eggs upgrade shop stock at creation, so this is a no-op there)
         self.deck.append(card)
         if "LUCKY_FYSH" in self.relics:
             self.gain_gold(15)

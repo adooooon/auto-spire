@@ -1,6 +1,7 @@
 """Self-check for the sim's ported rules: python -m sim.test_engine (from agent/)."""
 import random
 
+from .cards import DeckCard
 from .engine import PLAYER_MAX_HP, MONSTERS, SimCombat, SimClient, pick_move, player_attack_damage, ENCOUNTERS
 
 # Damage: floor(base * 1.5 vuln * 0.7 shrink), exact.
@@ -511,9 +512,9 @@ def _no_relic_trace() -> str:
     return h.hexdigest()
 
 
-# Aggression now upgrades the Attack it returns; with engine.upgrade a no-op the old hash b3732604... still holds.
-# Aggression then took the Attack it picked out of its own slot (not the first equal copy), so the discard pile's order
-# moved; with that one line back to discard_pile.remove(c), fa4f8e6a... still holds.
+# History: with engine.upgrade a no-op, the old hash b3732604... still held after Aggression began upgrading its Attack.
+# The hash then changed to this one. Known: Aggression's pick out of its own slot, and _take's `del pile[i]` index pick,
+# can both reorder piles (an index pick leaves a different order than remove-first-equal); which of them moved it is not isolated.
 assert _no_relic_trace() == "5679464b2188aadb9271b46cc22ca43759b52a7b9017b3e86b02a85bae9647bb"
 # --- relics (sim/relics.py) ---------------------------------------------------------------------
 from .relics import NOT_MODELED, RELIC_POOL, RELICS, relic_rarity  # noqa: E402
@@ -1401,7 +1402,7 @@ for relics, hp, end in ((("DEMON_TONGUE",), 50, 50), (("DEMON_TONGUE", "MEAT_ON_
 
 # Headbutt: 9 damage, then a discard card goes on top of the draw pile.
 c = solo(["HEADBUTT", "STRIKE_IRONCLAD"])
-c.discard_pile = ["BASH", "DEFEND_IRONCLAD"]
+c.discard_pile = [DeckCard("BASH"), DeckCard("DEFEND_IRONCLAD")]
 hp = c.enemies[0].hp
 assert c.play_card(0, 1)["ok"]
 assert c.pending_choice == {"kind": "discard", "source": "HEADBUTT"} and c.enemies[0].hp == hp - 9 and c.energy == 2
@@ -1409,6 +1410,7 @@ assert c.combat_dict()["choice"] == c.pending_choice
 assert c.play_card(0, 1)["error"] == "choice_pending" and c.end_turn()["error"] == "choice_pending"
 assert c.choose_discard("BASH")["ok"]
 assert c.draw_pile[-1] == "BASH" and c.pending_choice is None and c.discard_pile == ["DEFEND_IRONCLAD", "HEADBUTT"]
+assert isinstance(c.draw_pile[-1], DeckCard)  # the pick keeps its deck identity, so Hopper can still steal it
 assert c.choice_log == [("HEADBUTT", "BASH", ("BASH", "DEFEND_IRONCLAD"))]
 
 # Burning Pact: exhaust from hand, then draw 2.

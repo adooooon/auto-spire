@@ -136,6 +136,7 @@ class MapRunModeEnv(STS2CombatEnv):
         obs, reward, terminated, truncated, info = super().step(action)
         if terminated or truncated:
             run, combat = self.driver.run, self.client._combat
+            run.fight_hit = combat.lamp_hit
             run.hp, run.max_hp, run.potions = combat.player_hp, combat.player_max_hp, list(combat.potions)
             for card in combat.stolen:  # Thieving Hopper escaped with it
                 run.deck.remove(card)
