@@ -1917,16 +1917,17 @@ hp = c.player_hp; c.end_turn()  # Mawler's Claw 4x2 at -7 Strength deals 0
 assert c.player_hp == hp and e.strength == 2 and "DarkShacklesPower" not in e.pw
 c = solo(["DARK_SHACKLES"]); c.enemies[0].artifact = 1; c.play_card(0, 1); assert c.enemies[0].strength == 0 and not c.enemies[0].pw
 # Entropy (AfterPlayerTurnStart): after the hand draw, transform Amount hand cards into a random card of the card's own pool
-# (not itself); statuses into another status. ponytail check: the pick is random until plan task 4 makes it a prompt.
+# (not itself); statuses into another status. The player picks it (a "hand" prompt at the turn start, see the prompt checks).
 STATUSES = {"DAZED", "INFECTION", "SLIMED", "TOXIC", "WOUND"}
 for seed in range(20):
     for top, pool in ((S, set(GENERATED)), ("FINESSE", set(CG) - {"FINESSE"}), ("WOUND", STATUSES - {"WOUND"})):
         c = solo(["ENTROPY"], seed=seed); c.play_card(0); c.draw_pile = [DeckCard(top) for _ in range(10)]; c.hand = []
-        c._start_player_turn()
+        c._start_player_turn(); c.choose_card(3)
         new = [x for x in c.hand if x != top]
-        assert len(c.hand) == 5 and len(new) == 1 and new[0] in pool and not isinstance(new[0], DeckCard), (top, c.hand)
+        assert len(c.hand) == 5 and new == [c.hand[3]] and new[0] in pool and not isinstance(new[0], DeckCard), (top, c.hand)
 c = solo(["ENTROPY", "ENTROPY"]); c.energy = 3; c.play_card(0); c.play_card(0); c.draw_pile = [S] * 10; c.hand = []
-c._start_player_turn(); assert sum(x != S for x in c.hand) == 2  # Amount 2
+c._start_player_turn(); c.choose_card(0)
+assert c.hand[0] != S and sum(x != S for x in c.hand) == 2 and c.pending_choice is None  # Amount 2: one prompt, the 2nd at random
 c = solo(["ENTROPY"]); c.play_card(0); c.draw_pile = [S]; c.hand = []; c._start_player_turn()
 assert len(c.hand) == 1 and c.hand[0] != S  # fewer cards than Amount: all of them
 assert CARDS["ENTROPY+"].innate and not CARDS["ENTROPY"].innate
@@ -1988,7 +1989,8 @@ c = solo(["PROLONG+"]); c.play_card(0); assert "BlockNextTurnPower" not in c.pw 
 c = big(solo(["ROLLING_BOULDER", "ROLLING_BOULDER+"], "SLIMES_WEAK")); c.energy = 10; c.play_card(0); c.play_card(0)
 c.strength = 5; c.end_turn(); assert all(e.hp == 500 - 15 for e in c.enemies)  # Unpowered: no Strength
 c.end_turn(); assert all(e.hp == 500 - 15 - 25 for e in c.enemies) and c.inst["RollingBoulderPower"] == [[15], [20]]
-# Stratagem (AfterShuffle): after the discard pile is shuffled in, a draw-pile card goes to hand (random until plan task 4).
+# Stratagem (AfterShuffle): after the discard pile is shuffled in, a draw-pile card goes to hand. ponytail check: picked at
+# random, since the shuffle fires inside a draw the sim can't pause.
 c = solo(["STRATAGEM"]); c.play_card(0); c.draw_pile, c.discard_pile, c.hand = [], [S, S, D], []
 c._draw(1); assert len(c.hand) == 2 and len(c.draw_pile) == 1
 c.hand, c.draw_pile, c.discard_pile = [D] * 9, [], [S, B]; c._draw(1)
@@ -2007,5 +2009,83 @@ c = solo(["THE_GAMBIT"]); c.relics = {"LIZARD_TAIL"}; c.play_card(0); c.player_b
 hurt(c, 3); assert c.in_combat and c.player_hp == 40 and "TheGambitPower" not in c.pw
 hurt(c, 3); assert c.in_combat and c.player_hp == 37
 print("colorless power checks ok")
+
+# --- Colorless prompts (plan task 4), from each <Card>.cs's CardSelectCmd call ---
+# Discovery (FromChooseACardScreen, canSkip): 3 distinct Ironclad cards (GetDistinctForCombat: CanBeGeneratedInCombat,
+# not Basic); the pick goes to hand, free this turn. Discovery exhausts; Discovery+ doesn't.
+c = solo(["DISCOVERY", D]); c.play_card(0); ch = c.pending_choice
+assert ch["kind"] == "generated" and ch["source"] == "DISCOVERY" and len(set(ch["options"])) == 3 and set(ch["options"]) <= set(GENERATED)
+assert c.combat_dict()["choice"] == ch and c.energy == 2 and c.choose_card(0)["error"] == c.choose_generated(3)["error"] == "invalid_choice"
+pick = ch["options"][1]
+assert c.choose_generated(1)["ok"] and c.pending_choice is None and c.hand == [D, pick] and c.cost(pick) == 0
+assert c.exhaust_pile == ["DISCOVERY"] and c.choice_log == [("DISCOVERY", pick, tuple(ch["options"]))]
+c = solo(["DISCOVERY+"]); c.play_card(0); assert c.choose_skip()["ok"] and c.pending_choice is None
+assert c.hand == [] and c.discard_pile == ["DISCOVERY+"] and not c.exhaust_pile  # the skip adds nothing
+assert len({tuple(solo(["DISCOVERY"], seed=s).play_card(0)["choice"]["options"]) for s in range(10)}) > 1
+# Purity (FromHand, min 0, max 3 / 5): pick hand cards one at a time, then done; the picks exhaust once the selection ends.
+c = solo(["PURITY", "WOUND", S, D, "WOUND", B]); c.play_card(0)
+assert c.pending_choice["kind"] == "hand_multi" and c.pending_choice["source"] == "PURITY"
+c.choose_card(0); c.choose_card(2); assert c.pending_choice and not c.exhaust_pile and c.hand == [S, D, B]
+assert c.choose_card(0)["ok"] and c.pending_choice is None  # the 3rd pick ends it
+assert c.exhaust_pile == ["WOUND", "WOUND", S, "PURITY"] and c.hand == [D, B]
+c = solo(["PURITY", "WOUND", S]); c.play_card(0); c.choose_card(0)
+assert c.choose_done()["ok"] and c.pending_choice is None and c.exhaust_pile == ["WOUND", "PURITY"] and c.hand == [S]
+c = solo(["PURITY", "WOUND"]); c.play_card(0); assert c.pending_choice  # min 0: one card still asks
+assert c.choose_done()["ok"] and c.hand == ["WOUND"] and c.exhaust_pile == ["PURITY"]
+c = solo(["PURITY", "WOUND", "WOUND"]); c.play_card(0); c.choose_card(0); c.choose_card(0); assert c.pending_choice is None  # hand used up
+c = solo(["PURITY"]); c.play_card(0); assert c.pending_choice is None and c.exhaust_pile == ["PURITY"]
+c = solo(["PURITY+"] + ["WOUND"] * 7); c.play_card(0)
+for _ in range(5):
+    c.choose_card(0)
+assert c.pending_choice is None and c.exhaust_pile.count("WOUND") == 5 and len(c.hand) == 2
+assert solo(["STRIKE_IRONCLAD"]).choose_done()["error"] == "invalid_choice"
+# Secret Technique / Secret Weapon (FromCombatPile on the draw pile, a Skill / an Attack) to hand. Upgraded: no Exhaust.
+c = solo(["SECRET_TECHNIQUE"]); c.draw_pile = [S, D, "SHRUG_IT_OFF", B]; c.play_card(0)
+assert c.pending_choice == {"kind": "draw", "source": "SECRET_TECHNIQUE", "options": [D, "SHRUG_IT_OFF"]}
+assert c.choose_draw(S)["error"] == "invalid_choice" and c.choose_card(0)["error"] == "invalid_choice"
+assert c.choose_draw("SHRUG_IT_OFF")["ok"] and c.hand == ["SHRUG_IT_OFF"] and c.draw_pile == [S, D, B] and c.exhaust_pile == ["SECRET_TECHNIQUE"]
+c = solo(["SECRET_TECHNIQUE+"]); c.draw_pile = [S, B]; c.play_card(0)  # no Skill: nothing, no pause
+assert c.pending_choice is None and c.hand == [] and c.draw_pile == [S, B] and c.discard_pile == ["SECRET_TECHNIQUE+"]
+c = solo(["SECRET_TECHNIQUE"]); c.draw_pile = [S, D]; c.play_card(0); assert c.pending_choice is None and c.hand == [D]  # one: no prompt
+c = solo(["SECRET_WEAPON"]); c.draw_pile = ["STRIKE_IRONCLAD+", D, S]; c.play_card(0)
+assert c.pending_choice["options"] == ["STRIKE_IRONCLAD+", S]
+c.choose_draw(S); assert c.hand == [S] and c.draw_pile == ["STRIKE_IRONCLAD+", D]  # a plain copy before the upgraded one
+c = solo(["SECRET_WEAPON"]); c.draw_pile = ["STRIKE_IRONCLAD+", D, B]; c.play_card(0); c.choose_draw(S)
+assert c.hand == ["STRIKE_IRONCLAD+"] and c.draw_pile == [D, B]
+# Seeker Strike: 9 (12) damage, then 3 random draw-pile cards (StableShuffle, Take 3); one of those to hand.
+seen = set()
+for seed in range(10):
+    c = big(solo(["SEEKER_STRIKE"], seed=seed)); pile = [DeckCard(x) for x in (S, D, B, "ANGER", "SHRUG_IT_OFF")]; c.draw_pile = list(pile)
+    c.play_card(0, 1); ch = c.pending_choice
+    assert dmg(c) == 9 and ch["kind"] == "draw" and ch["source"] == "SEEKER_STRIKE" and len(set(ch["options"])) == 3
+    seen.add(tuple(ch["options"]))
+    other = next(x for x in pile if x not in ch["options"])
+    assert c.choose_draw(other)["error"] == "invalid_choice"
+    pick = ch["options"][seed % 3]
+    assert c.choose_draw(pick)["ok"] and c.hand == [pick] and isinstance(c.hand[0], DeckCard) and len(c.draw_pile) == 4 and pick not in c.draw_pile
+assert len(seen) > 1
+c = big(solo(["SEEKER_STRIKE+"])); c.draw_pile = [D]; c.play_card(0, 1); assert dmg(c) == 12 and c.pending_choice is None and c.hand == [D]
+c = solo(["SEEKER_STRIKE"]); c.draw_pile = [S, D]; c.enemies[0].hp = 1; c.play_card(0, 1); assert not c.in_combat and c.pending_choice is None
+# Thinking Ahead: draw 2, then a hand card goes on top of the draw pile. Upgraded: no Exhaust.
+c = solo(["THINKING_AHEAD", "WOUND"]); c.draw_pile = [S, D, B]; c.play_card(0)
+assert c.pending_choice == {"kind": "hand", "source": "THINKING_AHEAD"} and c.hand == ["WOUND", B, D]
+c.choose_card(0); assert c.draw_pile == [S, "WOUND"] and c.hand == [B, D] and c.exhaust_pile == ["THINKING_AHEAD"]
+c = solo(["THINKING_AHEAD+"]); c.draw_pile = [S]; c.play_card(0)
+assert c.pending_choice is None and c.draw_pile == [S] and c.hand == [] and c.discard_pile == ["THINKING_AHEAD+"]
+# Entropy (AfterPlayerTurnStart): the turn start stops at the prompt; the rest of it (Mayhem here) runs after the answer.
+c = big(solo(["ENTROPY"])); c.play_card(0); c.pw["MayhemPower"] = 1; c.draw_pile = [D] + [S] * 5; c.hand = []; c.end_turn()
+assert c.pending_choice == {"kind": "hand", "source": "ENTROPY"} and c.is_play_phase and c.hand == [S] * 5 and c.draw_pile == [D]
+assert c.play_card(0, 1)["error"] == c.end_turn()["error"] == "choice_pending"
+assert c.choose_card(4)["ok"] and c.pending_choice is None and c.hand[:4] == [S] * 4 and c.hand[4] != S
+assert c.draw_pile == [] and c.discard_pile == [D] and c.choice_log == [("ENTROPY", S, (S,) * 5)]  # Mayhem played Defend
+# Review focus 1: Havoc and Mayhem autoplay each prompt card (an autoplay can't pause: picks are random).
+PROMPTS = ("DISCOVERY", "PURITY", "SECRET_TECHNIQUE", "SECRET_WEAPON", "SEEKER_STRIKE", "THINKING_AHEAD", "ENTROPY", "STRATAGEM")
+for seed in range(200):
+    for cid in PROMPTS + tuple(x + "+" for x in PROMPTS):
+        c = big(solo(["HAVOC", S, D, "WOUND"], seed=seed)); c.draw_pile = [S, D, B, "SHRUG_IT_OFF", cid]
+        assert c.play_card(0)["ok"] and c.pending_choice is None and c.in_combat, (seed, cid)
+        c = big(solo(["MAYHEM"], seed=seed)); c.play_card(0); c.hand = [S, "WOUND"]; c.draw_pile = [S, D, B, "SHRUG_IT_OFF", cid] + [D] * 5
+        assert c.end_turn()["ok"] and c.pending_choice is None and c.in_combat and c.is_play_phase, (seed, cid)
+print("colorless prompt checks ok")
 print("lava lamp engine checks ok")
 print("sim self-check ok")

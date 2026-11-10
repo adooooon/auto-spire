@@ -9,6 +9,9 @@ Action space: Discrete(N_ACTIONS)
                   (sim only: masked off when /combat has no potionSlots, i.e. live)
   CHOOSE_HAND + i      -> answer a hand card prompt with hand card i (sim only)
   CHOOSE_DISCARD + k   -> answer a discard prompt with CARD_IDS[k] (sim only)
+  CHOOSE_GENERATED + i -> take generated option i (Discovery); CHOOSE_SKIP -> take none (sim only)
+  CHOOSE_DRAW + k      -> answer a draw-pile prompt with CARD_IDS[k] (sim only)
+  CHOOSE_DONE          -> end a multi-pick hand prompt (Purity; its picks are CHOOSE_HAND) (sim only)
 
 Observation space: Box(OBS_DIM,) float32 — see _encode() for the layout.
 
@@ -84,13 +87,23 @@ CHOICE_FEATURES = 2 + len(CHOICE_CARDS)
 # Appended last: an upgrade prompt is open (Armaments), and the prompt cards that came with upgrades.
 UPGRADE_PROMPT_CARDS = ("TRUE_GRIT", "ARMAMENTS")  # True Grit+ asks a hand prompt
 UPGRADE_FEATURES = 1 + len(UPGRADE_PROMPT_CARDS)
+# Appended after that: a generated / draw / hand_multi prompt is open, each generated option's identity, and which
+# colorless card asked. Stratagem isn't one: its pick is random (engine._stratagem).
+COLORLESS_PROMPT_CARDS = ("DISCOVERY", "PURITY", "SECRET_TECHNIQUE", "SECRET_WEAPON", "SEEKER_STRIKE", "THINKING_AHEAD", "ENTROPY")
+PROMPT_KINDS = ("generated", "draw", "hand_multi")
+GENERATED_OPTIONS = 3
+PROMPT_FEATURES = len(PROMPT_KINDS) + GENERATED_OPTIONS * len(CARD_IDS) + len(COLORLESS_PROMPT_CARDS)
 OBS_DIM = (MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES
-           + RELIC_FEATURES + CHOICE_FEATURES + UPGRADE_FEATURES)
+           + RELIC_FEATURES + CHOICE_FEATURES + UPGRADE_FEATURES + PROMPT_FEATURES)
 POTION_ACTION = END_TURN + 1  # potion actions come after END_TURN, so old action indices are unchanged
 # Card prompts: pick hand slot i, or a discard-pile card by id. Appended after the potion block.
 CHOOSE_HAND = POTION_ACTION + MAX_POTION_SLOTS * MAX_ENEMIES  # slots 3-4 extend the potion block
 CHOOSE_DISCARD = CHOOSE_HAND + MAX_HAND
-N_ACTIONS = CHOOSE_DISCARD + len(CARD_IDS)
+CHOOSE_GENERATED = CHOOSE_DISCARD + len(CARD_IDS)  # the colorless prompts, appended after the discard block
+CHOOSE_SKIP = CHOOSE_GENERATED + GENERATED_OPTIONS
+CHOOSE_DRAW = CHOOSE_SKIP + 1
+CHOOSE_DONE = CHOOSE_DRAW + len(CARD_IDS)
+N_ACTIONS = CHOOSE_DONE + 1
 # ponytail: a fight-level reward can't see that a potion saved now helps a later fight, so each use
 # costs this much HP's worth (x hp_weight). Tune from run.py's potions_used / held_at_death numbers.
 POTION_COST_HP = 5
@@ -108,9 +121,10 @@ def _encode_card(card: dict) -> list[float]:
 
 
 def _asks(card: dict) -> bool:
-    """Playing it opens a card prompt: the three choice cards, Armaments (Armaments+ upgrades them all), True Grit+."""
+    """Playing it opens a card prompt: the three choice cards, Armaments (Armaments+ upgrades them all), True Grit+, the
+    colorless prompt cards (Entropy's power asks at each turn start)."""
     b, up = base_id(card["id"]), bool(card["upgraded"])
-    return b in CHOICE_CARDS or (b == "ARMAMENTS" and not up) or (b == "TRUE_GRIT" and up)
+    return b in CHOICE_CARDS + COLORLESS_PROMPT_CARDS or (b == "ARMAMENTS" and not up) or (b == "TRUE_GRIT" and up)
 
 
 UPGRADE_CARDS = {"ARMAMENTS", *COLORLESS}  # card ids a model trained before upgrades lacks (UPGRADE_RELICS: its relics)
@@ -242,6 +256,10 @@ def _encode(combat: dict) -> np.ndarray:
     choice_feats = [float(choice.get("kind") == "hand"), float(choice.get("kind") == "discard")]
     choice_feats += [float(choice.get("source") == cid) for cid in CHOICE_CARDS]
     choice_feats += [float(choice.get("kind") == "upgrade")] + [float(choice.get("source") == cid) for cid in UPGRADE_PROMPT_CARDS]
+    choice_feats += [float(choice.get("kind") == k) for k in PROMPT_KINDS]
+    gen = (choice.get("options") or []) if choice.get("kind") == "generated" else []
+    choice_feats += [float(i < len(gen) and base_id(gen[i]) == cid) for i in range(GENERATED_OPTIONS) for cid in CARD_IDS]
+    choice_feats += [float(choice.get("source") == cid) for cid in COLORLESS_PROMPT_CARDS]
 
     return np.array(hand_feats + player_feats + pile_feats + enemy_feats + potion_feats + relic_feats + choice_feats,
                     dtype=np.float32)
@@ -345,7 +363,15 @@ class STS2CombatEnv(gym.Env):
             prev_player_hp = _player_hp(prev)
 
             used_potion = False
-            if action >= CHOOSE_DISCARD:
+            if action == CHOOSE_DONE:
+                result = self.client.exec("choose_done")
+            elif action >= CHOOSE_DRAW:
+                result = self.client.exec(f"choose_draw {CARD_IDS[int(action) - CHOOSE_DRAW]}")
+            elif action == CHOOSE_SKIP:
+                result = self.client.exec("choose_skip")
+            elif action >= CHOOSE_GENERATED:
+                result = self.client.exec(f"choose_generated {int(action) - CHOOSE_GENERATED}")
+            elif action >= CHOOSE_DISCARD:
                 result = self.client.exec(f"choose_discard {CARD_IDS[int(action) - CHOOSE_DISCARD]}")
             elif action >= CHOOSE_HAND:
                 result = self.client.exec(f"choose {int(action) - CHOOSE_HAND}")
@@ -446,8 +472,14 @@ class STS2CombatEnv(gym.Env):
         mask = np.zeros(N_ACTIONS, dtype=bool)
         choice = self._combat.get("choice")
         if choice:  # a card prompt is open: only its answers are legal
-            if choice["kind"] == "hand":
+            if choice["kind"] in ("hand", "hand_multi"):
                 mask[CHOOSE_HAND:CHOOSE_HAND + min(len(hand), MAX_HAND)] = True
+                mask[CHOOSE_DONE] = choice["kind"] == "hand_multi"
+            elif choice["kind"] == "generated":
+                mask[CHOOSE_GENERATED:CHOOSE_GENERATED + len(choice["options"][:GENERATED_OPTIONS])] = mask[CHOOSE_SKIP] = True
+            elif choice["kind"] == "draw":
+                for cid in choice["options"]:
+                    mask[CHOOSE_DRAW + CARD_IDS.index(base_id(cid))] = True
             elif choice["kind"] == "upgrade":  # the sim's Armaments: the upgradable hand cards
                 for i, c in enumerate(hand[:MAX_HAND]):
                     mask[CHOOSE_HAND + i] = base_id(c["id"]) in UPGRADABLE and not c["upgraded"]

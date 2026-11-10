@@ -3,9 +3,9 @@ from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
 from sim.potions import POTION_IDS
-assert COMBAT_OBS == 2683 and COMBAT_ACTIONS == 244  # + the upgrade prompt and True Grit / Armaments as its sources, + 53 colorless cards, RetainHandPower and the 14 colorless powers
-from env import CHOICE_FEATURES, POTION_FEATURES, RELIC_FEATURES, UPGRADE_FEATURES
-POT0 = COMBAT_OBS - UPGRADE_FEATURES - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
+assert COMBAT_OBS == 3122 and COMBAT_ACTIONS == 392  # + the colorless prompts (3 kinds, 3 generated one-hots, 7 sources; 3 + 1 + 143 + 1 actions), + the upgrade prompt and True Grit / Armaments as its sources, + 53 colorless cards, RetainHandPower and the 14 colorless powers
+from env import CHOICE_FEATURES, POTION_FEATURES, PROMPT_FEATURES, RELIC_FEATURES, UPGRADE_FEATURES
+POT0 = COMBAT_OBS - PROMPT_FEATURES - UPGRADE_FEATURES - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
 from sim.engine import SimClient, SimLoopError
 
 # Review focus 1: a sim infinite loop ends the episode as aborted instead of hanging or raising.
@@ -170,7 +170,7 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == 244 and COMBAT_OBS == 2683
+assert cenv.action_space.n == COMBAT_ACTIONS == 392 and COMBAT_OBS == 3122
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()
@@ -520,13 +520,15 @@ assert len(act_map) == 190 and COMBAT_OBS == len(new_obs)  # the pre-upgrade act
 assert act_map[:CHOOSE_DISCARD] == list(range(CHOOSE_DISCARD)) and CHOOSE_DISCARD + CARD_IDS.index("ARMAMENTS") not in act_map
 
 
-def choice_env(hand, discard=()):
+def choice_env(hand, discard=(), draw=None):
     env = STS2CombatEnv(encounter="MAWLER_NORMAL", client=SimClient(seed=0))
     env.deck, env.potions, env.relics, env.relic_state = list(hand), [], set(), {}
     env._episode_count = 1
     env.reset(seed=0)
     c = env.client._combat
     c.hand, c.discard_pile, c.energy = list(hand), list(discard), 3
+    if draw is not None:
+        c.draw_pile = list(draw)
     env._combat = env.client.combat()
     return env, c
 
@@ -537,7 +539,8 @@ env.step(0)
 m = env.action_masks()
 assert m.nonzero()[0].tolist() == [CHOOSE_HAND, CHOOSE_HAND + 1]
 obs = _encode(env._combat)
-C0 = COMBAT_OBS - UPGRADE_FEATURES - CHOICE_FEATURES  # where the prompt block starts
+C0 = COMBAT_OBS - PROMPT_FEATURES - UPGRADE_FEATURES - CHOICE_FEATURES  # where the prompt block starts
+U0 = C0 + CHOICE_FEATURES  # the upgrade prompt block
 assert obs[C0] == 1 and obs[C0 + 2 + CHOICE_CARDS.index("BURNING_PACT")] == 1 and not obs[C0 + CHOICE_FEATURES:].any()
 env.step(CHOOSE_HAND + 1)
 assert c.exhaust_pile == ["BASH"] and c.pending_choice is None and env.action_masks()[END_TURN]
@@ -555,8 +558,8 @@ env, c = choice_env(["ARMAMENTS", "WOUND", "BASH+", "STRIKE_IRONCLAD", "DEFEND_I
 env.step(0)
 assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_HAND + 2, CHOOSE_HAND + 3]
 obs = _encode(env._combat)
-assert obs[-UPGRADE_FEATURES:].tolist() == [1, 0, 1]  # the upgrade prompt, asked by Armaments
-assert not obs[-UPGRADE_FEATURES - CHOICE_FEATURES:-UPGRADE_FEATURES].any()  # not a hand or discard prompt
+assert obs[U0:U0 + UPGRADE_FEATURES].tolist() == [1, 0, 1]  # the upgrade prompt, asked by Armaments
+assert not obs[C0:U0].any() and not obs[U0 + UPGRADE_FEATURES:].any()  # not a hand or discard prompt
 env.step(CHOOSE_HAND + 3)
 assert c.hand == ["WOUND", "BASH+", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD+"] and c.pending_choice is None
 
@@ -564,7 +567,60 @@ assert c.hand == ["WOUND", "BASH+", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD+"] and c
 env, c = choice_env(["TRUE_GRIT+", "WOUND", "BASH"])
 env.step(0)
 obs = _encode(env._combat)
-assert obs[-UPGRADE_FEATURES - CHOICE_FEATURES] == 1 and obs[-UPGRADE_FEATURES:].tolist() == [0, 1, 0]
+assert obs[C0] == 1 and obs[U0:U0 + UPGRADE_FEATURES].tolist() == [0, 1, 0]
+
+# The colorless prompts (appended actions and the last obs block): each kind's mask holds exactly its legal answers.
+from env import CHOOSE_DONE, CHOOSE_DRAW, CHOOSE_GENERATED, CHOOSE_SKIP, COLORLESS_PROMPT_CARDS, N_ACTIONS as CA
+assert (CHOOSE_GENERATED, CHOOSE_SKIP, CHOOSE_DRAW, CHOOSE_DONE, CA) == \
+    (CHOOSE_DISCARD + len(CARD_IDS), CHOOSE_DISCARD + len(CARD_IDS) + 3, CHOOSE_DISCARD + len(CARD_IDS) + 4,
+     CHOOSE_DISCARD + 2 * len(CARD_IDS) + 4, CHOOSE_DISCARD + 2 * len(CARD_IDS) + 5)
+P0, NC = COMBAT_OBS - PROMPT_FEATURES, len(CARD_IDS)
+SRC0 = P0 + 3 + 3 * NC
+assert PROMPT_FEATURES == 3 + 3 * NC + len(COLORLESS_PROMPT_CARDS) and "STRATAGEM" not in COLORLESS_PROMPT_CARDS
+
+
+def prompt_obs(env, kind, source):
+    obs = _encode(env._combat)
+    assert obs.shape == (COMBAT_OBS,) == env.observation_space.shape
+    assert obs[P0:P0 + 3].tolist() == [float(kind == k) for k in ("generated", "draw", "hand_multi")]
+    assert obs[SRC0:].tolist() == [float(source == s) for s in COLORLESS_PROMPT_CARDS]
+    return obs
+
+
+env, c = choice_env(["DISCOVERY"])  # generated: the 3 options and skip
+env.step(0); opts = c.pending_choice["options"]
+assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_GENERATED, CHOOSE_GENERATED + 1, CHOOSE_GENERATED + 2, CHOOSE_SKIP]
+obs = prompt_obs(env, "generated", "DISCOVERY")
+assert not obs[C0:P0].any() and obs[P0 + 3:SRC0].sum() == 3
+assert [int(np.flatnonzero(obs[P0 + 3 + k * NC:P0 + 3 + (k + 1) * NC])[0]) for k in range(3)] == [CARD_IDS.index(o) for o in opts]
+env.step(CHOOSE_GENERATED + 2); assert c.hand == [opts[2]] and c.pending_choice is None and env.action_masks()[END_TURN]
+env, c = choice_env(["DISCOVERY"]); env.step(0); env.step(CHOOSE_SKIP); assert c.hand == [] and c.pending_choice is None
+env, c = choice_env(["SECRET_TECHNIQUE"], draw=["STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "SHRUG_IT_OFF", "DEFEND_IRONCLAD"])  # draw, by id
+env.step(0)
+assert env.action_masks().nonzero()[0].tolist() == sorted(CHOOSE_DRAW + CARD_IDS.index(x) for x in ("DEFEND_IRONCLAD", "SHRUG_IT_OFF"))
+prompt_obs(env, "draw", "SECRET_TECHNIQUE")
+env.step(CHOOSE_DRAW + CARD_IDS.index("SHRUG_IT_OFF")); assert c.hand == ["SHRUG_IT_OFF"] and c.pending_choice is None
+env, c = choice_env(["SEEKER_STRIKE"], draw=["STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH", "ANGER", "SHRUG_IT_OFF"])
+env.step(0); opts = c.pending_choice["options"]
+assert env.action_masks().nonzero()[0].tolist() == sorted(CHOOSE_DRAW + CARD_IDS.index(x) for x in opts)
+prompt_obs(env, "draw", "SEEKER_STRIKE")
+env.step(CHOOSE_DRAW + CARD_IDS.index(opts[0])); assert c.hand == [opts[0]] and c.pending_choice is None
+env, c = choice_env(["PURITY", "WOUND", "BASH"])  # hand_multi: the hand slots and done
+env.step(0)
+assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_HAND, CHOOSE_HAND + 1, CHOOSE_DONE]
+prompt_obs(env, "hand_multi", "PURITY")
+env.step(CHOOSE_HAND); assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_HAND, CHOOSE_DONE]
+env.step(CHOOSE_DONE); assert c.exhaust_pile == ["WOUND", "PURITY"] and c.hand == ["BASH"] and c.pending_choice is None
+env, c = choice_env(["THINKING_AHEAD", "WOUND"], draw=["STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH"])  # hand, its own source
+env.step(0)
+assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_HAND, CHOOSE_HAND + 1, CHOOSE_HAND + 2]
+assert prompt_obs(env, None, "THINKING_AHEAD")[C0] == 1
+env.step(CHOOSE_HAND); assert c.draw_pile[-1] == "WOUND"
+env, c = choice_env(["ENTROPY"], draw=["STRIKE_IRONCLAD"] * 10)  # Entropy's hand prompt opens at the next turn start
+env.step(0); env.step(END_TURN)
+assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_HAND + i for i in range(5)]
+assert prompt_obs(env, None, "ENTROPY")[C0] == 1
+env.step(CHOOSE_HAND + 1); assert c.hand[1] != "STRIKE_IRONCLAD" and c.pending_choice is None and env.action_masks()[END_TURN]
 
 # Review focus 5: live has no simRelics, so the three cards stay masked and a live pick can't take them.
 live = {k: v for k, v in env.client.combat().items() if k != "simRelics"}
@@ -572,6 +628,8 @@ live["choice"] = None
 live["player"]["hand"] = [card_to_dict(c, 0, True) for c in ("BRAND", "BRAND+", "ARMAMENTS", "TRUE_GRIT+", "ARMAMENTS+", "TRUE_GRIT")]
 env._combat = live
 assert env.action_masks()[:6 * MAX_ENEMIES:MAX_ENEMIES].tolist() == [False] * 4 + [True] * 2
+live["player"]["hand"] = [card_to_dict(x, 0, True) for x in COLORLESS_PROMPT_CARDS + ("STRATAGEM",)]  # Stratagem picks at random
+assert env.action_masks()[:8 * MAX_ENEMIES:MAX_ENEMIES].tolist() == [False] * 7 + [True]
 
 # Prompt practice, in decks only and only when asked.
 rng = np.random.default_rng(0)

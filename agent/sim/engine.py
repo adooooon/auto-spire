@@ -695,8 +695,11 @@ class SimCombat:
     _post_play: bool = False  # AutoPostPlay: Stampede / Howl autoplays at the end of the turn
     _rupture: int | None = None  # Strength owed for HP lost to the card being played (RupturePower)
     _ethereal_exhausts: int = 0  # Dark Embrace draws for these after the hand flush
-    # A card waiting on the player's choice: {"kind": "hand" | "discard", "source": card_id}.
+    # A card waiting on the player's choice: {"kind": "hand" | "discard" | "upgrade" | "hand_multi", "source": card_id}, and
+    # "draw" / "generated" with "options": the offered ids. See _ask.
     pending_choice: dict | None = None
+    _options: list = field(default_factory=list)  # the open prompt's offered cards (draw-pile copies / new cards; hand_multi: the hand)
+    _multi: list = field(default_factory=list)  # hand_multi: [max picks, picks so far]
     choice_log: list[tuple[str, str, tuple[str, ...]]] = field(default_factory=list)  # (source, picked, options), paused prompts only
     _pausable: bool = False  # the play being resolved may stop at a prompt (not an autoplay)
     _paused: tuple | None = None  # what the rest of a paused play needs, see _run_plays
@@ -843,13 +846,57 @@ class SimCombat:
         return {"ok": True, "played": card.title, "index": hand_index}
 
     def choose_card(self, hand_index: int) -> dict:
-        """Answer a pending "hand" or "upgrade" prompt with the card at hand_index (upgrade: an upgradable one)."""
+        """Answer a pending "hand" or "upgrade" prompt with the card at hand_index (upgrade: an upgradable one), or add it
+        to a "hand_multi" selection (it ends at its max or an empty hand)."""
         kind = (self.pending_choice or {}).get("kind")
-        if kind not in ("hand", "upgrade") or not 0 <= hand_index < len(self.hand) or \
+        if kind not in ("hand", "upgrade", "hand_multi") or not 0 <= hand_index < len(self.hand) or \
                 (kind == "upgrade" and self.hand[hand_index] not in UPGRADABLE):
             return {"error": "invalid_choice"}
+        if kind == "hand_multi":
+            self._multi[1].append(self.hand.pop(hand_index))
+            return self.choose_done() if len(self._multi[1]) >= self._multi[0] or not self.hand else \
+                {"ok": True, "choice": self.pending_choice}
         options = tuple(c for c in self.hand if kind == "hand" or c in UPGRADABLE)
+        if self.pending_choice["source"] == "ENTROPY":
+            return self._resume_turn(hand_index, options)
         return self._resume_play(self._take(kind, hand_index), options)
+
+    def choose_generated(self, i: int | None) -> dict:
+        """Answer a pending "generated" prompt with option i, or None to skip."""
+        if (self.pending_choice or {}).get("kind") != "generated" or not (i is None or 0 <= i < len(self._options)):
+            return {"error": "invalid_choice"}
+        return self._resume_play(None if i is None else self._options[i], tuple(self._options))
+
+    def choose_skip(self) -> dict:
+        return self.choose_generated(None)
+
+    def choose_draw(self, card_id: str) -> dict:
+        """Answer a pending "draw" prompt with an offered draw-pile card, by id. Like choose_discard, a base id takes a plain
+        copy first, else the upgraded one; among equal copies the first in pile order (draw_pile[0] is the bottom)."""
+        if (self.pending_choice or {}).get("kind") != "draw":
+            return {"error": "invalid_choice"}
+        i = next((i for want in (card_id, card_id + "+") for i, c in enumerate(self._options) if c == want), None)
+        if i is None:
+            return {"error": "invalid_choice"}
+        options = tuple(self._options)
+        return self._resume_play(self._take("draw", i), options)
+
+    def choose_done(self) -> dict:
+        """End a pending "hand_multi" selection with the picks so far (0 is allowed)."""
+        if (self.pending_choice or {}).get("kind") != "hand_multi":
+            return {"error": "invalid_choice"}
+        return self._resume_play(tuple(self._multi[1]), tuple(self._options))
+
+    def _resume_turn(self, hand_index: int, options: tuple[str, ...]) -> dict:
+        """Entropy's prompt answered: transform the pick (Amount > 1: the other picks at random; ponytail: one prompt, not
+        Amount of them, as the env's hand mask can't hold picked slots out), then the rest of the turn start."""
+        self.choice_log.append(("ENTROPY", self.hand[hand_index], options))
+        self.pending_choice = None
+        rest = [i for i in range(len(self.hand)) if i != hand_index]
+        for i in [hand_index] + self.rng.sample(rest, self.pw["EntropyPower"] - 1):
+            self.hand[i] = self._transform(self.hand[i])
+        self._turn_start_rest()
+        return {"ok": True, "choice": self.pending_choice}
 
     def choose_discard(self, card_id: str) -> dict:
         """Answer a pending "discard" prompt with a card in the discard pile. The env names base ids: a plain copy
@@ -1384,6 +1431,20 @@ class SimCombat:
         elif b == "PROLONG":  # BlockNextTurnPower = the block you have now (PowerCmd.Apply skips 0)
             if self.player_block:
                 self._apply_power("BlockNextTurnPower", self.player_block)
+        elif b == "DISCOVERY":  # ponytail: every generatable Ironclad card, not the unlocked pool (as Vexing Puzzlebox)
+            self._ask("generated", cid, self.rng.sample(GENERATED, 3))
+        elif b == "PURITY":  # Cards 3, +2
+            self._ask("hand_multi", cid, most=3 + 2 * up)
+        elif b in ("SECRET_TECHNIQUE", "SECRET_WEAPON"):
+            kind = "Skill" if b == "SECRET_TECHNIQUE" else "Attack"
+            self._ask("draw", cid, [c for c in self.draw_pile if CARDS[c].type == kind])
+        elif b == "SEEKER_STRIKE":  # Cards 3: the prompt is over 3 random draw-pile cards (listed in pile order)
+            self._hit(card, target, card.damage)
+            picks = sorted(self.rng.sample(range(len(self.draw_pile)), min(3, len(self.draw_pile))))
+            self._ask("draw", cid, [self.draw_pile[i] for i in picks])
+        elif b == "THINKING_AHEAD":  # Cards 2, then a hand card on top of the draw pile
+            self._draw(2)
+            self._ask("hand", cid)
         elif b == "THE_BOMB":  # Turns 3; BombDamage 40, +10 (SetDamage on the new instance)
             self._apply_power("TheBombPower", 3)
             self.inst["TheBombPower"][-1][1] = 40 + 10 * up
@@ -1400,25 +1461,41 @@ class SimCombat:
         """Ashen Strike: 6 + ExtraDamage (3, upgraded +1) per card in the exhaust pile."""
         return 6 + (3 + is_upgraded(cid)) * len(self.exhaust_pile)
 
-    def _ask(self, kind: str, source: str) -> None:
+    def _ask(self, kind: str, source: str, options: list | None = None, most: int = 1) -> None:
         """CardSelectCmd.FromHand / FromCombatPile / FromHandForUpgrade, choosing exactly 1: nothing if the fight is
         ending or there are no options, no prompt for 1 option, else the player picks and the play stops here until
-        they do. kind "upgrade" offers the upgradable hand cards and upgrades the pick in its slot."""
-        pile = self.discard_pile if kind == "discard" else self.hand
+        they do. kind "upgrade" offers the upgradable hand cards and upgrades the pick in its slot; "draw" offers
+        `options` (draw-pile cards, the filter already applied). Asked even for 1 option, since skip / done is an
+        answer too: "generated" (FromChooseACardScreen, canSkip: 1 of `options`, new cards) and "hand_multi"
+        (FromHand, min 0: up to `most` hand cards, picked one at a time; _finish_choice gets them as a tuple)."""
+        pile = {"discard": self.discard_pile, "draw": options, "generated": options}.get(kind, self.hand)
         slots = [i for i, c in enumerate(pile) if kind != "upgrade" or c in UPGRADABLE]
+        self._options, self._multi = list(pile), [most, []]  # what _take and the answer read
         if self._ending() or not slots:
             self._finish_choice(source, None)
-        elif len(slots) == 1:
+        elif len(slots) == 1 and kind not in ("generated", "hand_multi"):
             self._finish_choice(source, self._take(kind, slots[0]))
         elif self._pausable:
             self.pending_choice = {"kind": kind, "source": base_id(source)}
+            if kind in ("draw", "generated"):
+                self.pending_choice["options"] = [str(c) for c in pile]
+        # ponytail: the game prompts the player here too (only Whispering Earring has a selector). Autoplays
+        # nest inside other effects, so pausing one needs a stack of paused plays; add it if Havoc's pick matters.
+        elif kind == "hand_multi":  # a random number of random cards
+            picks = sorted(self.rng.sample(slots, self.rng.randint(0, min(most, len(slots)))), reverse=True)
+            self._finish_choice(source, tuple(self.hand.pop(i) for i in picks))
         else:
-            # ponytail: the game prompts the player here too (only Whispering Earring has a selector). Autoplays
-            # nest inside other effects, so pausing one needs a stack of paused plays; add it if Havoc's pick matters.
             self._finish_choice(source, self._take(kind, self.rng.choice(slots)))
 
     def _take(self, kind: str, i: int) -> str:
-        """The picked card: out of its pile, or for "upgrade" upgraded where it is. Returns the card as offered."""
+        """The picked card: out of its pile, or for "upgrade" upgraded where it is. Returns the card as offered.
+        "draw" / "generated": option i of the open prompt (a draw-pile copy leaves the draw pile)."""
+        if kind == "generated":
+            return self._options[i]
+        if kind == "draw":
+            picked = self._options[i]
+            self.draw_pile.pop(next(j for j, d in enumerate(self.draw_pile) if d is picked))
+            return picked
         pile = self.discard_pile if kind == "discard" else self.hand
         picked = pile[i]
         if kind == "upgrade":
@@ -1430,9 +1507,22 @@ class SimCombat:
     def _finish_choice(self, source: str, picked: str | None) -> None:
         """The rest of the card after its prompt. picked is already out of its pile (or upgraded in it)."""
         b = base_id(source)
-        if b == "HEADBUTT":
+        if b in ("HEADBUTT", "THINKING_AHEAD"):
             if picked:
                 self.draw_pile.append(picked)  # CardPilePosition.Top
+            return
+        if b in ("SECRET_TECHNIQUE", "SECRET_WEAPON", "SEEKER_STRIKE"):  # CardPileCmd.Add(Hand)
+            if picked:
+                self._add_to_hand(picked)
+            return
+        if b == "DISCOVERY":  # SetToFreeThisTurn, then AddGeneratedCardToCombat(Hand)
+            if picked:
+                self.free_cards.append(picked)
+                self._add_to_hand(picked)
+            return
+        if b == "PURITY":
+            for c in picked or ():
+                self._exhaust(c)
             return
         if b == "ARMAMENTS":
             return
@@ -1596,16 +1686,21 @@ class SimCombat:
 
     def _stratagem(self) -> None:
         """StratagemPower.AfterShuffle: exactly Amount draw-pile cards (all if fewer) to hand (CardSelectCmd.FromCombatPile).
-        ponytail: picked at random, as _ask does when it can't pause, until plan task 4 makes it a prompt."""
+        ponytail: picked at random, so the bot can't steer it: AfterShuffle fires inside a draw (any card, potion or turn
+        start can be mid-draw), and the sim can only pause a card play or the turn start. Needs resumable draws."""
         for c in self.rng.sample(self.draw_pile, min(self.pw["StratagemPower"], len(self.draw_pile))):
             self.draw_pile.pop(next(i for i, d in enumerate(self.draw_pile) if d is c))
             self._add_to_hand(c)
 
-    def _entropy(self) -> None:
-        """EntropyPower.AfterPlayerTurnStart: transform exactly Amount hand cards (all if fewer; CardSelectCmd.FromHand).
-        ponytail: picked at random, as _ask does when it can't pause, until plan task 4 makes it a prompt."""
-        for i in self.rng.sample(range(len(self.hand)), min(self.pw["EntropyPower"], len(self.hand))):
-            self.hand[i] = self._transform(self.hand[i])
+    def _entropy(self) -> bool:
+        """EntropyPower.AfterPlayerTurnStart: transform exactly Amount hand cards (CardSelectCmd.FromHand). All of them,
+        with no prompt, if there are no more than Amount; else the turn start stops at a "hand" prompt (True), and
+        _resume_turn transforms the pick and runs the rest."""
+        if len(self.hand) > self.pw["EntropyPower"]:
+            self.pending_choice = {"kind": "hand", "source": "ENTROPY"}
+            return True
+        self.hand = [self._transform(c) for c in self.hand]
+        return False
 
     def _transform(self, cid: str) -> str:
         """CardFactory.CreateRandomCardForTransform in combat: a random other card of the card's pool (a Token's: the colorless
@@ -2026,8 +2121,14 @@ class SimCombat:
             self._lose_hp(self.inferno_self)
         # ponytail: player powers run in this fixed order here and in AfterCardPlayed (Calamity, Panache), not in the
         # order they were applied (CombatState.IterateHookListeners); none of them reads another's result.
-        if self.in_combat and self.pw.get("EntropyPower") and not self._ending():
-            self._entropy()
+        if self.in_combat and self.pw.get("EntropyPower") and not self._ending() and self._entropy():
+            self.is_play_phase = True  # the player answers it; play, potions and end turn wait (pending_choice)
+            return
+        self._turn_start_rest()
+
+    def _turn_start_rest(self) -> None:
+        """The turn start after Entropy: the rest of AfterPlayerTurnStart, AfterSideTurnStart, AutoPrePlay."""
+        R, st = self.relics, self.relic_state
         for boulder in self.inst.get("RollingBoulderPower", ()):  # [damage]: Unpowered to every hittable enemy, then +5
             if self.in_combat:
                 self._damage_all(boulder[0])
@@ -2419,6 +2520,14 @@ class SimClient:
             return self._combat.choose_card(int(parts[1]))
         if verb == "choose_discard":
             return self._combat.choose_discard(parts[1])
+        if verb == "choose_generated":
+            return self._combat.choose_generated(int(parts[1]))
+        if verb == "choose_skip":
+            return self._combat.choose_skip()
+        if verb == "choose_draw":
+            return self._combat.choose_draw(parts[1])
+        if verb == "choose_done":
+            return self._combat.choose_done()
         if verb == "end":
             return self._combat.end_turn()
         if verb == "potion":
