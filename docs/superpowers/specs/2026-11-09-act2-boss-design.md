@@ -62,6 +62,34 @@ If the bot still loses to one boss after this, the next step is boss-specific pr
 - **Staged boss fights first.** Debug commands set up the real game in states taken from sim runs that reached the Act 2 boss (deck with upgrades, relics including Neow and Ancient ones, potions, HP), then start that boss. The bot plays the fight for real. My call: 30 fights, 10 per boss. Success is more than 50% won overall, reported per boss.
 - **Then a few full real runs.** My call: 5 runs with the final models. These are too few to measure a rate, so report them without a bar. Each must play through without `[ERROR]` lines in `godot.log` from the mod.
 
+## Analysis (2026-11-09)
+
+Data: `ppo_sts2_sim_act2_b_final` (combat) and `ppo_sts2_sim_act2_run_v1_final` (run), 1,500 runs on generated maps at commit 969cae9, 331 Act 2 boss fights in `~/projects/sts2-rl-bot/auto-spire/.superpowers/queue/boss_analysis.jsonl`. Summary: `python boss_report.py --summarize <that file>` from `agent/`.
+
+| Boss | Reached | Won | Arrival HP / max | Deck | Relics | Potions held / used | Turn of death (median, range) |
+|---|---|---|---|---|---|---|---|
+| Kaiser Crab | 104 | 0 (0%) | 63.9 / 82.8 | 24.3 | 4.6 | 0.62 / 0.61 | 5 (2-11) |
+| Knowledge Demon | 103 | 10 (10%) | 64.8 / 82.3 | 24.9 | 4.4 | 0.91 / 0.86 | 6 (3-8) |
+| The Insatiable | 124 | 11 (9%) | 64.0 / 83.2 | 25.0 | 4.7 | 0.78 / 0.67 | 6 (3-10) |
+
+Mean HP lost on each turn, over fights that lasted past that turn (turns 1 to 6):
+
+| Boss | T1 | T2 | T3 | T4 | T5 | T6 |
+|---|---|---|---|---|---|---|
+| Kaiser Crab | 7.8 | 19.7 | 6.5 | 26.0 | 7.9 | 11.3 |
+| Knowledge Demon | 0.2 | 16.8 | 22.6 | 9.9 | 3.0 | 20.7 |
+| The Insatiable | 0.5 | 10.5 | 20.9 | 0.5 | 14.3 | 9.1 |
+
+Findings:
+
+1. The bot wins 21 of 331 boss fights (6%). Kaiser Crab is never beaten (0 of 104).
+2. Damage comes in spikes. Kaiser Crab costs 19.7 HP on turn 2 and 26.0 on turn 4, against 6.5 on turn 3. The Insatiable costs 20.9 on turn 3 and 0.5 on turn 4. Knowledge Demon costs 22.6 on turn 3 and 20.7 on turn 6. Deaths follow these turns: the median loss ends on turn 5 or 6.
+3. Arrival HP matters. Fights that start at 75 HP or more are won 16 of 129 times (12%). Fights that start below 75 are won 5 of 202 times (2.5%). Mean arrival HP is 77.9 in wins and 63.3 in losses, while max HP is about 82 in both.
+4. Decks do not separate wins from losses. Wins average 24.3 cards and 8.8 Strikes and Defends. Losses average 24.8 cards and 8.9. Strike and Defend are the two most common cards at every boss.
+5. Potions are rarely left unused. The bot holds 0.6 to 0.9 potions on arrival and uses almost all of them. A potion was unused at death in 18 of 310 losses (1 Kaiser Crab, 4 Knowledge Demon, 13 The Insatiable).
+
+Most losses are not close in the other direction either: the median loss starts its last turn at 13 HP, and 221 of 310 start it at 20 HP or less. Only 19 start it at 40 or more.
+
 ## Not in scope
 
 - Act 3, Ascension, other characters.
