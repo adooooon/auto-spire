@@ -249,8 +249,8 @@ def upgrade(cid: str) -> str:
 COMMONS, UNCOMMONS, RARES = (tuple(sorted(cid for cid in CARDS if CARDS[cid].rarity == r and cid != "ARMAMENTS" and not is_upgraded(cid)))
                               for r in ("Common", "Uncommon", "Rare"))
 # CardFactory.FilterForCombat: what Stoke / Infernal Blade draw from (uniformly, unlocked pool).
-# ponytail: the game's pool also has Armaments; left out so seeded Stoke draws (and test_engine's trace) stay as they were.
-GENERATED = tuple(c for c in COMMONS + UNCOMMONS + RARES if CARDS[c].generated)
+# Armaments is last (it isn't in COMMONS), so the draws over the other cards keep their order.
+GENERATED = tuple(c for c in COMMONS + UNCOMMONS + RARES + ("ARMAMENTS",) if CARDS[c].generated)
 CHOICE_CARDS = ("BRAND", "BURNING_PACT", "HEADBUTT")
 
 

@@ -756,6 +756,12 @@ class SimCombat:
             self._gain_strength(2)
         if "ANCHOR" in R:
             self._gain_block(10)
+        if self.relic_state.get("girya"):  # Girya.AfterRoomEntered: Strength = times lifted
+            self._gain_strength(self.relic_state["girya"])
+        if "STONE_CRACKER" in R:  # upgrades 2 random upgradable draw-pile cards (this fight only)
+            ups = [i for i, c in enumerate(self.draw_pile) if c in UPGRADABLE]
+            for i in self.rng.sample(ups, min(2, len(ups))):
+                self.draw_pile[i] = upgrade(self.draw_pile[i])
         if "PANTOGRAPH" in R and boss:
             self.heal(25)
         if "BELT_BUCKLE" in R and not any(self.potions):
@@ -827,7 +833,10 @@ class SimCombat:
         return self._resume_play(self._take(kind, hand_index), options)
 
     def choose_discard(self, card_id: str) -> dict:
-        """Answer a pending "discard" prompt with a card in the discard pile."""
+        """Answer a pending "discard" prompt with a card in the discard pile. The env names base ids: a plain copy
+        is taken first, else the upgraded one (ponytail: the policy can't pick the upgraded copy over a plain one)."""
+        if card_id not in self.discard_pile:
+            card_id += "+"
         if not self.pending_choice or self.pending_choice["kind"] != "discard" or card_id not in self.discard_pile:
             return {"error": "invalid_choice"}
         options = tuple(self.discard_pile)
@@ -1304,6 +1313,7 @@ class SimCombat:
     def _hit(self, card, target: _Enemy | None, base: int, hits: int = 1) -> None:
         # Vigor and Strike Dummy add to the base like Strength; Pen Nib doubles the attack it fires on.
         base += self.pw.get("VigorPower", 0) + (3 if "STRIKE_DUMMY" in self.relics and card.strike else 0)
+        base += 3 if "MINIATURE_CANNON" in self.relics and is_upgraded(card.id) else 0  # ModifyDamageAdditive
         mult = 2 if self.rt.get("pen_play") == self._play_id else 1
         cruelty = self.pw.get("CrueltyPower", 0) + (25 if "PAPER_PHROG" in self.relics else 0)
         for _ in range(hits):
@@ -1829,6 +1839,8 @@ class SimCombat:
             self._add_to_hand(card)
         if self.in_combat and "BLOOD_VIAL" in R and self.round <= 1:
             self.heal(2)
+        if self.in_combat and "BELLOWS" in R and self.round <= 1:  # hook order after Blood Vial assumed
+            self.hand = [upgrade(c) for c in self.hand]
         self._check_win()
         if not self.in_combat:
             return

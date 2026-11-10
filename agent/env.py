@@ -32,7 +32,7 @@ from grow import insert_map
 from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck
 from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, HIVE_MONSTERS, MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
-from sim.relics import RELIC_IDS
+from sim.relics import RELIC_IDS, UPGRADE_RELICS
 
 MAX_HAND = 10
 MAX_ENEMIES = 6  # OvicopterNormal.Slots
@@ -113,10 +113,12 @@ def combat_maps() -> tuple[list[int], list[int]]:
     old_cards = sorted(set(CARD_IDS) - HIVE_CARDS)
     old_monsters = [m for m in MONSTER_IDS if m not in HIVE_MONSTERS]
     old_powers = [p for p in PLAYER_POWERS if p not in HIVE_PLAYER_POWERS]
+    old_relics = [r for r in RELIC_IDS if r not in UPGRADE_RELICS]
     enemy = [13, (old_monsters, MONSTER_IDS), ("skip", len(ENEMY_PW))]
     obs = insert_map([6, "cards"] * MAX_HAND + [PLAYER_FEATURES - len(PLAYER_POWERS), (old_powers, PLAYER_POWERS)] + ["cards"] * 3
                      + enemy * OLD_MAX_ENEMIES + [("skip", (MAX_ENEMIES - OLD_MAX_ENEMIES) * ENEMY_FEATURES)]
-                     + [POTION_FEATURES + RELIC_FEATURES + CHOICE_FEATURES], old_cards, CARD_IDS)
+                     + [POTION_FEATURES + (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS), (old_relics, RELIC_IDS),
+                        len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES], old_cards, CARD_IDS)
     slots = lambda first, n: [first + i * MAX_ENEMIES + s for i in range(n) for s in range(OLD_MAX_ENEMIES)]  # noqa: E731
     act = slots(0, MAX_HAND) + [END_TURN] + slots(POTION_ACTION, MAX_POTION_SLOTS) + list(range(CHOOSE_HAND, CHOOSE_HAND + MAX_HAND))
     act += [CHOOSE_DISCARD + CARD_IDS.index(c) for c in old_cards]

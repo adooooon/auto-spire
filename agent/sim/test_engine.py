@@ -486,11 +486,11 @@ from .potions import POTION_IDS  # noqa: E402
 
 def _no_relic_trace() -> str:
     """Every fight state on seeded random play. Any change here means relic code leaked into relic-less fights.
-    The hash predates the choice cards, so they're held out of the decks and of Stoke / Infernal Blade: it still
+    The hash predates the choice cards, so they (and Armaments, which Stoke / Infernal Blade can now make) are held out of the decks and of the generated pool: it still
     pins that every other card plays the same, RNG included."""
     h = hashlib.sha256()
     pool = [c for c in COMMONS + UNCOMMONS + RARES if c not in CHOICE_CARDS]
-    generated, engine.GENERATED = engine.GENERATED, tuple(c for c in engine.GENERATED if c not in CHOICE_CARDS)
+    generated, engine.GENERATED = engine.GENERATED, tuple(c for c in engine.GENERATED if c not in CHOICE_CARDS + ("ARMAMENTS",))
     for seed in range(66):
         rng = random.Random(seed)
         c = SimCombat(rng=random.Random(seed))
@@ -518,8 +518,8 @@ from .relics import NOT_MODELED, RELIC_POOL, RELICS, relic_rarity  # noqa: E402
 from .potions import MAX_POTION_SLOTS  # noqa: E402
 
 assert [len(v) for v in RELIC_POOL.values()] == [26, 32, 38, 26]
-assert len({r for v in RELIC_POOL.values() for r in v}) == 122 and len(RELICS) == 97 and len(NOT_MODELED) == 25
-assert [len([r for r in v if r in RELICS]) for v in RELIC_POOL.values()] == [24, 28, 30, 15]
+assert len({r for v in RELIC_POOL.values() for r in v}) == 122 and len(RELICS) == 107 and len(NOT_MODELED) == 15
+assert [len([r for r in v if r in RELICS]) for v in RELIC_POOL.values()] == [26, 30, 36, 15]
 assert relic_rarity("VAJRA") == "COMMON" and relic_rarity("BRIMSTONE") == "SHOP" and MAX_POTION_SLOTS == 5
 
 
@@ -558,6 +558,21 @@ c.play_card(0, 1)
 assert hp - (e.hp + e.block) == 7
 # SLING_OF_COURAGE: 2 Strength on elites only.
 assert rc("SLING_OF_COURAGE", enc="BYRDONIS_ELITE").strength == 2 and rc("SLING_OF_COURAGE").strength == 0
+# GIRYA: Strength = times lifted, at every combat start (AfterRoomEntered).
+assert rc("GIRYA", state={"girya": 2}).strength == 2 and rc("GIRYA").strength == 0
+# BELLOWS: the turn-1 hand is upgraded; later turns are not. STONE_CRACKER: 2 upgradable draw-pile cards at combat start.
+c = rc("BELLOWS", deck=["STRIKE_IRONCLAD"] * 20)
+assert c.hand == ["STRIKE_IRONCLAD+"] * 5 and set(c.draw_pile) == {"STRIKE_IRONCLAD"}, (c.hand, c.draw_pile)
+c.end_turn(); assert "STRIKE_IRONCLAD+" not in c.hand
+c = rc("STONE_CRACKER", deck=["STRIKE_IRONCLAD"] * 10 + ["WOUND"] * 10)
+assert sum(x == "STRIKE_IRONCLAD+" for x in c.hand + c.draw_pile) == 2 and "WOUND+" not in c.hand + c.draw_pile
+# A discard prompt answered by base id takes the upgraded copy when no plain one is left (Bellows puts them there).
+c = solo(["HEADBUTT"]); c.discard_pile = ["STRIKE_IRONCLAD+", "DEFEND_IRONCLAD"]; c.play_card(0, 1)
+assert c.pending_choice["kind"] == "discard" and c.choose_discard("STRIKE_IRONCLAD").get("ok") and c.draw_pile[-1] == "STRIKE_IRONCLAD+"
+# MINIATURE_CANNON: +3 damage on an upgraded Attack only.
+for card, dmg in (("STRIKE_IRONCLAD", 6), ("STRIKE_IRONCLAD+", 9 + 3)):
+    c = rc("MINIATURE_CANNON", deck=[card] * 20); e = c.enemies[0]; hp = e.hp + e.block
+    c.play_card(0, 1); assert hp - (e.hp + e.block) == dmg, (card, hp - (e.hp + e.block))
 # ANCHOR: 10 block survives into turn 1, then clears normally on turn 2.
 c = rc("ANCHOR")
 assert c.player_block == 10
@@ -1452,7 +1467,7 @@ cc.hand, cc.discard_pile = ["HEADBUTT"], ["BASH", "WOUND"]
 client.play(0, 1); assert client.exec("choose_discard WOUND")["ok"] and cc.draw_pile[-1] == "WOUND"
 from sim.act import REWARD_POOLS
 from sim.cards import CARDS, CHOICE_CARDS, GENERATED, UPGRADABLE, base_id, is_upgraded, upgrade, card_to_dict
-assert set(CHOICE_CARDS) <= set(GENERATED) and "ARMAMENTS" in CARDS and "ARMAMENTS" not in GENERATED
+assert set(CHOICE_CARDS) <= set(GENERATED) and "ARMAMENTS" in GENERATED  # the game includes it (FilterForCombat)
 assert REWARD_POOLS["COMMON"] == ('ANGER', 'BLOODLETTING', 'BLOOD_WALL', 'BODY_SLAM', 'BREAKTHROUGH', 'CINDER', 'HAVOC', 'HEADBUTT',
     'IRON_WAVE', 'MOLTEN_FIST', 'PERFECTED_STRIKE', 'POMMEL_STRIKE', 'SETUP_STRIKE', 'SHRUG_IT_OFF', 'SWORD_BOOMERANG',
     'THUNDERCLAP', 'TREMBLE', 'TRUE_GRIT', 'TWIN_STRIKE', 'ARMAMENTS')  # unchanged by adding Armaments to CARDS

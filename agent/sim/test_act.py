@@ -96,6 +96,8 @@ run.hp, run.max_hp = 40, 90  # say a Feed raised max HP during a fight
 rest = next(n for n in run.map.nodes() if n.type == "RestSite")
 run.node = rest.parents[0]
 run.enter(rest)
+assert run.hp == 40  # entering heals nothing now
+run.rest("HEAL")
 assert run.hp == 40 + 27  # 30% of the new max
 run.shop = make_shop(random.Random(0), RarityOdds(), 0, RelicBags(random.Random(0)))
 run.gold = 500
@@ -194,7 +196,7 @@ for seed in range(200):
     stocked |= set(s.relics)
 assert stocked & NOT_MODELED
 run = Run(random.Random(9))
-run.shop = Shop([None] * 5, [0] * 5, 75, relics=["ANCHOR", "WHETSTONE", None], relic_prices=[175, 175, 0])
+run.shop = Shop([None] * 5, [0] * 5, 75, relics=["ANCHOR", "KIFUDA", None], relic_prices=[175, 175, 0])
 run.gold = 174
 for k, g in ((0, 174), (1, 500)):  # too poor; unmodeled
     run.gold = g
@@ -290,7 +292,7 @@ for i in range(4):
     r.add_card("BASH")
 assert r.hp == 30 and r.relic_state["book_of_five_rings"] == 4
 r.add_card("BASH"); assert r.hp == 50
-r = fresh("REGAL_PILLOW", seed=2); r.hp = 70; rest = room_of(r, "RestSite"); r.enter(rest); assert r.hp == 80  # capped
+r = fresh("REGAL_PILLOW", seed=2); r.hp = 70; rest = room_of(r, "RestSite"); r.enter(rest); r.rest("HEAL"); assert r.hp == 80  # capped
 r = fresh(); r.relic_state.clear(); r.add_card("BASH"); assert r.relic_state == {}  # not held: no state
 
 # enter
@@ -316,9 +318,9 @@ for i in range(40):  # whatever the room rolls, +5
     assert r.hp == 55 or (room == "Treasure" and r.hp > 55), (room, r.hp)  # a treasure relic may add max HP
 r.hp = 50; visit(r, "Monster"); assert r.hp == 50
 r = fresh("MEAL_TICKET"); r.hp = 50; r.enter(room_of(r, "Shop")); assert r.hp == 65
-r = fresh("MEAL_TICKET"); r.hp = 50; r.enter(room_of(r, "RestSite")); assert r.hp == 50 + 24
-r = fresh("REGAL_PILLOW"); r.hp = 1; r.enter(room_of(r, "RestSite")); assert r.hp == 1 + 24 + 15
-r = fresh("ETERNAL_FEATHER"); r.hp = 1; r.enter(room_of(r, "RestSite")); assert r.hp == 1 + 6 + 24  # deck of 10
+r = fresh("MEAL_TICKET"); r.hp = 50; r.enter(room_of(r, "RestSite")); r.rest("HEAL"); assert r.hp == 50 + 24
+r = fresh("REGAL_PILLOW"); r.hp = 1; r.enter(room_of(r, "RestSite")); assert r.hp == 1; r.rest("HEAL"); assert r.hp == 1 + 24 + 15
+r = fresh("ETERNAL_FEATHER"); r.hp = 1; r.enter(room_of(r, "RestSite")); assert r.hp == 1 + 6; r.rest("HEAL"); assert r.hp == 1 + 6 + 24  # deck of 10
 r = fresh("ETERNAL_FEATHER"); r.hp = 1; r.enter(room_of(r, "Shop")); assert r.hp == 1
 r = fresh("TINY_MAILBOX"); r.enter(room_of(r, "RestSite")); assert [k for k, _ in r.pending] == ["potion"] * 2
 r = fresh("TINY_MAILBOX"); r.enter(room_of(r, "Shop")); assert r.pending == []
@@ -595,3 +597,87 @@ assert run.win("Boss") == []  # after Act 2's boss the sim's run ends
 # A seed's Act 1 map doesn't change for having an Act 2.
 assert [(n.col, n.row, n.type) for n in Run(random.Random(3)).map.nodes()] == [(n.col, n.row, n.type) for n in generate_map(random.Random(3)).nodes()]
 print("act 2 checks ok")
+
+# Upgrades in the run. BASELINE: Act 1 map hash, first encounters, boss and first 3 offers per seed, captured from HEAD 24cf704
+# (before upgrades existed). The upgrade roll must not move any of it at act 0.
+import hashlib
+BASELINE = {
+    0: ('9c08dffe', ['FUZZY_WURM_CRAWLER_WEAK', 'SHRINKER_BEETLE_WEAK', 'SLIMES_WEAK', 'FOGMOG_NORMAL'], ['BYGONE_EFFIGY_ELITE', 'PHROG_PARASITE_ELITE'], 'VANTOM_BOSS', [['BREAKTHROUGH', 'POMMEL_STRIKE', 'IRON_WAVE'], ['MOLTEN_FIST', 'BLUDGEON', 'ANGER'], ['BURNING_PACT', 'JUGGLING', 'BREAKTHROUGH']]),
+    1: ('48aa48c5', ['NIBBITS_WEAK', 'SLIMES_WEAK', 'FUZZY_WURM_CRAWLER_WEAK', 'SLIMES_NORMAL'], ['BYGONE_EFFIGY_ELITE', 'BYRDONIS_ELITE'], 'THE_KIN_BOSS', [['ARMAMENTS', 'HOWL_FROM_BEYOND', 'SHRUG_IT_OFF'], ['TRUE_GRIT', 'STONE_ARMOR', 'THUNDERCLAP'], ['UPPERCUT', 'OFFERING', 'STAMPEDE']]),
+    2: ('bf4a063f', ['FUZZY_WURM_CRAWLER_WEAK', 'SHRINKER_BEETLE_WEAK', 'NIBBITS_WEAK', 'SLIMES_NORMAL'], ['PHROG_PARASITE_ELITE', 'BYGONE_EFFIGY_ELITE'], 'THE_KIN_BOSS', [['WHIRLWIND', 'TREMBLE', 'VICIOUS'], ['BREAKTHROUGH', 'ASHEN_STRIKE', 'DRUM_OF_BATTLE'], ['STONE_ARMOR', 'BULLY', 'SETUP_STRIKE']]),
+    3: ('468c5aa2', ['SLIMES_WEAK', 'NIBBITS_WEAK', 'FUZZY_WURM_CRAWLER_WEAK', 'SLIMES_NORMAL'], ['BYGONE_EFFIGY_ELITE', 'BYRDONIS_ELITE'], 'THE_KIN_BOSS', [['VICIOUS', 'UPPERCUT', 'SWORD_BOOMERANG'], ['INFERNO', 'BREAKTHROUGH', 'COLOSSUS'], ['BLOODLETTING', 'PRIMAL_FORCE', 'BURNING_PACT']]),
+    4: ('99225357', ['SHRINKER_BEETLE_WEAK', 'FUZZY_WURM_CRAWLER_WEAK', 'SLIMES_WEAK', 'SLITHERING_STRANGLER_NORMAL'], ['BYRDONIS_ELITE', 'PHROG_PARASITE_ELITE'], 'THE_KIN_BOSS', [['IRON_WAVE', 'TREMBLE', 'FIGHT_ME'], ['SETUP_STRIKE', 'TWIN_STRIKE', 'PERFECTED_STRIKE'], ['SECOND_WIND', 'BLOODLETTING', 'RAGE']]),
+    5: ('84e47693', ['FUZZY_WURM_CRAWLER_WEAK', 'SHRINKER_BEETLE_WEAK', 'NIBBITS_WEAK', 'FLYCONID_NORMAL'], ['BYGONE_EFFIGY_ELITE', 'BYRDONIS_ELITE'], 'THE_KIN_BOSS', [['JUGGLING', 'BLOOD_WALL', 'HAVOC'], ['HAVOC', 'THUNDERCLAP', 'TRUE_GRIT'], ['SETUP_STRIKE', 'BREAKTHROUGH', 'PERFECTED_STRIKE']]),
+    6: ('60de06ad', ['SLIMES_WEAK', 'SHRINKER_BEETLE_WEAK', 'NIBBITS_WEAK', 'MAWLER_NORMAL'], ['BYRDONIS_ELITE', 'PHROG_PARASITE_ELITE'], 'THE_KIN_BOSS', [['INFERNAL_BLADE', 'BREAKTHROUGH', 'BATTLE_TRANCE'], ['ARMAMENTS', 'SPITE', 'THUNDERCLAP'], ['THUNDERCLAP', 'SWORD_BOOMERANG', 'FEEL_NO_PAIN']]),
+    7: ('be408782', ['FUZZY_WURM_CRAWLER_WEAK', 'NIBBITS_WEAK', 'SLIMES_WEAK', 'INKLETS_NORMAL'], ['BYRDONIS_ELITE', 'BYGONE_EFFIGY_ELITE'], 'THE_KIN_BOSS', [['THUNDERCLAP', 'VICIOUS', 'STONE_ARMOR'], ['BODY_SLAM', 'TWIN_STRIKE', 'COLOSSUS'], ['ANGER', 'BURNING_PACT', 'THUNDERCLAP']]),
+    8: ('cf6d85e4', ['SHRINKER_BEETLE_WEAK', 'NIBBITS_WEAK', 'FUZZY_WURM_CRAWLER_WEAK', 'MAWLER_NORMAL'], ['PHROG_PARASITE_ELITE', 'BYGONE_EFFIGY_ELITE'], 'CEREMONIAL_BEAST_BOSS', [['TREMBLE', 'SWORD_BOOMERANG', 'CINDER'], ['TWIN_STRIKE', 'TREMBLE', 'CINDER'], ['MOLTEN_FIST', 'SHRUG_IT_OFF', 'TREMBLE']]),
+    9: ('1d4c4eb6', ['NIBBITS_WEAK', 'SLIMES_WEAK', 'SHRINKER_BEETLE_WEAK', 'INKLETS_NORMAL'], ['PHROG_PARASITE_ELITE', 'BYGONE_EFFIGY_ELITE'], 'CEREMONIAL_BEAST_BOSS', [['THUNDERCLAP', 'TRUE_GRIT', 'PERFECTED_STRIKE'], ['TREMBLE', 'SWORD_BOOMERANG', 'WHIRLWIND'], ['THUNDERCLAP', 'BLOOD_WALL', 'PILLAGE']]),
+}
+
+from .act import Run, Shop, offer
+from .cards import CARDS, UPGRADABLE, base_id, is_upgraded
+
+for seed, (h, normals, elites, boss, offers) in BASELINE.items():
+    r = Run(random.Random(seed))
+    assert hashlib.md5(repr([(n.row, n.col, n.type) for n in r.map.nodes()]).encode()).hexdigest()[:8] == h, seed
+    assert (r.normals[:4], r.elites[:2], r.boss) == (normals, elites, boss), seed
+    assert [offer(r.rng, r.card_odds) for _ in range(3)] == offers, seed  # act 0: no upgrade roll, same draws
+assert not any(is_upgraded(c) for s in range(30) for c in offer(random.Random(s), RarityOdds(), act=0))
+
+# Reward upgrades: act x 0.25 for non-Rares, never Rares.
+rng, odds, tot, up, rare_up = random.Random(5), RarityOdds(), 0, 0, 0
+for _ in range(4000):
+    for c in offer(rng, odds, act=1):
+        if CARDS[base_id(c)].rarity == "Rare":
+            rare_up += is_upgraded(c)
+        else:
+            tot, up = tot + 1, up + is_upgraded(c)
+assert rare_up == 0 and 0.22 <= up / tot <= 0.28, (up, tot, rare_up)
+r = Run(random.Random(0)); r.act = 1
+assert any(is_upgraded(c) for _ in range(60) for c in r.win("Monster"))  # Run.win passes the act through
+
+# Shops never upgrade; Armaments is stockable.
+for s in range(200):
+    shop = make_shop(random.Random(s), RarityOdds(), 0, RelicBags(random.Random(s)))
+    assert not any(is_upgraded(c) for c in shop.cards)
+
+# Smith and Heal.
+r = fresh(); r.deck = ["BASH", "STRIKE_IRONCLAD", "BASH"]
+assert r.rest_options() == ["HEAL", "SMITH"]
+r.rest("SMITH", "BASH"); assert r.deck == ["BASH+", "STRIKE_IRONCLAD", "BASH"]
+r.rest("SMITH", "BASH"); assert r.deck == ["BASH+", "STRIKE_IRONCLAD", "BASH+"]
+r.rest("SMITH", "STRIKE_IRONCLAD"); assert all(is_upgraded(c) for c in r.deck)
+assert r.rest_options() == ["HEAL"]
+r.deck = ["BASH+", "WOUND", "ASCENDERS_BANE"] if "ASCENDERS_BANE" in CARDS else ["BASH+", "WOUND"]
+assert r.rest_options() == ["HEAL"]  # nothing upgradable
+r = fresh(); r.hp = 1; r.rest("HEAL"); assert r.hp == 1 + 24  # 30% of 80, truncated
+r = fresh("REGAL_PILLOW"); r.hp = 1; r.rest("HEAL"); assert r.hp == 1 + 24 + 15
+
+# Whetstone / War Paint: 2 random un-upgraded Attacks / Skills now.
+r = fresh(); r.deck = ["STRIKE_IRONCLAD"] * 5 + ["DEFEND_IRONCLAD"] * 4 + ["BASH"]; r.obtain("WHETSTONE", "treasure")
+assert sum(is_upgraded(c) for c in r.deck) == 2 and all(CARDS[c].type == "Attack" for c in r.deck if is_upgraded(c))
+r = fresh(); r.deck = ["STRIKE_IRONCLAD"] * 5 + ["DEFEND_IRONCLAD"] * 4 + ["BASH"]; r.obtain("WAR_PAINT", "treasure")
+assert sum(is_upgraded(c) for c in r.deck) == 2 and all(CARDS[c].type == "Skill" for c in r.deck if is_upgraded(c))
+r = fresh(); r.deck = ["BASH+", "DEFEND_IRONCLAD"]; r.obtain("WHETSTONE", "treasure"); assert r.deck == ["BASH+", "DEFEND_IRONCLAD"]
+r = fresh(); r.deck = ["BASH", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD"]; r.obtain("WHETSTONE", "treasure")
+assert r.deck == ["BASH+", "STRIKE_IRONCLAD+", "DEFEND_IRONCLAD"]  # fewer than 2 left: all of them
+
+# Eggs upgrade the matching type as it is added (rewards and purchases alike).
+for egg, kind in (("MOLTEN_EGG", "Attack"), ("TOXIC_EGG", "Skill"), ("FROZEN_EGG", "Power")):
+    r = fresh(egg); r.deck = []
+    for c in ("BASH", "DEFEND_IRONCLAD", "INFLAME"):
+        r.add_card(c)
+    assert r.deck == [c + "+" if CARDS[c].type == kind else c for c in ("BASH", "DEFEND_IRONCLAD", "INFLAME")], (egg, r.deck)
+r = fresh("MOLTEN_EGG"); r.add_card("BASH+"); assert r.deck[-1] == "BASH+"
+
+# Girya: LIFT up to 3 times, then gone; the count is the fight's Strength. Shovel: DIG is a relic, any number of times.
+r = fresh("GIRYA")
+for i in range(3):
+    assert "LIFT" in r.rest_options(); r.rest("LIFT"); assert r.relic_state["girya"] == i + 1
+assert "LIFT" not in r.rest_options()
+r = fresh("SHOVEL"); r.deck = ["BASH+"]
+assert r.rest_options() == ["HEAL", "DIG"]
+r.rest("DIG"); r.rest("DIG")
+assert len(r.relic_log) == 2 and all(src == "dig" for _, src in r.relic_log) and len(r.relics) == 3
+r = fresh("GIRYA", "SHOVEL"); assert r.rest_options() == ["HEAL", "SMITH", "LIFT", "DIG"]
+print("upgrade checks ok")

@@ -17,12 +17,12 @@ from env import CARD_IDS, HIVE_CARDS, STS2CombatEnv
 from grow import insert_map
 from picker import play_fight
 from sim.act import ALL_BOSSES, BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Run
-from sim.cards import CARDS, CHOICE_CARDS
+from sim.cards import CARDS, CHOICE_CARDS, base_id
 from sim.engine import SimClient
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 from sim.map import BOSS_ROW, COLS, ROOM_TYPES
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
-from sim.relics import RELIC_IDS, RELICS
+from sim.relics import RELIC_IDS, RELICS, UPGRADE_RELICS
 
 DECISIONS = ("path", "pick", "shop", "remove", "potion")
 HEAD_DECISIONS = DECISIONS[:4]  # the original observation head; "potion" is flagged in the appended block
@@ -129,6 +129,8 @@ class RunPolicyEnv(gym.Env):
         """Path action: move to the child in that column. The encounter if it's a fight, else None."""
         node = next(n for n in self.run.choices() if n.col == col)
         self.room = self.run.enter(node)
+        if self.room == "RestSite":
+            self.run.rest("HEAL")  # Task 5: the policy picks
         self.run.elites_fought += self.room == "Elite"
         if self.room in FIGHTS:
             return self.run.encounter(self.room)
@@ -279,7 +281,7 @@ class RunPolicyEnv(gym.Env):
             m[EVENT:EVENT + EVENT_OPTIONS] = True
         else:
             for c in set(run.deck):  # no cancel: shop -> remove -> cancel would let a deterministic policy loop
-                m[REMOVE + CARD_INDEX[c]] = True
+                m[REMOVE + CARD_INDEX[base_id(c)]] = True
         return m
 
     def _obs(self) -> np.ndarray:
@@ -288,7 +290,7 @@ class RunPolicyEnv(gym.Env):
         head += [run.hp / 80, run.max_hp / 80, min(run.gold / 100, 10), run.node.row / BOSS_ROW, run.removals / 5]
         deck = np.zeros(len(CARD_IDS))
         for c in run.deck:
-            deck[CARD_INDEX[c]] += 0.5
+            deck[CARD_INDEX[base_id(c)]] += 0.5
         boss = [float(b == run.boss) for b in ALL_BOSSES]
         slots = np.zeros((len(SHOP_SLOTS), SLOT_FEATURES))
         removal = [0.0, 0.0]
@@ -341,7 +343,7 @@ class RunPolicyEnv(gym.Env):
             for i, (hp, gold, max_hp) in enumerate(run.event_opts):
                 event_obs[k + 3 * i:k + 3 * i + 3] = hp / 80, gold / 100, max_hp / 80
             if run.event == "SLIPPERY_BRIDGE":
-                event_obs[k + 3 * EVENT_OPTIONS + CARD_INDEX[run.deck[run.bridge_card]]] = 1
+                event_obs[k + 3 * EVENT_OPTIONS + CARD_INDEX[base_id(run.deck[run.bridge_card])]] = 1
         return np.concatenate([head, np.minimum(deck, 10), boss, slots.ravel(), removal, grid.ravel(),
                                potion_obs, belt, held, shop_r.ravel(), event_obs, [float(getattr(run, "act", 0))]]).astype(np.float32)
 
@@ -349,6 +351,9 @@ class RunPolicyEnv(gym.Env):
 def run_maps() -> tuple[list[int], list[int]]:
     """(obs_map, act_map) for grow.py: where a run policy trained before Act 2 keeps its inputs and actions."""
     old_ids = sorted(set(CARD_IDS) - HIVE_CARDS)
-    tail = 2 + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS + 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3
-    obs = [len(HEAD_DECISIONS) + 5, "cards", (list(BOSSES), list(ALL_BOSSES))] + ["cards", 2] * len(SHOP_SLOTS) + [tail, "cards"]
+    old_relics = [r for r in RELIC_IDS if r not in UPGRADE_RELICS]
+    lead = 2 + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS)  # up to the relics held
+    tail = 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3  # after the shop's relics
+    obs = [len(HEAD_DECISIONS) + 5, "cards", (list(BOSSES), list(ALL_BOSSES))] + ["cards", 2] * len(SHOP_SLOTS)
+    obs += [lead, (old_relics, RELIC_IDS)] + [(old_relics, RELIC_IDS), 2] * SHOP_RELICS + [tail, "cards"]
     return insert_map(obs, old_ids, CARD_IDS), insert_map([REMOVE, "cards", N_ACTIONS - REMOVE - len(CARD_IDS)], old_ids, CARD_IDS)

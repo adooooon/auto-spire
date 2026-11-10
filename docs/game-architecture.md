@@ -499,7 +499,7 @@ Ported to the sim in `agent/sim/map.py` and `agent/sim/act.py`.
   - **Price:** 50/75/150 by rarity × U(0.95, 1.05), rounded; colorless cards ×1.15. One random character card is half price.
   - **Other stock:** 2 colorless cards (Uncommon, Rare), 3 relics (2 rolled + 1 Shop rarity) and 3 potions.
   - **Card removal:** once per shop, 75 + 25 per removal used this run.
-- **Rest site:** heals 30% of max HP (`HealRestSiteOption`).
+- **Rest site:** Heal restores 30% of max HP (`HealRestSiteOption`); see "Card upgrades" for Smith and the other options.
 
 ## Potions
 
@@ -537,28 +537,27 @@ Ported to the sim in `agent/sim/potions.py` and `SimCombat.use_potion`; drops an
 
 ## Relics
 
-97 of the 122 relics are modeled: ids and rarities in `agent/sim/relics.py` (`RELIC_POOL`, `NOT_MODELED`, `RELICS`), effects in `SimCombat` (`agent/sim/engine.py`), drops and shops in `agent/sim/act.py`. Relic state lives on `Run` and carries across fights (Pen Nib, Nunchaku, Lizard Tail's used flag ...).
+107 of the 122 relics are modeled: ids and rarities in `agent/sim/relics.py` (`RELIC_POOL`, `NOT_MODELED`, `RELICS`), effects in `SimCombat` (`agent/sim/engine.py`), drops and shops in `agent/sim/act.py`. Relic state lives on `Run` and carries across fights (Pen Nib, Nunchaku, Lizard Tail's used flag ...).
 
 - **Pool:** `SharedRelicPool` plus `IroncladRelicPool`: Common 26, Uncommon 32, Rare 38, Shop 26 = 122.
-- **Unmodeled relics** (25) still drop, use up that reward and stock shops, so the odds stay honest. They do nothing and can't be bought.
+- **Unmodeled relics** (15) still drop, use up that reward and stock shops, so the odds stay honest. They do nothing and can't be bought.
 
 | Rarity | Modeled |
 |---|---|
-| Common (24 of 26) | Amethyst Aubergine, Anchor, Bag of Marbles, Bag of Preparation, Blood Vial, Book of Five Rings, Bronze Scales, Centennial Puzzle, Festive Popper, Gorget, Happy Flower, Juzu Bracelet, Lantern, Meal Ticket, Oddly Smooth Stone, Pendulum, Potion Belt, Red Mask, Red Skull, Regal Pillow, Strawberry, Strike Dummy, Vajra, Venerable Tea Set |
-| Uncommon (28 of 32) | Akabeko, Bowler Hat, Candelabra, Eternal Feather, Gremlin Horn, Horn Cleat, Joss Paper, Kusarigama, Letter Opener, Lucky Fysh, Mercury Hourglass, Nunchaku, Orichalcum, Ornamental Fan, Pantograph, Paper Phrog, Parrying Shield, Pear, Pen Nib, Permafrost, Planisphere, Reptile Trinket, Ripple Basin, Self-Forming Clay, Sparkling Rouge, Tiny Mailbox, Tuning Fork, Vambrace |
-| Rare (30 of 38) | Art of War, Beating Remnant, Captain's Wheel, Chandelier, Charon's Ashes, Cloak Clasp, Demon Tongue, Game Piece, Ice Cream, Intimidating Helmet, Kunai, Lizard Tail, Mango, Meat on the Bone, Mummified Hand, Old Coin, Pocketwatch, Prayer Wheel, Rainbow Ring, Ruined Helmet, Shuriken, Stone Calendar, Sturdy Clamp, The Courier, Tungsten Rod, Unceasing Top, Unsettling Lamp, Vexing Puzzlebox, White Beast Statue, White Star |
+| Common (26 of 26) | Amethyst Aubergine, Anchor, Bag of Marbles, Bag of Preparation, Blood Vial, Book of Five Rings, Bronze Scales, Centennial Puzzle, Festive Popper, Gorget, Happy Flower, Juzu Bracelet, Lantern, Meal Ticket, Oddly Smooth Stone, Pendulum, Potion Belt, Red Mask, Red Skull, Regal Pillow, Strawberry, Strike Dummy, Vajra, Venerable Tea Set, War Paint, Whetstone |
+| Uncommon (30 of 32) | Akabeko, Bowler Hat, Candelabra, Eternal Feather, Gremlin Horn, Horn Cleat, Joss Paper, Kusarigama, Letter Opener, Lucky Fysh, Mercury Hourglass, Miniature Cannon, Nunchaku, Orichalcum, Ornamental Fan, Pantograph, Paper Phrog, Parrying Shield, Pear, Pen Nib, Permafrost, Planisphere, Reptile Trinket, Ripple Basin, Self-Forming Clay, Sparkling Rouge, Stone Cracker, Tiny Mailbox, Tuning Fork, Vambrace |
+| Rare (36 of 38) | Art of War, Beating Remnant, Bellows, Captain's Wheel, Chandelier, Charon's Ashes, Cloak Clasp, Demon Tongue, Frozen Egg, Game Piece, Girya, Ice Cream, Intimidating Helmet, Kunai, Lizard Tail, Mango, Meat on the Bone, Molten Egg, Mummified Hand, Old Coin, Pocketwatch, Prayer Wheel, Rainbow Ring, Ruined Helmet, Shovel, Shuriken, Stone Calendar, Sturdy Clamp, The Courier, Toxic Egg, Tungsten Rod, Unceasing Top, Unsettling Lamp, Vexing Puzzlebox, White Beast Statue, White Star |
 | Shop (15 of 26) | Belt Buckle, Bread, Brimstone, Burning Sticks, Cauldron, Chemical X, Dragon Fruit, Ghost Seed, Lee's Waffle, Membership Card, Orrery, Ringing Triangle, Screaming Flagon, Sling of Courage, The Abacus |
 
-| Not modeled (25) | Why |
+| Not modeled (15) | Why |
 |---|---|
-| War Paint, Whetstone, Miniature Cannon, Stone Cracker, Bellows, Frozen Egg, Molten Egg, Toxic Egg, Razor Tooth, Lava Lamp | card upgrades |
+| Razor Tooth, Lava Lamp | Razor Tooth upgrades the deck copy of each Attack or Skill played, and Lava Lamp upgrades card rewards after a damage-free fight (needs per-fight damage tracking) |
 | Gnarled Hammer, Kifuda, Punch Dagger, Royal Stamp, Wing Charm | enchantments |
 | Gambling Chip, Dolly's Mirror | choosing a card |
 | Dingy Rug, Toolbox | colorless cards |
-| Girya, Shovel | rest-site choices |
 | Lasting Candy | 4-card reward offers |
 | Petrified Toad | a new potion (the rock) |
-| Miniature Tent, Mystic Lighter | no effect in this sim (no other rest option, no enchanted cards) |
+| Miniature Tent, Mystic Lighter | Miniature Tent lets the player take every rest option (`ShouldDisableRemainingRestSiteOptions`), which the sim's one-choice rest site doesn't do; Mystic Lighter needs enchanted cards |
 
 ### Drops
 
@@ -637,6 +636,29 @@ Rules from `CardSelectCmd` (`decompiled/MegaCrit.Sts2.Core.Commands/CardSelectCm
 **Sim shortcut:** a prompt card played by an autoplay (Havoc and similar) picks at random, though the game prompts there too. Autoplays nest inside other effects, so holding one would need a stack of paused plays.
 
 **Live:** `CardSelectCmd.Selector`, the game's test hook, answers every prompt without its selection screen. See "2026-11-06" in `docs/modding-approach.md`.
+
+## Card upgrades
+
+Ported in `agent/sim/act.py` (the run), `agent/sim/relics.py` and `agent/sim/engine.py` (combat). Upgraded cards are ids with a "+" (`BASH+`); `UPGRADABLE` in `agent/sim/cards.py` lists the base ids that can be upgraded.
+
+- **`MaxUpgradeLevel`** (`CardModel`): every card here has 1, except statuses and curses, which have 0 and can't be upgraded.
+- **Reward upgrade roll** (`CardFactory.RollForUpgrade`, `CardFactory.cs:288`): after a card is picked for a reward, a float is drawn and the card is upgraded if it's at most `act index × UpgradedCardOddScaling` (0.25 at A0, 0.125 from `Scarcity`). That's 0 in Act 1 and 25% in Act 2. Rares get no act term, so they're never upgraded without a relic. The sim draws no float when the chance is 0.
+- **Shops never upgrade:** `CreateForMerchant` calls `RollForUpgrade(..., -999999999)`. The egg relics are the exception (below).
+- **Smith** (`SmithRestSiteOption`): enabled iff `Deck.UpgradableCardCount != 0`. It upgrades 1 chosen card. Rest options come in the order Heal, Smith, then relics' options (`TryModifyRestSiteOptions`): Girya's Lift, Shovel's Dig. Entering a rest site heals nothing; Heal is an option (30% of max HP, `HealRestSiteOption`, plus Regal Pillow's 15). Eternal Feather, Venerable Tea Set and Tiny Mailbox still act on entry.
+- **Relics** (all in `agent/decompiled/MegaCrit.Sts2.Core.Models.Relics/`):
+  - **Whetstone** / **War Paint** (`AfterObtained`): upgrade 2 random upgradable Attacks / Skills in the deck.
+  - **Molten / Toxic / Frozen Egg:** a card of that type (Attack / Skill / Power) is upgraded when it joins the deck (`TryModifyCardBeingAddedToDeck`), and in reward and shop offers (`EggRelicHelper`). The sim does it on joining the deck, which gives the same deck.
+  - **Girya** (`Girya.cs`): Lift at a rest site, up to 3 times (`maxLifts`). Each combat starts with Strength equal to the lifts.
+  - **Shovel** (`DigRestSiteOption`): Dig gives a relic (`PullNextRelicFromFront` with a rolled rarity), every rest site, no limit.
+  - **Miniature Cannon:** +3 damage (`ModifyDamageAdditive`) on Attacks from upgraded cards.
+  - **Bellows:** upgrades the hand on turn 1. **Stone Cracker:** upgrades 2 random upgradable cards in the draw pile at combat start. Both last for that fight only.
+  - No relic overrides `ModifyCardRewardUpgradeOdds`; only the hook exists.
+- **Armaments** is a Common in the reward pool and in shops, and Stoke and Infernal Blade can create it (they draw from the character's unlocked pool through `CardFactory.FilterForCombat`, and Armaments is in it). See "Card choices" for its prompt.
+- **In combat:** an upgrade in a fight never changes the run deck. The rules the engine follows are in `agent/sim/engine.py`:
+  - **Innate:** Juggling+ and Aggression+ go on top of the draw pile on turn 1, and the opening draw is at least that many (`CombatManager.cs:665-671`).
+  - **Aggression** upgrades the Attacks it returns (`AggressionPower.cs`). **Stoke+** upgrades the cards it makes. **Primal Force+** makes GIANT_ROCK+. **Cascade+** plays X+1.
+  - **True Grit+** prompts for the card to exhaust (`TrueGrit.cs:30`).
+  - Other values follow `UPGRADES` in `agent/sim/cards.py`, and the source for each is cited beside it.
 
 ## Act 2 (the Hive)
 

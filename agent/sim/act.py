@@ -7,7 +7,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from .cards import CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
+from .cards import CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, starter_deck, upgrade
 from .engine import ENCOUNTERS, HIVE_BOSSES, HIVE_ELITES, HIVE_NORMALS, HIVE_WEAK, PLAYER_MAX_HP
 from .events import EVENT_ALLOWED, HIVE_EVENT_ALLOWED, MODELED_EVENTS
 from .map import ActMap, Node, generate_map
@@ -18,6 +18,9 @@ STARTING_GOLD = 99  # Ironclad.StartingGold
 GOLD = {"Monster": (10, 20), "Elite": (35, 45), "Boss": (100, 100)}  # EncounterModel.Min/MaxGoldReward
 BURNING_BLOOD_HEAL = 6
 REST_HEAL = 0.3  # HealRestSiteOption: 30% of max HP
+UPGRADE_ODDS_PER_ACT = 0.25  # CardFactory.UpgradedCardOddScaling at A0: act index x this, non-Rares only
+MAX_LIFTS = 3  # Girya.maxLifts
+EGGS = {"MOLTEN_EGG": "Attack", "TOXIC_EGG": "Skill", "FROZEN_EGG": "Power"}  # TryModifyCardBeingAddedToDeck
 CARD_PRICE = {"COMMON": 50, "UNCOMMON": 75, "RARE": 150}  # MerchantCardEntry.GetCost
 SHOP_SLOTS = ("Attack", "Attack", "Skill", "Skill", "Power")  # MerchantInventory._coloredCardTypes
 REMOVAL_PRICE, REMOVAL_STEP = 75, 25  # MerchantCardRemovalEntry: +25 per removal used
@@ -82,11 +85,16 @@ class RarityOdds:
 
 
 def offer(rng: random.Random, odds: RarityOdds, elite: bool = False, boss: bool = False,
-          base: bool = False) -> list[str]:
-    """CardFactory.CreateForReward: 3 cards, no repeats. base: not an encounter reward, offset untouched."""
+          base: bool = False, act: int = 0) -> list[str]:
+    """CardFactory.CreateForReward: 3 cards, no repeats, each upgraded with RollForUpgrade's chance (act x 0.25 for
+    non-Rares; no roll is drawn at 0, so Act 1 seeds are unchanged). base: not an encounter reward, offset untouched."""
     out: list[str] = []
     for _ in range(3):
-        out.append(rng.choice([c for c in REWARD_POOLS[odds.roll_base(rng) if base else odds.roll(rng, elite, boss)] if c not in out]))
+        rarity = odds.roll_base(rng) if base else odds.roll(rng, elite, boss)
+        card = rng.choice([c for c in REWARD_POOLS[rarity] if c not in out])
+        out.append(card)
+        if rarity != "RARE" and act and card in UPGRADABLE and rng.random() <= act * UPGRADE_ODDS_PER_ACT:
+            out[-1] = upgrade(card)
     return out
 
 
@@ -327,6 +335,8 @@ class Run:
                 self.hp = max(1, self.max_hp * 50 // 100)
 
     def add_card(self, card: str) -> None:
+        if any(r in self.relics and CARDS[card].type == t for r, t in EGGS.items()):
+            card = upgrade(card)  # Molten / Toxic / Frozen Egg; a shop card is upgraded as it is bought
         self.deck.append(card)
         if "LUCKY_FYSH" in self.relics:
             self.gain_gold(15)
@@ -356,7 +366,7 @@ class Run:
         return sorted(self.node.children, key=lambda n: n.col)
 
     def enter(self, node: Node) -> str:
-        """Move to a child of the current node and resolve its room type (rest heals, shops stock)."""
+        """Move to a child of the current node and resolve its room type (shops stock; a rest site waits for rest())."""
         assert node in self.node.children, (node, self.node)
         room = node.type
         if room == "Unknown":  # RunManager.BuildRoomTypeBlacklist
@@ -373,7 +383,6 @@ class Run:
                 self.relic_state["tea_set"] = 1
             if "TINY_MAILBOX" in self.relics:
                 self.pending += [("potion", roll_potions(self.rng)[0]) for _ in range(2)]
-            self.heal(int(self.max_hp * REST_HEAL) + (15 if "REGAL_PILLOW" in self.relics else 0))
         elif room == "Shop":
             if "MEAL_TICKET" in self.relics:
                 self.heal(15)
@@ -483,17 +492,17 @@ class Run:
             potion = roll_potions(self.rng)[0] if self.potion_odds.roll(self.rng, False, False) else None
             if potion:
                 self.pending.append(("potion", potion))
-            return offer(self.rng, self.card_odds, boss=True)
+            return offer(self.rng, self.card_odds, boss=True, act=self.act)
         # Rewards are generated (and modified by held relics) before the elite's relic is picked up.
         force, wheel, star = (r in self.relics for r in ("WHITE_BEAST_STATUE", "PRAYER_WHEEL", "WHITE_STAR"))
         if room == "Elite":
             self.obtain(self.bags.pull("player", roll_relic_rarity(self.rng)), "elite")
         potion = roll_potions(self.rng)[0] if self.potion_odds.roll(self.rng, room == "Elite", force) else None
-        offered = offer(self.rng, self.card_odds, room == "Elite")
+        offered = offer(self.rng, self.card_odds, room == "Elite", act=self.act)
         if room == "Monster" and wheel:
-            self.pending.append(("cards", offer(self.rng, self.card_odds)))
+            self.pending.append(("cards", offer(self.rng, self.card_odds, act=self.act)))
         if room == "Elite" and star:
-            self.pending.append(("cards", offer(self.rng, self.card_odds, boss=True)))
+            self.pending.append(("cards", offer(self.rng, self.card_odds, boss=True, act=self.act)))
         if potion:
             self.pending.append(("potion", potion))
         return offered
@@ -524,9 +533,33 @@ class Run:
         else:
             s.cards[slot] = None
 
+    def upgrade_card(self, base: str) -> None:
+        """CardCmd.Upgrade on one un-upgraded copy of `base` in the deck."""
+        self.deck[self.deck.index(base)] = upgrade(base)
+
+    def rest_options(self) -> list[str]:
+        """RestSiteOptions in the game's order: Heal, Smith (enabled iff something is upgradable), Girya's Lift
+        (until 3 lifts), Shovel's Dig."""
+        return (["HEAL"] + ["SMITH"] * any(c in UPGRADABLE for c in self.deck)
+                + ["LIFT"] * ("GIRYA" in self.relics and self.relic_state.get("girya", 0) < MAX_LIFTS)
+                + ["DIG"] * ("SHOVEL" in self.relics))
+
+    def rest(self, option: str, card: str | None = None) -> None:
+        """Choose a rest site option. card: the base id to Smith."""
+        assert option in self.rest_options(), (option, self.rest_options())
+        if option == "HEAL":
+            self.heal(int(self.max_hp * REST_HEAL) + (15 if "REGAL_PILLOW" in self.relics else 0))
+        elif option == "SMITH":
+            self.upgrade_card(card)
+        elif option == "LIFT":
+            self.relic_state["girya"] = self.relic_state.get("girya", 0) + 1
+        else:  # DigRestSiteOption: PullNextRelicFromFront with a rolled rarity
+            self.obtain(self.bags.pull("player", roll_relic_rarity(self.rng)), "dig")
+
     def remove(self, card: str) -> None:
         s = self.shop
         price = self.price(s.removal_price)
+        card = card if card in self.deck else card + "+"  # the policy names base ids; an upgraded copy goes if no plain one is left
         assert not s.removal_used and self.gold >= price and card in self.deck
         self.gold -= price
         self.spent += price
@@ -567,8 +600,13 @@ class Run:
             self.gain_gold(300)
         elif relic == "POTION_BELT":
             self.potions += [None] * 2
+        elif relic in ("WHETSTONE", "WAR_PAINT"):  # 2 random un-upgraded Attacks / Skills, upgraded now
+            kind = "Attack" if relic == "WHETSTONE" else "Skill"
+            ups = [i for i, c in enumerate(self.deck) if c in UPGRADABLE and CARDS[c].type == kind]
+            for i in self.rng.sample(ups, min(2, len(ups))):
+                self.deck[i] = upgrade(self.deck[i])
         elif relic == "ORRERY":
-            self.pending += [("cards", offer(self.rng, self.card_odds, base=True)) for _ in range(5)]
+            self.pending += [("cards", offer(self.rng, self.card_odds, base=True, act=self.act)) for _ in range(5)]
         elif relic == "CAULDRON":
             self.pending += [("potion", roll_potions(self.rng)[0]) for _ in range(5)]
 
