@@ -79,10 +79,10 @@ assert u.roll(random.Random(1), {"Shop"}) in ("Monster", "Treasure", "Event") an
 # Shop: 5 slots of the right types, no duplicates, prices by rarity with jitter, one half-price.
 for seed in range(200):
     s = make_shop(random.Random(seed), RarityOdds(), 2, RelicBags(random.Random(seed)))
-    assert len(s.cards) == len(SHOP_SLOTS) and len(set(s.cards)) == len(s.cards)
-    assert [card_type(c) for c in s.cards] == list(SHOP_SLOTS)
+    assert len(s.cards) == len(SHOP_SLOTS) + 2 and len(set(s.cards)) == len(s.cards)
+    assert [card_type(c) for c in s.cards[:5]] == list(SHOP_SLOTS)
     assert s.removal_price == 75 + 25 * 2 and not s.removal_used
-    assert all(23 <= p <= 158 for p in s.prices)
+    assert all(23 <= p <= 181 for p in s.prices)
 
 # Run: start, gold rewards, rest heal on max HP (review focus 4), buying and removing.
 run = Run(random.Random(3))
@@ -352,7 +352,7 @@ old = list(r.shop.cards)
 k = next(i for i, c in enumerate(old) if c in CARDS)
 r.buy(k)
 assert r.shop.cards[k] is not None and card_type(r.shop.cards[k]) == SHOP_SLOTS[k]
-assert r.shop.cards[k] not in old[:k] + old[k + 1:] and r.shop.prices[k] >= 47 and len(set(r.shop.cards)) == 5
+assert r.shop.cards[k] not in old[:k] + old[k + 1:] and r.shop.prices[k] >= 47 and len(set(r.shop.cards)) == 7
 r.buy_potion(1)
 assert r.shop.potions[1] is not None
 r.buy_relic(0)
@@ -396,7 +396,7 @@ for seed in range(150):
         if r.shop.cards[k] in CARDS:
             bought = r.shop.cards[k]
             r.buy(k)
-            assert r.shop.cards[k] != bought and len(set(r.shop.cards)) == 5, (seed, k)
+            assert r.shop.cards[k] != bought and len(set(r.shop.cards)) == 7, (seed, k)
 # 3. Relics won from an elite don't touch that elite's rewards, only the next one.
 r = fresh(seed=2)
 r.bags.pull = lambda *a, **k: "WHITE_STAR"
@@ -713,3 +713,35 @@ r = fresh("LAVA_LAMP"); r.fight_hit = False; r.win("Elite")
 r.shop = make_shop(random.Random(1), RarityOdds(), 0, RelicBags(random.Random(1)), r.relics)
 assert not any(is_upgraded(c) for c in r.shop.cards)  # shops: not a CombatRoom
 print("egg and lava lamp checks ok")
+
+# --- colorless shop slots ---------------------------------------------------------------------------------
+from .act import SHOP_COLORLESS
+from .cards import COLORLESS, NOT_BUYABLE
+seen = set()
+for seed in range(2000):
+    s = make_shop(random.Random(seed), RarityOdds(), 0, RelicBags(random.Random(seed)))
+    for card, price, rarity in zip(s.cards[5:], s.prices[5:], SHOP_COLORLESS):
+        assert card in COLORLESS and CARDS[card].rarity == rarity, (card, rarity)
+        assert round((86 if rarity == "Uncommon" else 172) * 0.95) <= price <= round((86 if rarity == "Uncommon" else 172) * 1.05) + 1
+        seen.add(card)
+    assert s.cards[5] != s.cards[6]
+assert seen >= set(COLORLESS) - {"SPLASH", "ALCHEMIZE"} and seen & NOT_BUYABLE  # unbuyable ones still stock
+
+# Buying: into the deck; The Courier restocks the same rarity; the unbuyable can't be bought.
+r = fresh(); r.gold = 500
+r.shop = make_shop(random.Random(3), RarityOdds(), 0, RelicBags(random.Random(3)))
+r.shop.cards[5], r.shop.prices[5] = "MAYHEM", 172
+r.buy(5)
+assert r.deck[-1] == "MAYHEM" and r.gold == 500 - 172 and r.shop.cards[5] is None
+r = fresh("THE_COURIER"); r.gold = 500
+r.shop = make_shop(random.Random(4), RarityOdds(), 0, RelicBags(random.Random(4)))
+r.shop.cards[6] = "MAYHEM"; r.buy(6)
+assert r.shop.cards[6] != "MAYHEM" and CARDS[r.shop.cards[6]].rarity == "Rare" and CARDS[r.shop.cards[6]].colorless
+r.shop.cards[5] = "SPLASH"
+try:
+    r.buy(5); raise SystemExit("bought Splash")
+except AssertionError:
+    pass
+r = fresh("MOLTEN_EGG"); r.shop = make_shop(random.Random(5), RarityOdds(), 0, RelicBags(random.Random(5)), r.relics)
+assert all(is_upgraded(c) or c in ("SPLASH", "ALCHEMIZE") or CARDS[c].type != "Attack" for c in r.shop.cards[5:])
+print("colorless shop checks ok")

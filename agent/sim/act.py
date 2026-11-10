@@ -7,7 +7,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from .cards import CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, base_id, starter_deck, upgrade
+from .cards import CARDS, COLORLESS, COMMONS, NOT_BUYABLE, RARES, UNCOMMONS, UPGRADABLE, base_id, starter_deck, upgrade
 from .engine import ENCOUNTERS, HIVE_BOSSES, HIVE_ELITES, HIVE_NORMALS, HIVE_WEAK, PLAYER_MAX_HP
 from .events import EVENT_ALLOWED, HIVE_EVENT_ALLOWED, MODELED_EVENTS
 from .map import ActMap, Node, generate_map
@@ -23,6 +23,8 @@ MAX_LIFTS = 3  # Girya.maxLifts
 EGGS = {"MOLTEN_EGG": "Attack", "TOXIC_EGG": "Skill", "FROZEN_EGG": "Power"}  # TryModifyCardBeingAddedToDeck
 CARD_PRICE = {"COMMON": 50, "UNCOMMON": 75, "RARE": 150}  # MerchantCardEntry.GetCost
 SHOP_SLOTS = ("Attack", "Attack", "Skill", "Skill", "Power")  # MerchantInventory._coloredCardTypes
+SHOP_COLORLESS = ("Uncommon", "Rare")  # MerchantInventory._colorlessCardRarities: two more card slots, after the typed ones
+COLORLESS_PRICE = {"Uncommon": round(75 * 1.15), "Rare": round(150 * 1.15)}  # MerchantCardEntry.GetCost: x1.15 for ColorlessCardPool (86, 172)
 REMOVAL_PRICE, REMOVAL_STEP = 75, 25  # MerchantCardRemovalEntry: +25 per removal used
 NEXT_RARITY = {"COMMON": "UNCOMMON", "UNCOMMON": "RARE", "RARE": "COMMON"}  # GetNextHighestRarityWithWrapping
 POTION_PRICE = {"COMMON": 50, "UNCOMMON": 75, "RARE": 100}  # MerchantPotionEntry.GetCost
@@ -222,7 +224,7 @@ class RelicBags:
 
 @dataclass
 class Shop:
-    cards: list[str | None]  # one per SHOP_SLOTS entry; None once bought
+    cards: list[str | None]  # one per SHOP_SLOTS entry, then SHOP_COLORLESS; None once bought (tests may pass just the first 5)
     prices: list[int]
     removal_price: int
     removal_used: bool = False
@@ -251,6 +253,14 @@ def stock_card(rng: random.Random, odds: RarityOdds, ctype: str, taken: list, re
     return egg_upgrade(card, relics), round(CARD_PRICE[rarity] * rng.uniform(0.95, 1.05))  # Mathf.RoundToInt: banker's, like round()
 
 
+def stock_colorless(rng: random.Random, rarity: str, taken: list, relics=()) -> tuple[str, int]:
+    """One colorless slot (CardFactory.CreateForMerchant by rarity): uniform over that rarity's cards not in `taken`.
+    Never on sale; stocks the unbuyable ones too, so the odds stay right."""
+    taken = [base_id(c) for c in taken]
+    card = rng.choice([c for c in COLORLESS if CARDS[c].rarity == rarity and c not in taken])
+    return egg_upgrade(card, relics), round(COLORLESS_PRICE[rarity] * rng.uniform(0.95, 1.05))
+
+
 def stock_relic(rng: random.Random, bags: RelicBags, rarity: str) -> tuple[str, int]:
     relic = bags.pull("player", rarity, True, lambda x: x not in NOT_IN_SHOPS)
     return relic, round(RELIC_PRICE[relic_rarity(relic)] * rng.uniform(0.85, 1.15))
@@ -263,7 +273,7 @@ def potion_price(rng: random.Random, pid: str) -> int:
 def make_shop(rng: random.Random, odds: RarityOdds, removals: int, bags: RelicBags, relics=()) -> Shop:
     """MerchantInventory.PopulateCharacterCardEntries: 5 typed slots, no repeats, one half price.
     Then 3 relics (two rolled, one SHOP, pulled from the back of the player bag) and 3 potions.
-    Colorless cards aren't stocked yet."""
+    The 2 colorless slots come after the typed ones, before the relics."""
     sale = rng.randrange(len(SHOP_SLOTS))
     cards: list[str | None] = []
     prices: list[int] = []
@@ -271,6 +281,10 @@ def make_shop(rng: random.Random, odds: RarityOdds, removals: int, bags: RelicBa
         card, price = stock_card(rng, odds, ctype, cards, relics)
         cards.append(card)
         prices.append(price // 2 if i == sale else price)
+    for rarity in SHOP_COLORLESS:
+        card, price = stock_colorless(rng, rarity, cards, relics)
+        cards.append(card)
+        prices.append(price)
     rarities = [roll_relic_rarity(rng), roll_relic_rarity(rng), "SHOP"]
     relics, relic_prices = [], []
     for r in rarities:
@@ -546,12 +560,16 @@ class Run:
     def buy(self, slot: int) -> None:
         s = self.shop
         card, price = s.cards[slot], self.price(s.prices[slot])
-        assert card in CARDS and self.gold >= price, (card, price, self.gold)
+        assert card in CARDS and self.gold >= price and base_id(card) not in NOT_BUYABLE, (card, price, self.gold)
         self.gold -= price
         self.spent += price
         self.add_card(card)
-        if "THE_COURIER" in self.relics:  # RestockAfterPurchase: same type, not on sale; the bought card still counts as taken
-            s.cards[slot], s.prices[slot] = stock_card(self.rng, self.card_odds, SHOP_SLOTS[slot], [c for c in s.cards if c], self.relics)
+        if "THE_COURIER" in self.relics:  # RestockAfterPurchase: same type / rarity, not on sale; the bought card still counts as taken
+            taken = [c for c in s.cards if c]
+            if slot < len(SHOP_SLOTS):
+                s.cards[slot], s.prices[slot] = stock_card(self.rng, self.card_odds, SHOP_SLOTS[slot], taken, self.relics)
+            else:
+                s.cards[slot], s.prices[slot] = stock_colorless(self.rng, SHOP_COLORLESS[slot - len(SHOP_SLOTS)], taken, self.relics)
         else:
             s.cards[slot] = None
 

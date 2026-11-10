@@ -16,8 +16,8 @@ from gymnasium import spaces
 from env import CARD_IDS, UPGRADE_CARDS, STS2CombatEnv
 from grow import insert_map
 from picker import play_fight
-from sim.act import ALL_BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Run
-from sim.cards import CARDS, CHOICE_CARDS, UPGRADABLE, base_id, is_upgraded
+from sim.act import ALL_BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_COLORLESS, SHOP_SLOTS, Run
+from sim.cards import CARDS, CHOICE_CARDS, NOT_BUYABLE, UPGRADABLE, base_id, is_upgraded
 from sim.engine import SimClient
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 from sim.map import BOSS_ROW, COLS, ROOM_TYPES
@@ -47,7 +47,8 @@ EVENT = DRINK_2 + MAX_POTION_SLOTS - POTION_SLOTS  # [event: option 0-1]
 REST_OPTIONS = ("HEAL", "LIFT", "DIG")  # [rest: one per option], then [rest: Smith one per card id]
 REST = EVENT + EVENT_OPTIONS
 SMITH = REST + len(REST_OPTIONS)
-N_ACTIONS = SMITH + len(CARD_IDS)
+SHOP_COLORLESS_ACTION = SMITH + len(CARD_IDS)  # appended: [shop: buy colorless slot 0-1]
+N_ACTIONS = SHOP_COLORLESS_ACTION + len(SHOP_COLORLESS)
 
 
 def potion_take_action(slot: int) -> int:
@@ -84,8 +85,10 @@ EVENT_OBS = 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3 + len(CARD_IDS)
 # Appended after the act: rest-decision flag, which of Heal/Smith/Lift/Dig it offers, the deck's upgraded copies per card id,
 # whether each offer / shop slot's card is upgraded.
 UPGRADE_OBS = 1 + 4 + len(CARD_IDS) + len(SHOP_SLOTS)
+# Appended last: the shop's colorless slots (card one-hot, price / 100, affordable) and whether each is upgraded (an Egg).
+COLORLESS_OBS = len(SHOP_COLORLESS) * (SLOT_FEATURES + 1)
 OBS_DIM = (len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(ALL_BOSSES) + len(SHOP_SLOTS) * SLOT_FEATURES + 2
-           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS + EVENT_OBS + 1 + UPGRADE_OBS)  # + 1: which act
+           + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + RELIC_OBS + EVENT_OBS + 1 + UPGRADE_OBS + COLORLESS_OBS)  # + 1: which act
 FLOOR_REWARD, CLEAR_REWARD = 0.1, 1.0
 MAX_DECISIONS = 500  # a run is ~40 decisions; this only stops a broken env
 
@@ -248,6 +251,8 @@ class RunPolicyEnv(gym.Env):
                 self.decision = self.back = "path"
             elif a == SHOP_REMOVE:
                 self.decision = "remove"
+            elif a >= SHOP_COLORLESS_ACTION:
+                self.run.buy(len(SHOP_SLOTS) + a - SHOP_COLORLESS_ACTION)
             elif a >= SHOP_RELIC:
                 self.run.buy_relic(a - SHOP_RELIC)
                 self._advance()  # Orrery and Cauldron queue rewards
@@ -286,7 +291,8 @@ class RunPolicyEnv(gym.Env):
         elif self.decision == "shop":
             s = run.shop
             for i, (c, p) in enumerate(zip(s.cards, s.prices)):
-                m[SHOP + i] = c in CARDS and run.gold >= run.price(p)
+                a = SHOP + i if i < len(SHOP_SLOTS) else SHOP_COLORLESS_ACTION + i - len(SHOP_SLOTS)
+                m[a] = c in CARDS and base_id(c) not in NOT_BUYABLE and run.gold >= run.price(p)
             m[SHOP_REMOVE] = not s.removal_used and run.gold >= run.price(s.removal_price)
             for k, (p, price) in enumerate(zip(s.potions, s.potion_prices)):
                 m[SHOP_POTION + k] = p in POTIONS and run.gold >= run.price(price) and None in run.potions
@@ -320,6 +326,7 @@ class RunPolicyEnv(gym.Env):
             deck[CARD_INDEX[base_id(c)]] += 0.5
         boss = [float(b == run.boss) for b in ALL_BOSSES]
         slots = np.zeros((len(SHOP_SLOTS), SLOT_FEATURES))
+        cless = np.zeros((len(SHOP_COLORLESS), SLOT_FEATURES + 1))
         removal = [0.0, 0.0]
         slot_up = np.zeros(len(SHOP_SLOTS))  # the offered id itself: Eggs, Lava Lamp and Act 2's roll upgrade offers
         if self.decision == "pick":
@@ -329,7 +336,11 @@ class RunPolicyEnv(gym.Env):
         elif self.decision in ("shop", "remove"):
             s = run.shop
             for i, (c, p) in enumerate(zip(s.cards, s.prices)):
-                if c in CARDS:
+                if c in CARDS and i >= len(SHOP_SLOTS):
+                    cless[i - len(SHOP_SLOTS), CARD_INDEX[base_id(c)]] = 1
+                    cless[i - len(SHOP_SLOTS), -3], cless[i - len(SHOP_SLOTS), -2] = run.price(p) / 100, run.gold >= run.price(p)
+                    cless[i - len(SHOP_SLOTS), -1] = is_upgraded(c)
+                elif c in CARDS:
                     slots[i, CARD_INDEX[base_id(c)]], slots[i, -2], slots[i, -1] = 1, run.price(p) / 100, run.gold >= run.price(p)
                     slot_up[i] = is_upgraded(c)
             removal = [run.price(s.removal_price) / 100, float(not s.removal_used and run.gold >= run.price(s.removal_price))]
@@ -381,7 +392,7 @@ class RunPolicyEnv(gym.Env):
                 upgraded[CARD_INDEX[base_id(c)]] += 0.5
         return np.concatenate([head, np.minimum(deck, 10), boss, slots.ravel(), removal, grid.ravel(),
                                potion_obs, belt, held, shop_r.ravel(), event_obs, [float(getattr(run, "act", 0))],
-                               rest, np.minimum(upgraded, 10), slot_up]).astype(np.float32)
+                               rest, np.minimum(upgraded, 10), slot_up, cless.ravel()]).astype(np.float32)
 
 
 def run_maps() -> tuple[list[int], list[int]]:

@@ -667,6 +667,21 @@ Ported in `agent/sim/act.py` (the run), `agent/sim/relics.py` and `agent/sim/eng
   - **True Grit+** prompts for the card to exhaust (`TrueGrit.cs:30`).
   - Other values follow `UPGRADES` in `agent/sim/cards.py`, and the source for each is cited beside it.
 
+## Colorless cards
+
+53 single-player cards from `ColorlessCardPool`, in `agent/sim/cards.py` (`COLORLESS_UNCOMMONS`, `COLORLESS_RARES`, `NOT_BUYABLE`), played in `agent/sim/engine.py`. Multiplayer-only cards are out.
+
+- **Pool:** Uncommon and Rare only. They are in no Ironclad reward pool, only shops (below) and the generators (`COLORLESS_GENERATED`: Jack of All Trades, Colorless Potion and so on, by `CanBeGeneratedInCombat`).
+- **Shop slots** (`MerchantInventory.CreateForNormalMerchant`): after the 5 character slots and before the relics, `PopulateColorlessCardEntries` stocks one Uncommon and one Rare (`_colorlessCardRarities`). `CardFactory.CreateForMerchant(player, pool.Except(stocked), rarity)` picks uniformly within that rarity from the shop rng, with no rarity roll or fall-through. Never on sale.
+  - **Price** (`MerchantCardEntry.GetCost`): `RoundToInt(75 or 150 × 1.15)` = 86 / 172, then × U(0.95, 1.05) rounded. Eggs upgrade by card type as for character cards, and the price stays by rarity.
+  - **The Courier** restocks the slot from the same rarity (`Populate`, with the bought card still counting as stocked).
+  - Splash and Alchemize stock, so the odds stay right, but can't be bought (`NOT_BUYABLE`; `Run.buy` asserts, the run env masks them).
+  - Run env: the 2 slots are the last obs block (card one-hot, price / 100, affordable, upgraded) and the last 2 actions (`SHOP_COLORLESS_ACTION`), appended so older models still map (`run_maps`).
+- **Keywords:** Innate (opening hand, `CardDef.innate`; Entropy upgraded gets it); Retain; `RetainHandPower` (Equilibrium, Salvo) keeps the whole hand at end of turn.
+- **Powers:** Automation, Calamity, Entropy, Fasten, Mayhem, Nostalgia, Panache, Plating, Prep Time, Rolling Boulder, Stratagem, The Gambit, plus Strength and No Block through existing powers.
+- **Prompts** (`SimCombat.pending_choice`): `generated` (choose 1 of N new cards, skippable), `draw` (pick from the draw pile), `hand_multi` (pick up to N from the hand, ends early with an empty pick). Entropy's prompt pauses the start of the turn. Stratagem's shuffle pick is random, not asked.
+- **Left out** (`ponytail:`): Splash (needs other characters' Attacks), Alchemize (random potion, with the potions), and 5 of Entropy's statuses that the sim doesn't have.
+
 ## Act 2 (the Hive)
 
 The sim runs on through the Hive, and its run ends at the Act 2 boss. Fights are in `agent/sim/engine.py` (`HIVE_*`), the act change is `Run.next_act` in `agent/sim/act.py`, and Act 1's rules above apply unless noted.

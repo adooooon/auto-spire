@@ -54,12 +54,12 @@ for i in range(5000):
     seen |= r
 assert seen == set(RELIC_IDS) and {0, 6} <= sizes
 
-from run_env import CARD_INDEX, EVENT_OBS, N_ACTIONS, OBS_DIM, PICK, REMOVE, SHOP, SHOP_LEAVE, SHOP_REMOVE, UPGRADE_OBS, RunPolicyEnv
+from run_env import CARD_INDEX, COLORLESS_OBS, SHOP_COLORLESS_ACTION, EVENT_OBS, N_ACTIONS, OBS_DIM, PICK, REMOVE, SHOP, SHOP_LEAVE, SHOP_REMOVE, UPGRADE_OBS, RunPolicyEnv
 from sim.act import Shop
 
 from run_env import SHOP_RELIC, potion_take_action, drink_action, POTION_TAKE_2, DRINK_2
 
-assert N_ACTIONS == 327 and OBS_DIM == 2027  # +53 colorless card ids (was 221 / 1603). Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs;  11 relics modeled in Task 4: +11 relic obs in the combat env, +44 in the run env; rest: 3 + 90 actions, 5 + 90 + 5 obs
+assert N_ACTIONS == 329 and OBS_DIM == 2027 + COLORLESS_OBS == 2027 + 2 * (len(CARD_INDEX) + 3)  # colorless shop slots: +2 actions, 2 x (card one-hot + price, affordable, upgraded) obs. +53 colorless card ids (was 221 / 1603). Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs;  11 relics modeled in Task 4: +11 relic obs in the combat env, +44 in the run env; rest: 3 + 90 actions, 5 + 90 + 5 obs
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -274,7 +274,7 @@ assert renv.run.gold == 10 and renv.run.relics == {"MEMBERSHIP_CARD"}
 renv.run.gold = 60
 assert renv.action_masks()[SHOP_RELIC + 2]  # 120 -> 60: affordable only at half price
 o = renv._obs()
-base = OBS_DIM - UPGRADE_OBS - 1 - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)
+base = (OBS_DIM - COLORLESS_OBS) - UPGRADE_OBS - 1 - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)
 assert abs(o[base + 2 * (len(RELIC_IDS) + 2) + len(RELIC_IDS)] - 0.6) < 1e-6
 assert not o[base:base + len(RELIC_IDS)].any() and o[base + len(RELIC_IDS)] > 0  # unmodeled: no one-hot, price shown
 assert o[base - len(RELIC_IDS) + RELIC_IDS.index("MEMBERSHIP_CARD")] == 1
@@ -346,7 +346,7 @@ before = renv._obs()
 renv.run.obtain("POTION_BELT", "elite")
 after = renv._obs()
 assert after.shape == (OBS_DIM,)
-cut = OBS_DIM - UPGRADE_OBS - 1 - EVENT_OBS - (2 * len(POTION_IDS) + len(RELIC_IDS) + 3 * (len(RELIC_IDS) + 2))
+cut = (OBS_DIM - COLORLESS_OBS) - UPGRADE_OBS - 1 - EVENT_OBS - (2 * len(POTION_IDS) + len(RELIC_IDS) + 3 * (len(RELIC_IDS) + 2))
 assert (after[:cut] == before[:cut]).all()
 
 # MapRunModeEnv takes Hand of Greed's gold after a fight too: the same fight with and without it differs by that gold.
@@ -417,7 +417,7 @@ print("run env checks ok")
 
 # --- events ---------------------------------------------------------------------------------------------
 from run_env import EVENT, EVENT_OBS, PATH, REST
-E0 = OBS_DIM - UPGRADE_OBS - 1 - EVENT_OBS  # where the event block starts
+E0 = (OBS_DIM - COLORLESS_OBS) - UPGRADE_OBS - 1 - EVENT_OBS  # where the event block starts
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 
 assert REST == EVENT + EVENT_OPTIONS == 181 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
@@ -649,7 +649,7 @@ from run_env import SHOP_RELIC, SLOT_FEATURES
 from sim.act import ALL_BOSSES
 from sim.relics import UPGRADE_RELICS
 S0 = len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(ALL_BOSSES)  # the offer / shop slots
-R0 = OBS_DIM - UPGRADE_OBS - 1 - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)  # the shop's relics
+R0 = (OBS_DIM - COLORLESS_OBS) - UPGRADE_OBS - 1 - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)  # the shop's relics
 
 
 def became_modeled(env, decision):
@@ -702,8 +702,8 @@ from sim.act import SHOP_SLOTS
 from sim.cards import is_upgraded, upgrade
 from sim.relics import UPGRADE_RELICS
 
-assert REST_OPTIONS == ("HEAL", "LIFT", "DIG") and SMITH == REST + 3 and N_ACTIONS == SMITH + len(CARD_IDS)
-U0 = OBS_DIM - UPGRADE_OBS  # rest flag, Heal/Smith/Lift/Dig available, deck upgraded counts, slot upgraded flags
+assert REST_OPTIONS == ("HEAL", "LIFT", "DIG") and SMITH == REST + 3 and N_ACTIONS == SHOP_COLORLESS_ACTION + 2 == SMITH + len(CARD_IDS) + 2
+U0 = (OBS_DIM - COLORLESS_OBS) - UPGRADE_OBS  # rest flag, Heal/Smith/Lift/Dig available, deck upgraded counts, slot upgraded flags
 
 
 def enter_rest(env, deck, relics=()):
@@ -747,7 +747,7 @@ renv.decision, renv.run.gold, renv.run.deck = "shop", 1000, ["BASH+", "STRIKE_IR
 renv.run.shop = Shop(["ANGER+", "BASH", None, None, None], [50] * 5, 75)
 o = renv._obs()
 assert o[S0 + CARD_INDEX["ANGER"]] == 1 and o[S0 + SLOT_FEATURES - 2] == 0.5 and o[S0 + SLOT_FEATURES + CARD_INDEX["BASH"]] == 1
-assert o[-len(SHOP_SLOTS):].tolist() == [1, 0, 0, 0, 0] and renv.action_masks()[SHOP]
+assert o[-COLORLESS_OBS - len(SHOP_SLOTS):-COLORLESS_OBS].tolist() == [1, 0, 0, 0, 0] and renv.action_masks()[SHOP]
 renv.step(SHOP_REMOVE)
 assert np.flatnonzero(renv.action_masks()).tolist() == sorted(REMOVE + CARD_INDEX[c] for c in ("BASH", "STRIKE_IRONCLAD"))
 renv.step(REMOVE + CARD_INDEX["BASH"])
@@ -756,7 +756,7 @@ assert renv.run.deck == ["STRIKE_IRONCLAD"] and renv.decision == "shop"
 renv.decision, renv.offered = "pick", ["ANGER", "BASH+", "NOT_A_CARD"]
 o = renv._obs()
 assert o[S0 + CARD_INDEX["ANGER"]] == 1 and o[S0 + SLOT_FEATURES + CARD_INDEX["BASH"]] == 1
-assert o[-len(SHOP_SLOTS):].tolist() == [0, 1, 0, 0, 0] and renv.action_masks()[PICK + 1] and not renv.action_masks()[PICK + 2]
+assert o[-COLORLESS_OBS - len(SHOP_SLOTS):-COLORLESS_OBS].tolist() == [0, 1, 0, 0, 0] and renv.action_masks()[PICK + 1] and not renv.action_masks()[PICK + 2]
 renv.step(PICK + 1)
 assert renv.run.deck[-1] == "BASH+"
 
@@ -873,3 +873,32 @@ assert _removal_index(["STRIKE_IRONCLAD", "BASH", "STRIKE_IRONCLAD"], [True, Fal
 assert _removal_index(["STRIKE_IRONCLAD", "BASH"], [True, False], "STRIKE_IRONCLAD") == 0
 assert _removal_index(["BASH"], [False], "INFLAME") == 0 and _removal_index(["BASH"], [False], None) == 0
 print("live run mapping ok")
+
+# --- colorless cards in the run ---------------------------------------------------------------------------
+from sim.act import SHOP_COLORLESS
+from sim.cards import COLORLESS, NOT_BUYABLE
+BUY = [c for c in COLORLESS if c not in NOT_BUYABLE]
+
+# 300 runs with a random legal policy and 4 random colorless cards in each deck finish without an exception.
+renv, rng = RunPolicyEnv(), np.random.default_rng(7)
+for seed in range(300):
+    renv.reset(seed=seed)
+    renv.run.deck += [BUY[i] for i in rng.integers(len(BUY), size=4)]
+    obs, done, trunc = renv._obs(), False, False
+    while not (done or trunc):
+        mask = renv.action_masks()
+        assert mask.any() and not mask[SHOP_COLORLESS_ACTION:][[c in NOT_BUYABLE for c in renv.run.shop.cards[5:]]].any() if renv.decision == "shop" else mask.any()
+        obs, _, done, trunc, _ = renv.step(int(rng.choice(np.flatnonzero(mask))))
+    assert done and not trunc, seed
+
+# The colorless slots are bought by their own actions, shown in the appended obs, and Splash is masked out.
+renv.reset(seed=1)
+renv.decision, renv.run.gold = "shop", 1000
+renv.run.shop = Shop(["BASH", None, None, None, None, "SPLASH", "MAYHEM"], [50] * 5 + [86, 172], 75)
+m = renv.action_masks()
+assert not m[SHOP_COLORLESS_ACTION] and m[SHOP_COLORLESS_ACTION + 1] and m[SHOP]
+o = renv._obs()[-COLORLESS_OBS:].reshape(2, -1)
+assert o[0, CARD_INDEX["SPLASH"]] == 1 and abs(o[1, -3] - 1.72) < 1e-6 and o[1, -2] == 1 and o[1, CARD_INDEX["MAYHEM"]] == 1
+renv.step(SHOP_COLORLESS_ACTION + 1)
+assert renv.run.deck[-1] == "MAYHEM" and renv.run.gold == 1000 - 172 and renv.run.shop.cards[6] is None
+print("colorless run env checks ok")
