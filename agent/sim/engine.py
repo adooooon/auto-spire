@@ -610,7 +610,13 @@ class _Enemy:
                    artifact=d.artifact, slippery=d.slippery, pw=dict(d.powers))
 
 
-SINGLE_POWERS = {"BarricadePower", "NoDrawPower", "NoEnergyGainPower", "HellraiserPower"}  # PowerStackType.Single
+SINGLE_POWERS = {"BarricadePower", "NoDrawPower", "NoEnergyGainPower", "HellraiserPower", "TheGambitPower"}  # PowerStackType.Single
+# PowerInstanceType.Instanced: every application is its own power, kept in SimCombat.inst as [Amount, *state]; this is
+# the state a new one starts with (Automation: cards left to draw; Panache: cards left, counting yet; The Bomb: damage).
+INSTANCED = {"AutomationPower": (10,), "PanachePower": (5, 0), "RollingBoulderPower": (), "TheBombPower": (40,)}
+# Transform options for a status card that the sim models (StatusCardPool order, CanBeGeneratedInCombat).
+# ponytail: the pool also has Beckon, Burn, Debris, Wither and Void, which the sim lacks; add them with those cards.
+STATUS_TRANSFORMS = ("DAZED", "INFECTION", "SLIMED", "TOXIC", "WOUND")
 # Removed at the end of the player's turn (AfterSideTurnEnd on their side).
 TURN_POWERS = ("RagePower", "NoDrawPower", "NoEnergyGainPower", "OneTwoPunchPower")
 # Combat history the live /combat doesn't expose; sim.validate carries these over between steps.
@@ -621,7 +627,7 @@ ENEMY_PW = ("HardToKillPower", "ThornsPower", "ImbalancedPower", "BurrowedPower"
             "PersonalHivePower", "VitalSparkPower", "ReattachPower", "EscapeArtistPower", "FlutterPower", "SwipePower", "HatchPower",
             "CrabRagePower", "BackAttackLeftPower", "BackAttackRightPower", "SandpitPower")
 HISTORY_FIELDS = ("tender_plays", "facing", "exhausted_this_turn", "hp_lost_this_turn", "attack_plays", "block_plays", "free_cards",
-                  "hp_loss_events", "bonus_damage", "crimson_self", "inferno_self")
+                  "hp_loss_events", "bonus_damage", "crimson_self", "inferno_self", "skill_plays", "inst")
 
 
 @dataclass
@@ -675,6 +681,7 @@ class SimCombat:
     facing: str = "Right"  # SurroundedPower: x1.5 from the arm behind the player
     stolen: list = field(default_factory=list)  # Thieving Hopper: cards gone from the deck unless it's killed
     attack_plays: int = 0  # this turn, per play (One-Two Punch counts twice): Stomp, Juggling
+    skill_plays: int = 0  # the same for Skills (Nostalgia counts both)
     block_plays: list[int] = field(default_factory=list)  # card plays that gained block this turn (Unmovable)
     free_cards: list[str] = field(default_factory=list)  # free this turn (Infernal Blade's card)
     hp_loss_events: int = 0  # unblocked hits/losses this combat (Tear Asunder)
@@ -704,6 +711,7 @@ class SimCombat:
     played_now: list = field(default_factory=list)
     played_last: list = field(default_factory=list)
     _dealt: int = 0  # block + HP the last attack hit took, overkill included (DamageResult.TotalDamage + OverkillDamage)
+    inst: dict = field(default_factory=dict)  # the player's INSTANCED powers: name -> [[Amount, *state], ...] in apply order
 
     @property
     def max_energy(self) -> int:
@@ -743,7 +751,7 @@ class SimCombat:
         self.strength = self.temp_strength = self.weak = self.cards_played = 0
         self.dexterity = self.temp_dexterity = 0
         self.ringing = False
-        self.pw, self.bonus_damage = {}, {}
+        self.pw, self.bonus_damage, self.inst = {}, {}, {}
         self.crimson_self = self.inferno_self = self.hp_loss_events = 0
         self.lamp_hit = False
         self.round = 1
@@ -858,13 +866,13 @@ class SimCombat:
         """The rest of the play that stopped at the prompt: AfterCardPlayed, further plays, result pile."""
         self.choice_log.append((self.pending_choice["source"], picked, options))
         self.pending_choice = None
-        card_id, target, x, force_exhaust, energy_value, plays_left, mine, outer = self._paused
+        card_id, target, x, force_exhaust, energy_value, plays_left, mine, outer, to_top = self._paused
         self._finish_choice(card_id, picked)  # only the card being played pauses, so it's the prompt's source
         self._effect_depth -= 1
         self._paused = None
         self._pausable = True  # One-Two Punch's second play asks again
         if self._after_resolve(CARDS[card_id], mine, outer):
-            self._run_plays(card_id, target, x, force_exhaust, energy_value, plays_left)
+            self._run_plays(card_id, target, x, force_exhaust, energy_value, plays_left, to_top)
         self._pausable = False
         self._check_win()
         return {"ok": True, "choice": self.pending_choice}
@@ -936,13 +944,16 @@ class SimCombat:
         card = CARDS[card_id]
         attack = card.type == "Attack"
         plays = 1 + self.replays.get(id(card_id), 0)  # GetEnchantedReplayCount() + 1
+        # NostalgiaPower.ModifyCardPlayResultPileTypeAndPosition, before this play starts: while fewer Attack / Skill plays
+        # than its Amount have started this turn, a card bound for the discard pile goes on top of the draw pile.
+        to_top = card.type in ("Attack", "Skill") and self.attack_plays + self.skill_plays < self.pw.get("NostalgiaPower", 0)
         if attack and self.pw.get("OneTwoPunchPower"):  # ModifyCardPlayCount, then Decrement
             plays += 1
             self._decrement("OneTwoPunchPower")
-        self._run_plays(card_id, target, x, force_exhaust, energy_value, plays)
+        self._run_plays(card_id, target, x, force_exhaust, energy_value, plays, to_top)
 
     def _run_plays(self, card_id: str, target: _Enemy | None, x: int, force_exhaust: bool, energy_value: int | None,
-                   plays: int) -> None:
+                   plays: int, to_top: bool = False) -> None:
         card = CARDS[card_id]
         attack = card.type == "Attack"
         for plays_left in range(plays - 1, -1, -1):
@@ -955,6 +966,9 @@ class SimCombat:
                 self._check_win()  # Juggernaut
                 if not self.in_combat:
                     return
+            if attack and self.pw.get("CalamityPower"):  # CalamityPower.BeforeCardPlayed marks this play
+                self.rt.setdefault("calamity", set()).add(mine)
+            self.skill_plays += card.type == "Skill"
             if attack:
                 self._decrement("FreeAttackPower")
                 self.attack_plays += 1
@@ -970,7 +984,7 @@ class SimCombat:
                 if not self.pending_choice:  # a paused play is still resolving: _resume_play lowers it
                     self._effect_depth -= 1
             if self.pending_choice:
-                self._paused = (card_id, target, x, force_exhaust, energy_value, plays_left, mine, outer)
+                self._paused = (card_id, target, x, force_exhaust, energy_value, plays_left, mine, outer, to_top)
                 return
             if base_id(card_id) in ("BOLAS", "THRUMMING_HATCHET"):
                 self.played_now.append(card_id)  # CardPlayFinished entry; only these two cards read it back
@@ -979,6 +993,8 @@ class SimCombat:
         if card.type != "Power":  # Powers: PileType.None, removed from combat
             if card.exhaust or force_exhaust:
                 self._exhaust(card_id)
+            elif to_top:
+                self.draw_pile.append(card_id)
             else:
                 self.discard_pile.append(frantic_escape(getattr(card_id, "extra", 0) + 1) if card_id == "FRANTIC_ESCAPE" else card_id)
         self._check_empty_hand()
@@ -1017,6 +1033,18 @@ class SimCombat:
             for e in self._hittable():
                 if e.pw.get("VitalSparkPower"):
                     self._apply_power("TaintedPower", e.pw["VitalSparkPower"])
+        if mine in self.rt.get("calamity", ()):  # CalamityPower: Amount random Ironclad Attacks (CardFactory.GetForCombat)
+            self.rt["calamity"].remove(mine)
+            attacks = [c for c in GENERATED if CARDS[c].type == "Attack"]
+            for _ in range(self.pw["CalamityPower"]):
+                self._add_to_hand(self.rng.choice(attacks))
+        for p in self.inst.get("PanachePower", ()):  # [damage, cards left, counting]: its own card's play doesn't count
+            if p[2]:
+                p[1] -= 1
+                if p[1] <= 0:
+                    self._damage_all(p[0])  # Unpowered, every hittable enemy
+                    p[1] = 5
+            p[2] = 1
         self._after_card_relics(card)
         self._check_win()
         return self.in_combat
@@ -1117,7 +1145,7 @@ class SimCombat:
             if not self.in_combat:
                 return
         if card.block:
-            self._gain_block(card.block, card=True)
+            self._gain_block(card.block, card=True, defend=card.defend)
         if card.damage or card.damage_from_block:
             base = self.player_block if card.damage_from_block else card.damage
             if card.damage_per_strike:  # PlayerCombatState.AllCards: every pile plus the card in play
@@ -1350,6 +1378,15 @@ class SimCombat:
             self._draw(MAX_HAND_SIZE - len(self.hand))
         elif b == "THRUMMING_HATCHET":  # returns to hand at the next turn start
             self._hit(card, target, card.damage)
+        elif b == "DARK_SHACKLES":  # StrengthLoss 9, +6
+            if target and target.is_alive:
+                self._debuff(target, "DarkShacklesPower", 9 + 6 * up)
+        elif b == "PROLONG":  # BlockNextTurnPower = the block you have now (PowerCmd.Apply skips 0)
+            if self.player_block:
+                self._apply_power("BlockNextTurnPower", self.player_block)
+        elif b == "THE_BOMB":  # Turns 3; BombDamage 40, +10 (SetDamage on the new instance)
+            self._apply_power("TheBombPower", 3)
+            self.inst["TheBombPower"][-1][1] = 40 + 10 * up
         else:
             raise KeyError(f"no special logic for {cid}")
 
@@ -1442,6 +1479,9 @@ class SimCombat:
         if name == "DexterityPower":
             self.dexterity += amount
             return
+        if name in INSTANCED:
+            self.inst.setdefault(name, []).append([amount, *INSTANCED[name]])
+            return
         self.pw[name] = 1 if name in SINGLE_POWERS else self.pw.get(name, 0) + amount
         if name == "CrimsonMantlePower":  # IncrementSelfDamage
             self.crimson_self += 1
@@ -1472,6 +1512,10 @@ class SimCombat:
             e.mangle += amount
             e.strength -= amount
             return
+        if name == "DarkShacklesPower":  # another TemporaryStrengthPower, shown under its own name
+            e.pw[name] = e.pw.get(name, 0) + amount
+            e.strength -= amount
+            return
         setattr(e, name, getattr(e, name) + amount)
         if name == "vulnerable" and self.pw.get("ViciousPower"):
             self._draw(self.pw["ViciousPower"])
@@ -1492,10 +1536,14 @@ class SimCombat:
         if not self.pw.get("NoEnergyGainPower"):  # ModifyEnergyGain -> 0
             self.energy += amount
 
-    def _gain_block(self, amount: int, card: bool = False) -> None:
-        """card: a card's own block (Frail, Unmovable apply); other block (powers) is Unpowered."""
+    def _gain_block(self, amount: int, card: bool = False, defend: bool = False) -> None:
+        """card: a card's own block (Frail, Unmovable apply); other block (powers) is Unpowered.
+        defend: the card is Defend-tagged (FastenPower)."""
         if card:
-            num, den = amount + self.dexterity, 1  # DexterityPower.ModifyBlockAdditive, before Frail
+            # DexterityPower / FastenPower.ModifyBlockAdditive, before Frail
+            num, den = amount + self.dexterity + (self.pw.get("FastenPower", 0) if defend else 0), 1
+            if self.pw.get("NoBlockPower"):  # ModifyBlockMultiplicative x0 for card block
+                num = 0
             if self.frail:
                 num, den = num * 3, den * 4
             if self.pw.get("UnmovablePower") and \
@@ -1512,28 +1560,59 @@ class SimCombat:
 
     # --- piles -----------------------------------------------------------------------------------
 
-    def _take_top(self) -> str | None:
-        if not self.draw_pile and self.discard_pile:  # ShuffleIfNecessary
+    def _shuffle_if_necessary(self) -> None:
+        if not self.draw_pile and self.discard_pile:
             self.draw_pile, self.discard_pile = self.discard_pile, []
             self.rng.shuffle(self.draw_pile)
             self.shuffles += 1
-            if "THE_ABACUS" in self.relics:
-                self._gain_block(6)
             if self.shuffles > MAX_SHUFFLES:
                 raise SimLoopError(f"{self.shuffles} reshuffles in one fight")
+            if self.pw.get("StratagemPower") and not self._ending():  # AfterShuffle (skipped once ending): powers, then relics
+                self._stratagem()
+            if "THE_ABACUS" in self.relics:
+                self._gain_block(6)
+
+    def _take_top(self) -> str | None:
+        self._shuffle_if_necessary()
         return self.draw_pile.pop() if self.draw_pile else None
 
     def _draw_one(self, hand_draw: bool = False) -> str | None:
         if (self.pw.get("NoDrawPower") and not hand_draw) or len(self.hand) >= MAX_HAND_SIZE:
             return None
-        card = self._take_top()
-        if card is None:
+        self._shuffle_if_necessary()
+        if not self.draw_pile or len(self.hand) >= MAX_HAND_SIZE:  # Stratagem can fill the hand during the shuffle
             return None
+        card = self.draw_pile.pop()
         self.hand.append(card)
         if self.pw.get("HellraiserPower") and CARDS[card].strike:  # AfterCardDrawnEarly: autoplay it
             self.hand.pop()
             self._autoplay(card)
+        for a in self.inst.get("AutomationPower", ()):  # AfterCardDrawn: [energy, cards left]
+            a[1] -= 1
+            if a[1] <= 0:
+                self._gain_energy(a[0])
+                a[1] = 10
         return card
+
+    def _stratagem(self) -> None:
+        """StratagemPower.AfterShuffle: exactly Amount draw-pile cards (all if fewer) to hand (CardSelectCmd.FromCombatPile).
+        ponytail: picked at random, as _ask does when it can't pause, until plan task 4 makes it a prompt."""
+        for c in self.rng.sample(self.draw_pile, min(self.pw["StratagemPower"], len(self.draw_pile))):
+            self.draw_pile.pop(next(i for i, d in enumerate(self.draw_pile) if d is c))
+            self._add_to_hand(c)
+
+    def _entropy(self) -> None:
+        """EntropyPower.AfterPlayerTurnStart: transform exactly Amount hand cards (all if fewer; CardSelectCmd.FromHand).
+        ponytail: picked at random, as _ask does when it can't pause, until plan task 4 makes it a prompt."""
+        for i in self.rng.sample(range(len(self.hand)), min(self.pw["EntropyPower"], len(self.hand))):
+            self.hand[i] = self._transform(self.hand[i])
+
+    def _transform(self, cid: str) -> str:
+        """CardFactory.CreateRandomCardForTransform in combat: a random other card of the card's pool (a Token's: the colorless
+        pool), Common to Rare and CanBeGeneratedInCombat; a status becomes another status. A new card: unupgraded, no deck card."""
+        c = CARDS[cid]
+        pool = STATUS_TRANSFORMS if c.rarity == "Status" else COLORLESS_GENERATED if c.colorless or c.rarity == "Token" else GENERATED
+        return self.rng.choice([x for x in pool if x != base_id(cid)])
 
     def _draw(self, count: int, hand_draw: bool = False) -> None:
         for _ in range(count):
@@ -1772,32 +1851,37 @@ class SimCombat:
             self.stolen.append(pile.pop(i).deck)
             e.pw["SwipePower"] = 1
 
-    def _lose_hp(self, amount: int, from_card: bool = False) -> None:
-        """Unblocked HP loss: card self-damage (Unblockable), or the part of a hit block didn't stop."""
+    def _kill_player(self) -> bool:
+        """Kill -> ShouldDieLate: Lizard Tail heals instead (True)."""
+        self.player_hp = 0
+        if "LIZARD_TAIL" in self.relics and not self.relic_state.get("lizard_used"):
+            self.relic_state["lizard_used"] = 1
+            self.player_hp = max(1, self.player_max_hp * 50 // 100)
+            self._red_skull()
+            return True
+        self._end_combat(won=False)
+        return False
+
+    def _lose_hp(self, amount: int, from_card: bool = False) -> bool:
+        """Unblocked HP loss: card self-damage (Unblockable), or the part of a hit block didn't stop.
+        True if HP was lost and the hit wasn't lethal (AfterDamageReceived ran)."""
         R = self.relics
         if amount <= 0:
-            return
+            return False
         # ModifyHpLostAfterOsty. ponytail: relic order assumed Tungsten Rod, then Beating Remnant.
         if "TUNGSTEN_ROD" in R:
             amount -= 1
         if "BEATING_REMNANT" in R:
             amount = min(amount, 20 - self.rt.get("remnant", 0))
         if amount <= 0:
-            return
+            return False
         self.player_hp -= amount
         self.hp_loss_events += 1
         if self.player_hp <= 0:
-            self.player_hp = 0
-            # Kill -> ShouldDieLate: Lizard Tail heals instead. AfterDamageReceived (relics, Rupture ...) is
-            # skipped for a lethal hit either way.
-            if "LIZARD_TAIL" in R and not self.relic_state.get("lizard_used"):
-                self.relic_state["lizard_used"] = 1
-                self.player_hp = max(1, self.player_max_hp * 50 // 100)
+            # AfterDamageReceived (relics, Rupture ...) is skipped for a lethal hit, even one Lizard Tail survives.
+            if self._kill_player():
                 self.hp_lost_this_turn |= self.side == "Player"
-                self._red_skull()
-                return
-            self._end_combat(won=False)
-            return
+            return False
         self._red_skull()
         # AfterDamageReceived. ponytail: the game runs powers (Rupture, Inferno) before relics; here the relics
         # that don't care about the side go first, Demon Tongue (player's side only) last.
@@ -1810,7 +1894,7 @@ class SimCombat:
         if "BEATING_REMNANT" in R:
             self.rt["remnant"] = self.rt.get("remnant", 0) + amount
         if self.side != "Player":
-            return
+            return True
         self.hp_lost_this_turn = True
         if self.pw.get("RupturePower"):  # HP the card being played costs pays out after it resolves
             if from_card and self._rupture is not None:
@@ -1826,6 +1910,7 @@ class SimCombat:
             self.heal(amount)
         if self.pw.get("InfernoPower"):
             self._check_win()
+        return True
 
     def _damage_player(self, dmg: int, dealer: _Enemy | None = None) -> None:
         """Blockable damage; dealer = a monster's attack (powered), which Flame Barrier answers."""
@@ -1834,8 +1919,12 @@ class SimCombat:
         absorbed = min(self.player_block, dmg)
         self.player_block -= absorbed
         hits = self.hp_loss_events
-        self._lose_hp(dmg - absorbed)
+        hurt = self._lose_hp(dmg - absorbed)
         self.lamp_hit |= self.hp_loss_events > hits  # Lava Lamp: UnblockedDamage > 0 and not Unblockable (card self-damage is)
+        if dealer and hurt and self.pw.pop("TheGambitPower", None):  # AfterDamageReceived: an unblocked powered attack kills
+            self._kill_player()
+            if not self.in_combat:
+                return
         if dealer and self.in_combat:
             self._check_win()  # a Thorns kill ends the fight once the hit has landed
         if dealer and self.in_combat and self.pw.get("FlameBarrierPower") and dealer.is_alive:
@@ -1868,7 +1957,7 @@ class SimCombat:
         self.rt.pop("remnant", None)  # Beating Remnant, Demon Tongue: BeforeSideTurnStart
         self.rt.pop("tongue", None)
         self.exhausted_this_turn = self.hp_lost_this_turn = False
-        self.attack_plays, self.block_plays, self.free_cards = 0, [], []
+        self.attack_plays, self.skill_plays, self.block_plays, self.free_cards = 0, 0, [], []
         self.attacks_done = self.skills_done = self.powers_done = 0
         R, st = self.relics, self.relic_state
         # BeforeSideTurnStart. ponytail: per enemy, Bag of Marbles then Red Mask (Artifact: Marbles spends the charge).
@@ -1888,6 +1977,8 @@ class SimCombat:
         # AfterBlockCleared (unconditional, so Barricade doesn't skip it); powers before relics
         if self.pw.get("SelfFormingClayPower"):
             self._gain_block(self.pw.pop("SelfFormingClayPower"))
+        if self.pw.get("BlockNextTurnPower"):  # Prolong. ponytail: player powers in this order, not their apply order
+            self._gain_block(self.pw.pop("BlockNextTurnPower"))
         if "HORN_CLEAT" in R and self.round == 2:
             self._gain_block(14)
         if "CAPTAINS_WHEEL" in R and self.round == 3:
@@ -1933,6 +2024,14 @@ class SimCombat:
                 self._gain_block(self.pw["CrimsonMantlePower"])
         if self.in_combat and self.pw.get("InfernoPower"):
             self._lose_hp(self.inferno_self)
+        # ponytail: player powers run in this fixed order here and in AfterCardPlayed (Calamity, Panache), not in the
+        # order they were applied (CombatState.IterateHookListeners); none of them reads another's result.
+        if self.in_combat and self.pw.get("EntropyPower") and not self._ending():
+            self._entropy()
+        for boulder in self.inst.get("RollingBoulderPower", ()):  # [damage]: Unpowered to every hittable enemy, then +5
+            if self.in_combat:
+                self._damage_all(boulder[0])
+            boulder[0] += 5
         # ponytail: relic hook order assumed Pendulum, Festive Popper, Mercury Hourglass, Vexing Puzzlebox, Blood Vial.
         if self.in_combat and "PENDULUM" in R:
             st["pendulum"] = (st.get("pendulum", 0) + 1) % 3
@@ -1974,9 +2073,17 @@ class SimCombat:
             for e in self._hittable():
                 e.strength += 1
         self._gain_strength(self.pw.get("DemonFormPower", 0))
+        if self.pw.get("PrepTimePower"):
+            self._apply_power("VigorPower", self.pw["PrepTimePower"])
         if self.round > 1:
             self._decrement("PlatingPower")
-        self.is_play_phase = True
+        # AutoPrePlay phase: Mayhem takes Amount cards off the top (AutoPlayFromDrawPile), then plays them.
+        tops = [self._take_top() for _ in range(self.pw.get("MayhemPower", 0) if not self._ending() else 0)]
+        for top in [c for c in tops if c]:
+            self._autoplay(top)
+        self._check_win()
+        if self.in_combat:
+            self.is_play_phase = True
 
     def end_turn(self) -> dict:
         if self.pending_choice:
@@ -2003,6 +2110,14 @@ class SimCombat:
         orichalcum = "ORICHALCUM" in R and self.player_block <= 0
         if self.pw.get("PlatingPower"):
             self._gain_block(self.pw["PlatingPower"])
+        for bomb in list(self.inst.get("TheBombPower", ())):  # BeforeSideTurnEnd: [turns, damage]
+            if bomb[0] > 1:
+                bomb[0] -= 1
+                continue
+            self.inst["TheBombPower"] = [b for b in self.inst["TheBombPower"] if b is not bomb]
+            self._damage_all(bomb[1])  # Unpowered, every hittable enemy
+            if not self.in_combat:
+                return {"ok": True}
         # ponytail: relic order assumed Orichalcum, Cloak Clasp, Ripple Basin, Screaming Flagon, Stone Calendar.
         if orichalcum:
             self._gain_block(6)
@@ -2054,6 +2169,8 @@ class SimCombat:
         for name in TURN_POWERS:
             self.pw.pop(name, None)
         self._decrement("RetainHandPower")  # AfterSideTurnEnd
+        for p in self.inst.get("PanachePower", ()):
+            p[1] = 5
         if self._ethereal_exhausts and self.pw.get("DarkEmbracePower"):
             self._draw(self.pw["DarkEmbracePower"] * self._ethereal_exhausts)
         self._ethereal_exhausts = 0
@@ -2149,7 +2266,7 @@ class SimCombat:
         for e in alive:  # its debuffs tick down after its turn ends; Mangle's Strength comes back
             e.vulnerable = max(0, e.vulnerable - 1)
             e.weak = max(0, e.weak - 1)
-            e.strength += e.mangle
+            e.strength += e.mangle + e.pw.pop("DarkShacklesPower", 0)
             e.mangle = 0
         for e in alive:  # TerritorialPower.AfterSideTurnEnd
             if e.is_alive:
@@ -2170,6 +2287,7 @@ class SimCombat:
         self.pw.pop("TaintedPower", None)  # TaintedPower.AfterSideTurnEnd, enemy side
         self.pw.pop("FlameBarrierPower", None)  # removed at the end of the other side's turn
         self._decrement("ColossusPower")
+        self._decrement("NoBlockPower")  # AfterSideTurnEnd, enemy side
         for name in ("vulnerable", "frail", "weak"):  # the player's tick at the same point
             if name not in fresh:
                 setattr(self, name, max(0, getattr(self, name) - 1))
@@ -2242,7 +2360,8 @@ class SimCombat:
                     ("SetupStrikePower", self.temp_strength), ("WeakPower", self.weak),
                     ("DexterityPower", self.dexterity), ("SpeedPotionPower", self.temp_dexterity),
                     ("RingingPower", int(self.ringing))) if a] +
-                [{"id": n.upper(), "name": n, "type": "Buff", "amount": a} for n, a in self.pw.items()],
+                [{"id": n.upper(), "name": n, "type": "Buff", "amount": a} for n, a in self.pw.items()] +
+                [{"id": n.upper(), "name": n, "type": "Buff", "amount": i[0]} for n, xs in self.inst.items() for i in xs],
                 "relics": [],
                 "potions": [],
                 "deck": cards(starter_deck()),

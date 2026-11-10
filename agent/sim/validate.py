@@ -28,7 +28,7 @@ from client import AutoSpireClient
 from env import PLAYER_POWERS, STS2CombatEnv, _power, _ready, parse_encounters
 
 from .cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, DeckCard, upgrade
-from .engine import frantic_escape, BRANCHES, ENEMY_PW, HISTORY_FIELDS, MONSTERS, WRIGGLER_SLOT_OPENERS, SimCombat, _Enemy, legal_moves
+from .engine import frantic_escape, BRANCHES, ENEMY_PW, HISTORY_FIELDS, INSTANCED, MONSTERS, WRIGGLER_SLOT_OPENERS, SimCombat, _Enemy, legal_moves
 
 # Random enemy picks (compared only with one hittable enemy): the cards, and powers that hit or
 # autoplay at random.
@@ -61,7 +61,9 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
         hand=ids(p["hand"]), draw_pile=ids(reversed(p["drawPile"])),
         discard_pile=ids(p["discardPile"]), exhaust_pile=ids(p["exhaustPile"]),
         rng=random.Random(0),
-        pw={x["name"]: x["amount"] for x in p["powers"] if x["name"] in PLAYER_POWERS},
+        # INSTANCED powers come from prev (sim.inst, in HISTORY_FIELDS): /combat lacks their counters.
+        # ponytail: a check started mid-fight with one in play starts without it.
+        pw={x["name"]: x["amount"] for x in p["powers"] if x["name"] in PLAYER_POWERS and x["name"] not in INSTANCED},
     )
     for name in HISTORY_FIELDS if prev else ():
         setattr(sim, name, copy.deepcopy(getattr(prev, name)))
@@ -82,7 +84,7 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
                                   vulnerable=_power(e, "VulnerablePower"), artifact=_power(e, "ArtifactPower"),
                                   slippery=_power(e, "SlipperyPower"), plow=_power(e, "PlowPower"),
                                   weak=_power(e, "WeakPower"), mangle=_power(e, "ManglePower"),
-                                  pw={x["name"]: x["amount"] for x in e["powers"] if x["name"] in ENEMY_PW}
+                                  pw={x["name"]: x["amount"] for x in e["powers"] if x["name"] in ENEMY_PW or x["name"] == "DarkShacklesPower"}
                                   | ({"reviving": 1} if e["hp"] <= 0 and MONSTERS[e["modelId"]].reattach else {}),
                                   log=list(logs[e["combatId"]])))
     # Stun follow-ups aren't in the move graph: the Beast's STUNNED leads into phase 2, and a
@@ -110,8 +112,8 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs, skip: set
         if s["player"][k] != p[k]:
             out.append(f"player.{k}: sim={s['player'][k]} live={p[k]}")
     for name in PLAYER_POWERS:
-        if sim.pw.get(name, 0) != _power(p, name):
-            out.append(f"player {name}: sim={sim.pw.get(name, 0)} live={_power(p, name)}")
+        if _power(s["player"], name) != _power(p, name):
+            out.append(f"player {name}: sim={_power(s['player'], name)} live={_power(p, name)}")
     if "piles" not in skip:
         for k in ("hand", "exhaustPile"):
             if len(s["player"][k]) != len(p[k]):

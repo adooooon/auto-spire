@@ -64,7 +64,8 @@ CARD_FEATURES = 6 + len(CARD_IDS)  # cost, can_play, is_attack, is_skill, is_pow
 # ringing, cards played this turn, round, + the amount of each power the player's cards apply.
 # ponytail: "exhausted / lost HP this turn" (Evil Eye, Spite, ...) aren't in /combat, so not observed.
 PLAYER_POWERS = sorted(({name for c in CARDS.values() for name, _ in c.powers} - {"StrengthPower", "DexterityPower"})  # Dexterity has its own feature
-                       | {"TenderPower", "TaintedPower", "SurroundedPower", "DisintegrationPower"})  # put there by Hive monsters
+                       | {"TenderPower", "TaintedPower", "SurroundedPower", "DisintegrationPower"}  # put there by Hive monsters
+                       | {"BlockNextTurnPower", "TheBombPower"})  # applied by special cards (Prolong, The Bomb)
 PLAYER_FEATURES = 14 + len(PLAYER_POWERS)
 PILE_FEATURES = 3 * len(CARD_IDS)  # per-card counts in draw, discard and exhaust piles
 # hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, strength, artifact, slippery,
@@ -115,7 +116,10 @@ def _asks(card: dict) -> bool:
 UPGRADE_CARDS = {"ARMAMENTS", *COLORLESS}  # card ids a model trained before upgrades lacks (UPGRADE_RELICS: its relics)
 
 
-NEW_POWERS = {"RetainHandPower"}  # PLAYER_POWERS entries a model trained before colorless cards lacks
+# PLAYER_POWERS entries a model trained before colorless cards lacks
+NEW_POWERS = {"RetainHandPower", "AutomationPower", "CalamityPower", "EntropyPower", "FastenPower", "MayhemPower", "NostalgiaPower",
+              "PanachePower", "PrepTimePower", "RollingBoulderPower", "StratagemPower", "TheBombPower", "TheGambitPower", "NoBlockPower",
+              "BlockNextTurnPower"}
 
 
 def combat_maps() -> tuple[list[int], list[int]]:

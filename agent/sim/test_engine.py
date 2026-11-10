@@ -1754,8 +1754,24 @@ COLORLESS_SPECIAL = {  # card: (hand, setup, measure, base value, upgraded value
     "RESTLESSNESS": ((), None, lambda c: (len(c.hand), c.energy), (2, 12), (3, 13)),
     "SCRAWL": ((), lambda c: setattr(c, "draw_pile", [D] * 20), lambda c: CARDS[c.exhaust_pile[0]].retain, False, True),
     "THRUMMING_HATCHET": ((), None, dmg, 11, 14),
+    # Task 3's powers (Entropy+ only gains Innate: checked with its power below).
+    "AUTOMATION": ((), None, lambda c: c.energy, 9, 10),
+    "CALAMITY": ((), None, lambda c: c.energy, 7, 8),
+    "DARK_SHACKLES": ((), None, lambda c: c.enemies[0].strength, -9, -15),
+    "ETERNAL_ARMOR": ((), None, lambda c: c.pw["PlatingPower"], 9, 12),
+    "FASTEN": ((), None, lambda c: c.pw["FastenPower"], 4, 6),
+    "MAYHEM": ((), None, lambda c: c.energy, 8, 9),
+    "NOSTALGIA": ((), None, lambda c: c.energy, 9, 10),
+    "PANACHE": ((), None, lambda c: c.inst["PanachePower"], [[10, 5, 1]], [[14, 5, 1]]),
+    "PANIC_BUTTON": ((), None, lambda c: (c.player_block, c.pw["NoBlockPower"]), (30, 2), (40, 2)),
+    "PREP_TIME": ((), None, lambda c: c.pw["PrepTimePower"], 4, 6),
+    "PROLONG": ((), lambda c: setattr(c, "player_block", 7), lambda c: (c.pw["BlockNextTurnPower"], len(c.exhaust_pile)), (7, 1), (7, 0)),
+    "ROLLING_BOULDER": ((), None, lambda c: c.inst["RollingBoulderPower"], [[5]], [[10]]),
+    "STRATAGEM": ((), None, lambda c: c.energy, 9, 10),
+    "THE_BOMB": ((), None, lambda c: c.inst["TheBombPower"], [[3, 40]], [[3, 50]]),
+    "THE_GAMBIT": ((), None, lambda c: (c.player_block, c.pw["TheGambitPower"]), (50, 1), (75, 1)),
 }
-assert len(COLORLESS_SPECIAL) == 17
+assert len(COLORLESS_SPECIAL) == 32
 for cid, (hand_, setup, measure, want_b, want_u) in COLORLESS_SPECIAL.items():
     b, u = upgraded(cid, hand_, setup or (lambda c: None))
     assert (measure(b), measure(u)) == (want_b, want_u), (cid, measure(b), measure(u))
@@ -1874,5 +1890,122 @@ c = solo(["HIDDEN_GEM", "HIDDEN_GEM", "HIDDEN_GEM"]); c.draw_pile = [a, b]; c.en
 c.play_card(0); c.play_card(0); assert c.replays == {id(a): 2, id(b): 2}
 c.play_card(0); assert c.replays == {id(a): 2, id(b): 2}
 print("colorless card checks ok")
+
+# --- Colorless powers (plan task 3), from each <Name>Power.cs ---
+from env import PLAYER_POWERS as PP, _power  # noqa: E402
+NEW_PP = {"AutomationPower", "CalamityPower", "EntropyPower", "FastenPower", "MayhemPower", "NostalgiaPower", "PanachePower",
+          "PrepTimePower", "RollingBoulderPower", "StratagemPower", "TheBombPower", "TheGambitPower", "NoBlockPower", "BlockNextTurnPower"}
+assert NEW_PP <= set(PP) and "PlatingPower" in PP
+# Automation (AfterCardDrawn, Instanced): every 10th card drawn gives 1 energy; each copy counts on its own.
+c = solo(["AUTOMATION"]); c.draw_pile = [D] * 40; c.play_card(0); assert c.energy == 2
+c.hand = []; c._draw(9); assert c.energy == 2
+c.hand = []; c._draw(1); assert c.energy == 3
+c.hand = []; c._draw(5); c.hand = ["AUTOMATION+"]; c.play_card(0)  # a fresh count of 10
+c.hand = []; c._draw(5); assert c.energy == 4  # the first copy's 10th
+c.hand = []; c._draw(5); assert c.energy == 5  # the second copy's 10th
+c = solo(["AUTOMATION"]); c.draw_pile = [D] * 40; c.play_card(0); c.hand = []; c._draw(5)
+c.end_turn(); assert c.energy == 3 + 1  # the hand draw counts too
+# Calamity (Before/AfterCardPlayed): each Attack played adds Amount random Ironclad Attacks to hand.
+c = big(solo(["CALAMITY", S, D])); c.energy = 10; c.play_card(0); c.play_card(1); assert c.hand == [S]
+c.play_card(0, 1); assert len(c.hand) == 1 and c.hand[0] in GENERATED and CARDS[c.hand[0]].type == "Attack", c.hand
+c = big(solo(["CALAMITY", "CALAMITY", S] + [D] * 9)); c.energy = 10; c.play_card(0); c.play_card(0); c.play_card(0, 1)
+assert len(c.hand) == 10 and len(c.discard_pile) == 2 and c.discard_pile[0] in GENERATED  # Amount 2; a full hand overflows
+# Dark Shackles (TemporaryStrengthPower): the target loses 9 (15) Strength until the end of its turn; Artifact negates it.
+c = solo(["DARK_SHACKLES"]); e = c.enemies[0]; e.strength = 2; c.play_card(0, 1)
+assert e.strength == -7 and e.pw["DarkShacklesPower"] == 9 and c.exhaust_pile == ["DARK_SHACKLES"]
+hp = c.player_hp; c.end_turn()  # Mawler's Claw 4x2 at -7 Strength deals 0
+assert c.player_hp == hp and e.strength == 2 and "DarkShacklesPower" not in e.pw
+c = solo(["DARK_SHACKLES"]); c.enemies[0].artifact = 1; c.play_card(0, 1); assert c.enemies[0].strength == 0 and not c.enemies[0].pw
+# Entropy (AfterPlayerTurnStart): after the hand draw, transform Amount hand cards into a random card of the card's own pool
+# (not itself); statuses into another status. ponytail check: the pick is random until plan task 4 makes it a prompt.
+STATUSES = {"DAZED", "INFECTION", "SLIMED", "TOXIC", "WOUND"}
+for seed in range(20):
+    for top, pool in ((S, set(GENERATED)), ("FINESSE", set(CG) - {"FINESSE"}), ("WOUND", STATUSES - {"WOUND"})):
+        c = solo(["ENTROPY"], seed=seed); c.play_card(0); c.draw_pile = [DeckCard(top) for _ in range(10)]; c.hand = []
+        c._start_player_turn()
+        new = [x for x in c.hand if x != top]
+        assert len(c.hand) == 5 and len(new) == 1 and new[0] in pool and not isinstance(new[0], DeckCard), (top, c.hand)
+c = solo(["ENTROPY", "ENTROPY"]); c.energy = 3; c.play_card(0); c.play_card(0); c.draw_pile = [S] * 10; c.hand = []
+c._start_player_turn(); assert sum(x != S for x in c.hand) == 2  # Amount 2
+c = solo(["ENTROPY"]); c.play_card(0); c.draw_pile = [S]; c.hand = []; c._start_player_turn()
+assert len(c.hand) == 1 and c.hand[0] != S  # fewer cards than Amount: all of them
+assert CARDS["ENTROPY+"].innate and not CARDS["ENTROPY"].innate
+# Eternal Armor: the player's Plating 9 (12): block at the end of the turn.
+c = solo(["ETERNAL_ARMOR"]); c.play_card(0); assert eot(c).player_block == 9
+# Fasten (ModifyBlockAdditive): +4 (6) to Defend-tagged cards' block, before Frail.
+c = solo(["FASTEN", D, "ULTIMATE_DEFEND", "SHRUG_IT_OFF", D]); c.energy = 10; c.play_card(0)
+c.play_card(0); assert c.player_block == 9
+c.play_card(0); assert c.player_block == 9 + 15
+c.play_card(0); assert c.player_block == 9 + 15 + 8  # not a Defend
+c.frail = 1; c.play_card(0); assert c.player_block == 32 + (5 + 4) * 3 // 4
+assert CARDS[D].defend and CARDS["ULTIMATE_DEFEND"].defend and not CARDS["SHRUG_IT_OFF"].defend
+# Mayhem (AfterAutoPrePlayPhaseEntered): plays the top draw-pile card for free once the turn has started.
+c = big(solo(["MAYHEM"])); c.play_card(0); c.draw_pile = [S] + [D] * 5; c.hand = []; c.end_turn()
+assert dmg(c) == 6 and c.discard_pile == [S] and c.hand == [D] * 5 and c.energy == 3 and c.pending_choice is None
+# Prep Time's Vigor (AfterSideTurnStart) is there before Mayhem's autoplay.
+c = big(solo(["MAYHEM", "PREP_TIME"])); c.energy = 3; c.play_card(0); c.play_card(0); c.draw_pile = [S] + [D] * 5
+c.hand = []; c.end_turn(); assert dmg(c) == 6 + 4 and "VigorPower" not in c.pw
+# Prep Time: Vigor 4 (6) at the start of every turn; unspent Vigor stacks.
+c = big(solo(["PREP_TIME"])); c.play_card(0); c.end_turn(); assert c.pw["VigorPower"] == 4
+c.hand = []; c.end_turn(); assert c.pw["VigorPower"] == 8
+# Nostalgia (ModifyCardPlayResultPile): the first Attack or Skill played each turn goes on top of the draw pile, not the discard.
+c = big(solo(["NOSTALGIA", S, D, S])); c.energy = 10; c.play_card(0)  # a Power doesn't count
+c.play_card(0, 1); assert c.draw_pile[-1] == S and c.discard_pile == []
+c.play_card(0); c.play_card(0, 1); assert c.discard_pile == [D, S]
+c.hand = []; c.end_turn(); assert c.hand[0] == S  # drawn first at the next turn start
+c.hand = [D, S]; c.energy = 3; c.play_card(0); assert c.draw_pile[-1] == D  # a new turn
+# An exhausted first card still counts as the turn's first play; two Nostalgias send the first two.
+c = big(solo(["NOSTALGIA", "SHOCKWAVE", S])); c.energy = 10; c.play_card(0); c.play_card(0)
+c.play_card(0, 1); assert c.exhaust_pile == ["SHOCKWAVE"] and c.discard_pile == [S]
+c = big(solo(["NOSTALGIA", "NOSTALGIA", S, D, S])); c.energy = 10; c.play_card(0); c.play_card(0)
+c.play_card(0, 1); c.play_card(0); c.play_card(0, 1); assert c.draw_pile[-2:] == [S, D] and c.discard_pile == [S]
+# Panache (AfterCardPlayed, Instanced): every 5th card played in a turn after it deals 10 (14) to every enemy; resets at turn end.
+c = big(solo(["PANACHE"] + [D] * 9, "SLIMES_WEAK")); c.energy = 10; c.play_card(0)
+for _ in range(4):
+    c.play_card(0)
+assert all(e.hp == 500 for e in c.enemies)
+c.play_card(0); assert all(e.hp == 490 for e in c.enemies)
+for _ in range(4):
+    c.play_card(0)
+c.end_turn(); c.hand = [D]; c.energy = 3; c.play_card(0); assert all(e.hp == 490 for e in c.enemies)  # the count reset
+c = big(solo(["PANACHE", "PANACHE+", D, D, D, D])); c.energy = 10; c.play_card(0); c.play_card(0)  # the 2nd counts for the 1st
+for _ in range(4):
+    c.play_card(0)
+assert dmg(c) == 10 and c.inst["PanachePower"] == [[10, 5, 1], [14, 1, 1]]
+# Panic Button: 30 (40) block, then no block from cards for the rest of this turn and the next (NoBlockPower 2, -1 per enemy
+# turn); Unpowered block (Plating) still comes.
+c = solo(["PANIC_BUTTON", D]); c.energy = 10; c.play_card(0); c.play_card(0); assert c.player_block == 30
+c.pw["PlatingPower"] = 3; eot(c); assert c.player_block == 33
+c = solo(["PANIC_BUTTON"]); c.play_card(0); c.end_turn(); assert c.pw["NoBlockPower"] == 1
+c.hand, c.energy = [D], 3; c.play_card(0); assert c.player_block == 0
+c.end_turn(); assert "NoBlockPower" not in c.pw; c.hand, c.energy = [D], 3; c.play_card(0); assert c.player_block == 5
+# Prolong (BlockNextTurnPower.AfterBlockCleared): next turn, after block clears, gain this turn's block (Unpowered).
+c = solo(["PROLONG"]); c.player_block = 12; c.play_card(0); assert c.pw["BlockNextTurnPower"] == 12 and c.exhaust_pile == ["PROLONG"]
+c.frail = 3; c._run_enemy_turn = lambda: None; c.end_turn(); c.round += 1; c._start_player_turn()
+assert c.player_block == 12 and "BlockNextTurnPower" not in c.pw
+c = solo(["PROLONG+"]); c.play_card(0); assert "BlockNextTurnPower" not in c.pw and c.discard_pile == ["PROLONG+"]  # no block: no power
+# Rolling Boulder (AfterPlayerTurnStart, Instanced): 5 (10) to every enemy each turn start, then +5; each copy grows on its own.
+c = big(solo(["ROLLING_BOULDER", "ROLLING_BOULDER+"], "SLIMES_WEAK")); c.energy = 10; c.play_card(0); c.play_card(0)
+c.strength = 5; c.end_turn(); assert all(e.hp == 500 - 15 for e in c.enemies)  # Unpowered: no Strength
+c.end_turn(); assert all(e.hp == 500 - 15 - 25 for e in c.enemies) and c.inst["RollingBoulderPower"] == [[15], [20]]
+# Stratagem (AfterShuffle): after the discard pile is shuffled in, a draw-pile card goes to hand (random until plan task 4).
+c = solo(["STRATAGEM"]); c.play_card(0); c.draw_pile, c.discard_pile, c.hand = [], [S, S, D], []
+c._draw(1); assert len(c.hand) == 2 and len(c.draw_pile) == 1
+c.hand, c.draw_pile, c.discard_pile = [D] * 9, [], [S, B]; c._draw(1)
+assert len(c.hand) == 10 and len(c.draw_pile) == 1  # the hand filled up during the shuffle: no draw
+# The Bomb (BeforeSideTurnEnd, Instanced): 3 turns, then 40 (50) Unpowered to every enemy at the end of the 3rd; each counts down alone.
+c = big(solo(["THE_BOMB"], "SLIMES_WEAK")); c.energy = 10; c.strength = 5; c.play_card(0); c.end_turn()
+c.hand, c.energy = ["THE_BOMB+"], 10; c.play_card(0); c.end_turn(); assert all(e.hp == 500 for e in c.enemies)
+assert c.inst["TheBombPower"] == [[1, 40], [2, 50]] and _power(c.combat_dict()["player"], "TheBombPower") == 1
+c.end_turn(); assert all(e.hp == 460 for e in c.enemies) and c.inst["TheBombPower"] == [[1, 50]]
+c.end_turn(); assert all(e.hp == 410 for e in c.enemies) and not c.inst["TheBombPower"]
+# The Gambit (AfterDamageReceived): 50 (75) block; an unblocked powered attack kills you. Lizard Tail still saves you.
+c = solo(["THE_GAMBIT"]); c.play_card(0); hurt(c, 49); assert c.in_combat and c.player_hp == 80
+hurt(c, 2); assert c.won is False and c.player_hp == 0
+c = solo(["THE_GAMBIT"]); c.play_card(0); c.player_block = 0; hurt(c, 3, dealer=False); assert c.in_combat and c.player_hp == 77
+c = solo(["THE_GAMBIT"]); c.relics = {"LIZARD_TAIL"}; c.play_card(0); c.player_block = 0
+hurt(c, 3); assert c.in_combat and c.player_hp == 40 and "TheGambitPower" not in c.pw
+hurt(c, 3); assert c.in_combat and c.player_hp == 37
+print("colorless power checks ok")
 print("lava lamp engine checks ok")
 print("sim self-check ok")
