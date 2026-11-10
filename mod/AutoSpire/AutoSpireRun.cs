@@ -39,10 +39,13 @@ internal sealed class AgentSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelect
     internal sealed record Pending(List<CardModel> Options, int Min, TaskCompletionSource<IEnumerable<CardModel>> Done);
 
     internal static Pending? Current;
+    // Smith's card, named with `rest SMITH <deck index>`: answers the next prompt that offers it.
+    internal static CardModel? Next;
     // The game clears the selector stack when a run ends (CardSelectCmd.Reset), so check each time.
     internal static void Install()
     {
         Current = null;
+        Next = null;
         if (CardSelectCmd.Selector == null) CardSelectCmd.PushSelector(new AgentSelector());
     }
 
@@ -50,6 +53,12 @@ internal sealed class AgentSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelect
     {
         var list = options.ToList();
         if (list.Count == 0) return Task.FromResult(Enumerable.Empty<CardModel>());
+        if (Next != null && list.Contains(Next))
+        {
+            var next = Next;
+            Next = null;
+            return Task.FromResult<IEnumerable<CardModel>>(new[] { next });
+        }
         var pending = new Pending(list, minSelect, new TaskCompletionSource<IEnumerable<CardModel>>());
         Current = pending;
         return pending.Done.Task;
@@ -75,8 +84,9 @@ internal static class RunBridge
         if (top is NGameOverScreen) return "gameOver";
         if (top is NCardRewardSelectionScreen) return "cardReward";
         if (AgentSelector.Current != null && !CombatManager.Instance.IsInProgress) return "choice";
-        // An Ancient opens while the map is still up, at the start of an act.
-        if (rs.CurrentRoom is EventRoom room && !room.LocalMutableEvent.IsFinished) return "event";
+        // An Ancient opens while the map is still up, at the start of an act. An event's own rewards (The Legends Were
+        // True's potion) open over it before it finishes.
+        if (rs.CurrentRoom is EventRoom room && !room.LocalMutableEvent.IsFinished && top is not NRewardsScreen) return "event";
         // The rewards screen stays on the overlay stack under an open map.
         if (NMapScreen.Instance?.IsOpen == true) return NMapScreen.Instance.IsTravelEnabled ? "map" : "busy";
         if (top is NRewardsScreen) return "rewards";
@@ -97,7 +107,7 @@ internal static class RunBridge
         "event" => EventState(rs),
         "rest" => new
         {
-            options = (rs.CurrentRoom as RestSiteRoom)?.Options.Select(o => o.OptionId).ToList(),
+            options = (rs.CurrentRoom as RestSiteRoom)?.Options.Where(o => o.IsEnabled).Select(o => o.OptionId).ToList(),
             proceed = NRun.Instance?.RestSiteRoom?.ProceedButton.IsEnabled ?? false,
         },
         "shop" => ShopState(rs),
@@ -134,7 +144,7 @@ internal static class RunBridge
         {
             id = ev.Id.Entry,
             finished = ev.IsFinished,
-            atRisk = card?.Id.Entry,
+            atRisk = card == null ? null : card.Id.Entry + (card.IsUpgraded ? "+" : ""),
             vars = ev.DynamicVars.ToDictionary(kv => kv.Key, kv => kv.Value.BaseValue),
             options = ev.CurrentOptions.Select(o => new
             {
@@ -155,7 +165,12 @@ internal static class RunBridge
         var removal = inv.CardRemovalEntry;
         return new
         {
-            cards = inv.CharacterCardEntries.Select(e => new { id = e.IsStocked ? e.CreationResult?.Card.Id.Entry : null, cost = e.Cost }).ToList(),
+            cards = inv.CharacterCardEntries.Select(e => new
+            {
+                id = e.IsStocked ? e.CreationResult?.Card.Id.Entry : null,
+                upgraded = e.IsStocked && e.CreationResult?.Card.IsUpgraded == true,
+                cost = e.Cost,
+            }).ToList(),
             relics = inv.RelicEntries.Select(e => new { id = e.Model?.Id.Entry, cost = e.Cost }).ToList(),
             potions = inv.PotionEntries.Select(e => new { id = e.Model?.Id.Entry, cost = e.Cost }).ToList(),
             removal = removal == null ? null : new { used = removal.Used, cost = removal.Cost },
@@ -179,12 +194,15 @@ internal static class RunBridge
         var pending = AgentSelector.Current;
         if (pending == null || player == null) return null;
         var pcs = player.PlayerCombatState;
+        var source = CombatManager.Instance.History.CardPlaysStarted.LastOrDefault()?.CardPlay.Card.Id.Entry;
         string kind = pcs != null && pending.Options.All(pcs.Hand.Cards.Contains) ? "hand"
             : pcs != null && pending.Options.All(pcs.DiscardPile.Cards.Contains) ? "discard" : "deck";
+        // ponytail: Armaments is the only modeled card asking FromHandForUpgrade; a Harmony tag on it if more do.
+        if (kind == "hand" && source == "ARMAMENTS") kind = "upgrade";
         return new
         {
             kind,
-            source = CombatManager.Instance.History.CardPlaysStarted.LastOrDefault()?.CardPlay.Card.Id.Entry,
+            source,
             options = pending.Options.Select(c => c.Id.Entry).ToList(),
         };
     }
@@ -236,9 +254,20 @@ internal static class RunBridge
                 else NEventRoom.Instance!.OptionButtonClicked(ev.CurrentOptions[Arg(1)], Arg(1));
                 break;
             }
-            case "rest":
-                TaskHelper.RunSafely(RunManager.Instance.RestSiteSynchronizer.ChooseLocalOption(Arg(1)));
+            case "rest": // rest <OPTION> [deck index]: SMITH's card answers its prompt (FromDeckForUpgrade)
+            {
+                var option = RunManager.Instance.RestSiteSynchronizer.GetLocalOptions()
+                    .FirstOrDefault(o => o.OptionId == parts[1] && o.IsEnabled) ?? throw new InvalidOperationException("no_such_option");
+                CardModel? card = null;
+                if (parts.Length > 2)
+                {
+                    card = me.Deck.Cards[Arg(2)];
+                    if (!card.IsUpgradable) throw new InvalidOperationException("not_upgradable");
+                }
+                AgentSelector.Next = card;
+                TaskHelper.RunSafely(Rest(option));
                 break;
+            }
             case "chest":
             {
                 var chest = Field<NButton>(NRun.Instance!.TreasureRoom!, "_chestButton");
@@ -283,6 +312,14 @@ internal static class RunBridge
                 throw new InvalidOperationException("unknown_command");
         }
         return new { ok = true };
+    }
+
+    // What NRestSiteButton.SelectOption does, minus its button states.
+    private static async Task Rest(MegaCrit.Sts2.Core.Entities.RestSite.RestSiteOption option)
+    {
+        var sync = RunManager.Instance.RestSiteSynchronizer;
+        if (await sync.ChooseLocalOption(sync.GetLocalOptions().ToList().IndexOf(option)))
+            NRestSiteRoom.Instance?.AfterSelectingOption(option);
     }
 
     private static void Resolve(CardModel card)

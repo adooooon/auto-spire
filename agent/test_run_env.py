@@ -535,9 +535,9 @@ assert obs[-UPGRADE_FEATURES - CHOICE_FEATURES] == 1 and obs[-UPGRADE_FEATURES:]
 # Review focus 5: live has no simRelics, so the three cards stay masked and a live pick can't take them.
 live = {k: v for k, v in env.client.combat().items() if k != "simRelics"}
 live["choice"] = None
-live["player"]["hand"] = [card_to_dict("BRAND", 0, True)]
+live["player"]["hand"] = [card_to_dict(c, 0, True) for c in ("BRAND", "BRAND+", "ARMAMENTS", "TRUE_GRIT+", "ARMAMENTS+", "TRUE_GRIT")]
 env._combat = live
-assert not env.action_masks()[0]
+assert env.action_masks()[:6 * MAX_ENEMIES:MAX_ENEMIES].tolist() == [False] * 4 + [True] * 2
 
 # Prompt practice, in decks only and only when asked.
 rng = np.random.default_rng(0)

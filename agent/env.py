@@ -106,6 +106,12 @@ def _encode_card(card: dict) -> list[float]:
     ] + [float(base_id(card["id"]) == cid) for cid in CARD_IDS]
 
 
+def _asks(card: dict) -> bool:
+    """Playing it opens a card prompt: the three choice cards, Armaments (Armaments+ upgrades them all), True Grit+."""
+    b, up = base_id(card["id"]), bool(card["upgraded"])
+    return b in CHOICE_CARDS or (b == "ARMAMENTS" and not up) or (b == "TRUE_GRIT" and up)
+
+
 UPGRADE_CARDS = {"ARMAMENTS"}  # card ids a model trained before upgrades lacks (UPGRADE_RELICS: its relics)
 
 
@@ -445,7 +451,7 @@ class STS2CombatEnv(gym.Env):
         for i, c in enumerate(hand[:MAX_HAND]):
             # The prompt cards need a client that answers prompts: the sim and the mod report simRelics, older clients
             # don't.
-            if c["canPlay"] and c["id"] in CARDS and (c["id"] not in CHOICE_CARDS or "simRelics" in self._combat):
+            if c["canPlay"] and c["id"] in CARDS and (not _asks(c) or "simRelics" in self._combat):
                 slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
                 mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True
         for i, pid in enumerate((self._combat.get("potionSlots") or [])[:MAX_POTION_SLOTS]):

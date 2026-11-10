@@ -728,7 +728,7 @@ First clear (v13c + v6pc): floors 1-16 won, ending at 29/80 HP against Vantom, w
 
 `agent/live_check.py` stages what a run rarely reaches, using debug commands, and compares it with the sim's rules: the three prompt cards through `env.step`, both options of all five modeled events, relic and removal purchases, dropping a potion and drinking Blood Potion between fights. 16/16 pass. Taking a potion reward with full slots is still only covered in parts (the drop, and the claim).
 
-Where live differs from the sim, all because the sim doesn't model it: Neow and unmodeled events use a fixed rule in `live.py` (leave if allowed, else a modeled relic, else the first safe option), prompts from those take the first card, unmodeled potions are skipped, and rest sites always heal since there are no upgrades, even at full HP. `relicCounters` sends each relic's displayed number, which only matches the sim where they count the same way.
+Where live differs from the sim, all because the sim doesn't model it: Neow and unmodeled events use a fixed rule in `live.py` (leave if allowed, else a modeled relic, else the first safe option), prompts from those take the first card, and unmodeled potions are skipped. Rest sites heal, Smith, Lift or Dig as the run policy chooses (2026-11-10). `relicCounters` sends each relic's displayed number, which only matches the sim where they count the same way.
 
 ### 2026-11-06: Act 2 (the Hive)
 
@@ -751,3 +751,14 @@ The sim now plays upgraded cards ("X+" ids, `sim/cards.py` `UPGRADES`) and Armam
   - 3 were in Hive code from before this task: Slumbering Beetle's Plating in a mid-stun `load()`, and Kaiser Crab facing.
 - A fixed deck of True Grit(+), Pillage(+), Second Wind(+), Armaments(+) and starters on the weak Act 1 and Hive encounters (2 fights each): 421 steps, 2 mismatches. Both were Pillage drawing from a fresh reshuffle (now skipped). 40 live prompts were answered (37 True Grit+, 3 Armaments), with no prompt mismatches.
 - `sim.validate` now restarts the game and moves on when it stops responding. One earlier pass hung the game's main thread (100% CPU) on a card play against Vine Shambler. The log doesn't say which card it was.
+
+### 2026-11-10: Live play with upgrades
+
+`live.py` now plays upgrades the way the sim does:
+- **Upgraded cards are "X+" everywhere the run policy looks.** `/state` already sent `upgraded` for deck, hand and reward cards. Shop cards now send it too, and Slippery Bridge's `atRisk` has the "+". `LiveRun` builds the deck, card offers and shop slots as `id + "+"`. Before this, upgraded deck cards came through as base ids, so the policy saw no upgrades and its Smith mask offered cards that were already upgraded.
+- **Rest sites ask the run policy** (decision `"rest"`, the same mask as the sim). The mod's `rest <OPTION> [deck index]` takes an option id, not an index. `rest SMITH <i>` presets `AgentSelector.Next`, so Smith's `FromDeckForUpgrade` prompt takes that deck card without opening the choice screen. Like `NRestSiteButton`, it then calls `NRestSiteRoom.AfterSelectingOption`. The rest details list only enabled options, and Byrdonis Egg's `HATCH` shows up but is never chosen. The game internals are in `docs/game-architecture.md`, "Card upgrades".
+- **Armaments' prompt** shows as kind `"upgrade"` (source `ARMAMENTS`), as in the sim, so the combat env masks to the upgradable hand cards. True Grit+'s prompt is kind `"hand"`, as before.
+- **`env.py`'s prompt-card guard** (for clients without `simRelics`) now checks every card that opens a prompt, by base id: the three choice cards in any form, plain Armaments and True Grit+. Before, it missed "X+" ids, Armaments and True Grit+.
+- **Event rewards:** The Legends Were True's "slowly find an exit" waits on its potion reward before the event finishes. Since 2026-11-06 the mod reported an unfinished event ahead of the rewards overlay, so both live play and `live_check` got stuck there. An event now shows as `rewards` while its rewards screen is on top.
+
+`live_check.py` adds Armaments and Armaments+ in a real fight (the hand and block must match `sim.validate.load` after the same play and pick), Smith, Girya's Lift (the counter and the next fight's Strength), Shovel's Dig, and an upgraded card reward with all three Eggs. The rest checks go through `LiveGame.do_rest` with a fixed answer that the policy's mask must allow, and they compare the site's options with `Run.rest_options()`. 22/22 pass (the 16 old checks and 6 new), with 0 `[ERROR]` lines in `godot.log`. These ran on scratch models grown from the Act 2 pair with `grow.py --insert-cards`, since the run models in `models/` predate the rest decision (Task 7 grows and trains them).

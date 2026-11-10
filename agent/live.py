@@ -7,6 +7,7 @@ and mask as in training. Differences from the sim, all because the sim doesn't m
 - Unmodeled events: the sim treats them as empty rooms. Here: leave if the event lets us, else the first safe option.
 - Prompts the sim doesn't have (an event's card grid): the first option.
 - A potion reward goes in the first open slot; if the policy names a full slot, that slot's potion is dropped first.
+- Smith names a base id; the first un-upgraded copy in the game's deck gets it.
 """
 from __future__ import annotations
 
@@ -18,8 +19,8 @@ from sb3_contrib import MaskablePPO
 
 from client import AutoSpireClient
 from env import CARD_IDS, STS2CombatEnv, _encode, _ready
-from run_env import (CARD_INDEX, DRINK, EVENT, PATH, PICK, POTION_SKIP, REMOVE, SHOP, SHOP_LEAVE, SHOP_POTION, SHOP_RELIC,
-                     SHOP_REMOVE, RunPolicyEnv, drink_slot, potion_take_slot)
+from run_env import (CARD_INDEX, DRINK, EVENT, PATH, PICK, POTION_SKIP, REMOVE, REST, REST_OPTIONS, SHOP, SHOP_LEAVE,
+                     SHOP_POTION, SHOP_RELIC, SHOP_REMOVE, SMITH, RunPolicyEnv, drink_slot, potion_take_slot)
 from sim.act import SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Shop
 from sim.events import MODELED_EVENTS
 from sim.map import Node
@@ -41,12 +42,12 @@ class LiveRun:
         self.relics, self.relic_state = set(), {}
         self.node = self.map = self.boss = self.shop = None
         self.potion_drop = self.event = self.bridge_card = None
-        self.event_opts = []
+        self.event_opts, self.rest_opts = [], []
 
     def sync(self, state: dict) -> None:
         p = state["player"]
         self.hp, self.max_hp, self.gold = p["hp"], p["maxHp"], p["gold"]
-        self.deck = [c["id"] for c in p["deck"] if c["id"] in CARD_INDEX]
+        self.deck = [_cid(c) for c in p["deck"] if c["id"] in CARD_INDEX]
         self.relics = {r["id"] for r in p["relics"]}
         self.potions = list(state["potionSlots"])
         if "map" in state:  # asked for before the map screen too: Neow can give rewards
@@ -69,10 +70,18 @@ class LiveRun:
     def price(self, raw: int) -> int:
         return raw  # MerchantEntry.Cost already has the discounts in it
 
+    def rest_options(self) -> list[str]:
+        return self.rest_opts  # the rest site's enabled options, as the mod reports them
+
+
+def _cid(card: dict) -> str:
+    """The sim's id for a card in /state: "X+" when upgraded."""
+    return card["id"] + "+" * bool(card.get("upgraded"))
+
 
 def _pad(entries: list[dict], n: int) -> tuple[list, list]:
     entries = (entries + [{"id": None, "cost": 0}] * n)[:n]
-    return [e.get("id") for e in entries], [e["cost"] for e in entries]
+    return [e.get("id") and _cid(e) for e in entries], [e["cost"] for e in entries]
 
 
 def _shop(d: dict) -> Shop:
@@ -180,7 +189,7 @@ class LiveGame:
             elif r["type"] == "PotionReward":
                 self.do_potion(i, r.get("potion"))
             elif r["type"] == "CardReward":
-                self.do_card_reward(i, [c["id"] for c in r["cards"]])
+                self.do_card_reward(i, [_cid(c) for c in r["cards"]])
             else:
                 print(f"  skipped a {r['type']}")
             return
@@ -255,6 +264,19 @@ class LiveGame:
             cmd = f"buy card {a - SHOP}"
         if cmd is None or not self.act(cmd):  # leaving, or the game refused the purchase
             self.act("proceed")
+
+    def do_rest(self, d: dict) -> None:
+        self.seen.add("rested")
+        self.run.rest_opts = d["options"]
+        a = self.ask("rest")
+        self.run.rest_opts = []
+        print(f"  rest ({self.run.hp}/{self.run.max_hp} HP): " + (f"Smith {CARD_IDS[a - SMITH]}" if a >= SMITH else REST_OPTIONS[a - REST]))
+        if a < SMITH:
+            self.act(f"rest {REST_OPTIONS[a - REST]}")
+            return
+        deck = self.client.state()["player"]["deck"]
+        i = next(i for i, c in enumerate(deck) if c["id"] == CARD_IDS[a - SMITH] and not c["upgraded"])
+        self.act(f"rest SMITH {i}")
 
     def do_choice(self, choice: dict) -> None:
         options = choice["options"]
@@ -333,10 +355,8 @@ class LiveGame:
             elif screen == "event" and details:
                 self.do_event(details)
             elif screen == "rest" and details:
-                if "rested" not in self.seen:
-                    self.seen.add("rested")
-                    print(f"  rest: {self.run.hp}/{self.run.max_hp} HP")
-                    self.act(f"rest {details['options'].index('HEAL')}")
+                if "rested" not in self.seen and details["options"]:
+                    self.do_rest(details)
                 elif details["proceed"]:
                     self.act("proceed")
                 else:

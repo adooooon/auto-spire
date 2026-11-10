@@ -651,6 +651,11 @@ Ported in `agent/sim/act.py` (the run), `agent/sim/relics.py` and `agent/sim/eng
   - **Lava Lamp** (`LavaLamp.cs`): if no hit got through block this combat (`AfterDamageReceived`: `UnblockedDamage > 0` and not Unblockable, so card self-damage doesn't count), every upgradable card in that combat's rewards is upgraded, Rares too (`TryModifyCardRewardOptionsLate`; only in a CombatRoom, so not in shops).
   - **Girya** (`Girya.cs`): Lift at a rest site, up to 3 times (`maxLifts`). Each combat starts with Strength equal to the lifts.
   - **Shovel** (`DigRestSiteOption`): Dig gives a relic (`PullNextRelicFromFront` with a rolled rarity), every rest site, no limit.
+- **Choosing a rest option** (`NRestSiteButton.SelectOption`): `RestSiteSynchronizer.ChooseLocalOption(index)` runs the option's `OnSelect`, then `NRestSiteRoom.AfterSelectingOption` hides the choices and shows Proceed. The index is into `GetLocalOptions()`, which keeps disabled options (Smith with nothing upgradable) and drops chosen ones. One choice per visit: `ShouldDisableRemainingRestSiteOptions` clears the rest.
+  - Smith's card comes from `CardSelectCmd.FromDeckForUpgrade` (the deck's `IsUpgradable` cards, `RequireManualConfirmation`), which asks `CardSelectCmd.Selector` when one is set. If it gets nothing back, `OnSelect` returns false and the option stays.
+  - Lift is just `Girya.TimesLifted++`. Girya's displayed counter is `TimesLifted`, and its Strength comes in `AfterRoomEntered` (the debug `fight` command counts).
+  - Dig is `RelicCmd.Obtain`, with no reward screen.
+- **In-combat upgrade prompt:** Armaments calls `CardSelectCmd.FromHandForUpgrade` (the hand's upgradable cards, choose 1, no prompt for 0 or 1). Armaments+ upgrades every upgradable hand card itself (`CardCmd.Upgrade`). True Grit+ asks through `FromHand` (any hand card, to exhaust).
   - **Miniature Cannon:** +3 damage (`ModifyDamageAdditive`) on Attacks from upgraded cards.
   - **Bellows:** upgrades the hand on turn 1. **Stone Cracker:** upgrades 2 random upgradable cards in the draw pile at combat start. Both last for that fight only.
   - No relic overrides `ModifyCardRewardUpgradeOdds`; only the hook exists.

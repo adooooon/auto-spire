@@ -6,12 +6,19 @@ Unlike a real run this uses debug commands (fight, event, room, gold). It prints
 from __future__ import annotations
 
 import argparse
+import random
 import time
 import traceback
-from collections import Counter
+from collections import Counter, defaultdict
 
-from env import CARD_IDS, CHOOSE_DISCARD, CHOOSE_HAND, MAX_ENEMIES, _ready
-from live import LiveGame, _event_opts
+import numpy as np
+
+from env import CARD_IDS, CHOOSE_DISCARD, CHOOSE_HAND, MAX_ENEMIES, MAX_HAND, _ready
+from live import LiveGame, _cid, _event_opts
+from run_env import CARD_INDEX, OBS_DIM as RUN_OBS_DIM, PICK, REST, REST_OPTIONS, SMITH
+from sim.act import Run
+from sim.cards import UPGRADABLE
+from sim.validate import ids, load
 
 
 def pile(p: dict, name: str) -> list[str]:
@@ -20,6 +27,25 @@ def pile(p: dict, name: str) -> list[str]:
 
 def power(p: dict, name: str) -> int:
     return next((x["amount"] for x in p.get("powers") or [] if x["name"] == name), 0)
+
+
+class Fixed:
+    """A run model with a known answer, so a check takes live.py's own path: `pick(mask)` names the action, which the
+    mask must allow."""
+
+    def __init__(self, pick):
+        self.pick = pick
+
+    def predict(self, obs, action_masks, deterministic=True):
+        a = self.pick(action_masks)
+        assert obs.shape == (RUN_OBS_DIM,) and action_masks[a], f"action {a} is masked"
+        return a, None
+
+
+def first_pick(mask) -> int:
+    """The first modeled card offered; for any other decision (a potion reward) the last legal action, its skip."""
+    picks = [k for k in range(PICK, PICK + 3) if mask[k]]
+    return picks[0] if picks else int(np.flatnonzero(mask)[-1])
 
 
 class Check:
@@ -178,7 +204,7 @@ class Check:
 
     @staticmethod
     def lost_at_risk(before, p, d, s):
-        assert (Counter(pile(before, "deck")) - Counter(pile(p, "deck"))) == Counter([d["atRisk"]]), d.get("atRisk")
+        assert (Counter(map(_cid, before["deck"])) - Counter(map(_cid, p["deck"]))) == Counter([d["atRisk"]]), d.get("atRisk")
 
     @staticmethod
     def sword(before, p, d, s):
@@ -244,6 +270,116 @@ class Check:
             if p:
                 self.do(f"drop_potion {i}", settle=0.5)
 
+    # --- upgrades: Armaments in a real fight, the rest site's options, upgraded rewards -------------------
+
+    def armaments(self, upgraded: bool) -> None:
+        env, combat, a = self.fight_with("ARMAMENTS")
+        i = a // MAX_ENEMIES
+        if upgraded:
+            self.do(f"upgrade {i}")  # the dev console's: a hand card by index
+            combat = env._combat = self.client.wait_for(lambda c: _ready(c) and c["player"]["hand"][i]["upgraded"], timeout=15.0)
+        sim = load(combat, defaultdict(list))
+        assert sim.play_card(i).get("ok")
+        env.step(a)
+        choice = env._combat.get("choice")
+        if sim.pending_choice:
+            assert choice and (choice["kind"], choice["source"]) == (sim.pending_choice["kind"], sim.pending_choice["source"]), choice
+            mask = env.action_masks()
+            slots = [k for k in range(MAX_HAND) if mask[CHOOSE_HAND + k]]
+            assert slots == [k for k, c in enumerate(sim.hand) if c in UPGRADABLE], (slots, sim.hand)
+            sim.choose_card(slots[-1])
+            env.step(CHOOSE_HAND + slots[-1])
+        else:
+            assert not choice, choice
+        p = env._combat["player"]
+        assert ids(p["hand"]) == sim.hand, (ids(p["hand"]), sim.hand)  # unmodeled cards (Byrdonis Egg) are Wounds in both
+        assert p["block"] == sim.combat_dict()["player"]["block"], (p["block"], sim.combat_dict()["player"]["block"])
+        self.finish_fight()
+
+    def rest_site(self, pick, relics: tuple[str, ...] = ()) -> tuple[dict, dict, Run]:
+        """Open a rest site and take `pick(sim run)`'s action through LiveGame.do_rest, on the live game and on a sim
+        Run with the same deck and relics. (before, after, sim)."""
+        for r in relics:
+            self.do(f"relic {r}", settle=0.5)
+        self.do("close_map")
+        self.do("room RestSite", settle=0.5)
+        s = self.wait(lambda s: s["screen"] == "rest" and (s.get("details") or {}).get("options"), "the rest site")
+        g = self.game
+        g.run.sync(s)
+        g.seen = set()
+        sim = Run(random.Random(0))
+        sim.deck, sim.relics, sim.relic_state = list(g.run.deck), set(g.run.relics), {}
+        modeled = [o for o in s["details"]["options"] if o in ("HEAL", "SMITH", "LIFT", "DIG")]  # not Byrdonis Egg's HATCH
+        assert modeled == sim.rest_options(), (s["details"]["options"], sim.rest_options())
+        a = pick(sim)
+        model, g.run_model = g.run_model, Fixed(lambda m: a)
+        try:
+            g.do_rest(s["details"])
+        finally:
+            g.run_model = model
+        sim.rest("SMITH", CARD_IDS[a - SMITH]) if a >= SMITH else sim.rest(REST_OPTIONS[a - REST])
+        self.wait(lambda t: t["screen"] == "rest" and (t.get("details") or {}).get("proceed"), "the option to finish")
+        time.sleep(1.0)
+        after = self.client.state()
+        self.do("proceed")
+        self.wait(lambda s: s["screen"] == "map", "the map")
+        return s, after, sim
+
+    def smith(self) -> None:
+        def bash(sim):
+            return SMITH + CARD_INDEX["BASH" if "BASH" in sim.deck else next(c for c in sim.deck if c in UPGRADABLE)]
+        before, after, sim = self.rest_site(bash)
+        g = self.game
+        g.run.sync(after)
+        assert Counter(g.run.deck) == Counter(sim.deck), (sorted(g.run.deck), sorted(sim.deck))
+        assert Counter(g.run.deck) - Counter(map(_cid, before["player"]["deck"])) == Counter(["BASH+"]), sorted(g.run.deck)
+        assert after["player"]["hp"] == before["player"]["hp"]
+
+    def lift(self) -> None:
+        _, _, sim = self.rest_site(lambda sim: REST + REST_OPTIONS.index("LIFT"), relics=("GIRYA",))
+        self.do("fight NIBBITS_WEAK", settle=0.5)
+        c = self.client.wait_for(_ready, timeout=30.0)
+        lifts = sim.relic_state["girya"]
+        assert lifts == 1 and c["relicCounters"].get("girya") == lifts, c.get("relicCounters")
+        assert power(c["player"], "StrengthPower") == lifts, c["player"].get("powers")  # Girya.AfterRoomEntered
+        self.finish_fight()
+
+    def dig(self) -> None:
+        before, after, sim = self.rest_site(lambda sim: REST + REST_OPTIONS.index("DIG"), relics=("SHOVEL",))
+        n = len(before["player"]["relics"])
+        assert len(after["player"]["relics"]) == n + 1 == len(sim.relics), (n, after["player"]["relics"], sim.relics)
+        assert Counter(map(_cid, after["player"]["deck"])) == Counter(map(_cid, before["player"]["deck"]))
+
+    def upgraded_reward(self) -> None:
+        """With all three Eggs every offer is upgraded (TryModifyCardRewardOptionsLate). Last: they also upgrade
+        cards added to the deck."""
+        for r in ("MOLTEN_EGG", "TOXIC_EGG", "FROZEN_EGG"):
+            self.do(f"relic {r}", settle=0.5)
+        self.do("fight NIBBITS_WEAK", settle=0.5)
+        self.client.wait_for(_ready, timeout=30.0)
+        self.finish_fight()
+        g = self.game
+        g.seen, g.policy.offered = set(), []
+        before = Counter(map(_cid, self.client.state()["player"]["deck"]))
+        model, g.run_model = g.run_model, Fixed(first_pick)
+        try:
+            deadline = time.monotonic() + 45.0
+            while (s := self.client.state())["screen"] != "map":
+                assert time.monotonic() < deadline, f"stuck on {s['screen']}"
+                g.run.sync(s)
+                if s["screen"] == "rewards":
+                    g.do_rewards(s["rewards"])
+                elif s["screen"] == "cardReward":
+                    g.act(f"pick {g.pending_pick}")
+                else:
+                    time.sleep(0.2)
+        finally:
+            g.run_model = model
+        offered = g.policy.offered
+        assert offered and all(c.endswith("+") for c in offered), offered
+        gained = Counter(map(_cid, self.client.state()["player"]["deck"])) - before
+        assert gained == Counter([offered[g.pending_pick]]), (gained, offered)
+
     # ------------------------------------------------------------------------------------------------------
 
     def all(self) -> int:
@@ -264,6 +400,12 @@ class Check:
         self.run("shop relic", self.shop_relic)
         self.run("shop removal", self.shop_removal)
         self.run("potion drop and Blood Potion", self.potions)
+        self.run("Armaments prompt", lambda: self.armaments(False))
+        self.run("ARMAMENTS+", lambda: self.armaments(True))
+        self.run("rest: Smith", self.smith)
+        self.run("rest: Girya's Lift", self.lift)
+        self.run("rest: Shovel's Dig", self.dig)
+        self.run("upgraded card reward", self.upgraded_reward)
         failed = [r for r in self.results if not r[1]]
         print(f"{len(self.results) - len(failed)}/{len(self.results)} passed")
         for name, _, why in failed:
