@@ -25,15 +25,15 @@ RELIC_POOL = {
              "MINIATURE_TENT", "MYSTIC_LIGHTER", "ORRERY", "PUNCH_DAGGER", "RINGING_TRIANGLE", "ROYAL_STAMP", "SCREAMING_FLAGON",
              "SLING_OF_COURAGE", "THE_ABACUS", "TOOLBOX", "WING_CHARM"),
 }
-# ponytail: Miniature Tent lets the player take every rest option; rest() takes one. Razor Tooth upgrades the deck copy of every Attack/Skill played (the sim keeps in-combat upgrades off the deck),
-# Lava Lamp upgrades all card rewards after a damage-free fight (needs per-fight damage tracking). Add when the deck matters.
+# ponytail: Miniature Tent lets the player take every rest option; rest() takes one. Razor Tooth upgrades the deck copy of every
+# Attack/Skill played (the sim keeps in-combat upgrades off the deck). Add when the deck matters.
 NOT_MODELED = frozenset({
-    "RAZOR_TOOTH", "LAVA_LAMP", "GNARLED_HAMMER", "KIFUDA", "PUNCH_DAGGER", "ROYAL_STAMP", "WING_CHARM",
+    "RAZOR_TOOTH", "GNARLED_HAMMER", "KIFUDA", "PUNCH_DAGGER", "ROYAL_STAMP", "WING_CHARM",
     "GAMBLING_CHIP", "DOLLYS_MIRROR", "DINGY_RUG", "TOOLBOX", "LASTING_CANDY", "PETRIFIED_TOAD", "MINIATURE_TENT",
     "MYSTIC_LIGHTER",
 })
-UPGRADE_RELICS = frozenset({"WAR_PAINT", "WHETSTONE", "MINIATURE_CANNON", "STONE_CRACKER", "BELLOWS", "FROZEN_EGG", "MOLTEN_EGG", "TOXIC_EGG", "GIRYA", "SHOVEL"})
-# ^ modeled with upgrades in the run (Task 4); a policy trained before has no inputs for them (env.combat_maps, run_env.run_maps)
+UPGRADE_RELICS = frozenset({"WAR_PAINT", "WHETSTONE", "MINIATURE_CANNON", "STONE_CRACKER", "BELLOWS", "FROZEN_EGG", "MOLTEN_EGG", "TOXIC_EGG", "GIRYA", "SHOVEL", "LAVA_LAMP"})
+# ^ the relics Task 4 modeled; env.combat_maps and run_env.run_maps skip them for models trained before
 RELICS = frozenset(r for ids in RELIC_POOL.values() for r in ids) - NOT_MODELED
 RELIC_IDS = sorted(RELICS)
 NOT_IN_SHOPS = frozenset({"AMETHYST_AUBERGINE", "BOWLER_HAT", "LUCKY_FYSH", "OLD_COIN", "THE_COURIER"})  # IsAllowedInShops => false

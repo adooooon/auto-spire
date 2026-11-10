@@ -680,6 +680,7 @@ class SimCombat:
     block_plays: list[int] = field(default_factory=list)  # card plays that gained block this turn (Unmovable)
     free_cards: list[str] = field(default_factory=list)  # free this turn (Infernal Blade's card)
     hp_loss_events: int = 0  # unblocked hits/losses this combat (Tear Asunder)
+    lamp_hit: bool = False  # a blockable hit got through this combat (Lava Lamp's TookDamageThisCombat)
     # ponytail: per card id, not per copy (Rampage/Thrash grow per instance; two copies share here).
     bonus_damage: dict[str, int] = field(default_factory=dict)
     shuffles: int = 0  # discard -> draw reshuffles (sim.validate: draws after one are random)
@@ -735,6 +736,7 @@ class SimCombat:
         self.ringing = False
         self.pw, self.bonus_damage = {}, {}
         self.crimson_self = self.inferno_self = self.hp_loss_events = 0
+        self.lamp_hit = False
         self.round = 1
         self.shuffles = 0
         self.in_combat = True
@@ -1732,7 +1734,9 @@ class SimCombat:
             self._damage_enemy(dealer, self.pw["ThornsPower"])
         absorbed = min(self.player_block, dmg)
         self.player_block -= absorbed
+        hits = self.hp_loss_events
         self._lose_hp(dmg - absorbed)
+        self.lamp_hit |= self.hp_loss_events > hits  # Lava Lamp: UnblockedDamage > 0 and not Unblockable (card self-damage is)
         if dealer and self.in_combat:
             self._check_win()  # a Thorns kill ends the fight once the hit has landed
         if dealer and self.in_combat and self.pw.get("FlameBarrierPower") and dealer.is_alive:

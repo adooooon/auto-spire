@@ -518,8 +518,8 @@ from .relics import NOT_MODELED, RELIC_POOL, RELICS, relic_rarity  # noqa: E402
 from .potions import MAX_POTION_SLOTS  # noqa: E402
 
 assert [len(v) for v in RELIC_POOL.values()] == [26, 32, 38, 26]
-assert len({r for v in RELIC_POOL.values() for r in v}) == 122 and len(RELICS) == 107 and len(NOT_MODELED) == 15
-assert [len([r for r in v if r in RELICS]) for v in RELIC_POOL.values()] == [26, 30, 36, 15]
+assert len({r for v in RELIC_POOL.values() for r in v}) == 122 and len(RELICS) == 108 and len(NOT_MODELED) == 14
+assert [len([r for r in v if r in RELICS]) for v in RELIC_POOL.values()] == [26, 30, 36, 16]
 assert relic_rarity("VAJRA") == "COMMON" and relic_rarity("BRIMSTONE") == "SHOP" and MAX_POTION_SLOTS == 5
 
 
@@ -1647,4 +1647,12 @@ for cid, (hand_, setup, measure, want_b, want_u) in SPECIAL.items():
     b, u = upgraded(cid, hand_, setup or (lambda c: None))
     assert (measure(b), measure(u)) == (want_b, want_u), (cid, measure(b), measure(u))
 
+
+# Lava Lamp's TookDamageThisCombat: a blockable hit that gets through sets lamp_hit; blocked hits and card self-damage don't.
+c = solo(["STRIKE_IRONCLAD"]); assert not c.lamp_hit
+c.player_block = 5; c._damage_player(4); assert not c.lamp_hit and c.player_hp == 80
+c._damage_player(4); assert c.lamp_hit and c.player_hp == 77
+c = solo(["STRIKE_IRONCLAD"]); c._lose_hp(3, from_card=True); assert not c.lamp_hit  # Unblockable self-damage
+c.fight("MAWLER_NORMAL"); assert not c.lamp_hit
+print("lava lamp engine checks ok")
 print("sim self-check ok")

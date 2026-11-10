@@ -537,21 +537,21 @@ Ported to the sim in `agent/sim/potions.py` and `SimCombat.use_potion`; drops an
 
 ## Relics
 
-107 of the 122 relics are modeled: ids and rarities in `agent/sim/relics.py` (`RELIC_POOL`, `NOT_MODELED`, `RELICS`), effects in `SimCombat` (`agent/sim/engine.py`), drops and shops in `agent/sim/act.py`. Relic state lives on `Run` and carries across fights (Pen Nib, Nunchaku, Lizard Tail's used flag ...).
+108 of the 122 relics are modeled: ids and rarities in `agent/sim/relics.py` (`RELIC_POOL`, `NOT_MODELED`, `RELICS`), effects in `SimCombat` (`agent/sim/engine.py`), drops and shops in `agent/sim/act.py`. Relic state lives on `Run` and carries across fights (Pen Nib, Nunchaku, Lizard Tail's used flag ...).
 
 - **Pool:** `SharedRelicPool` plus `IroncladRelicPool`: Common 26, Uncommon 32, Rare 38, Shop 26 = 122.
-- **Unmodeled relics** (15) still drop, use up that reward and stock shops, so the odds stay honest. They do nothing and can't be bought.
+- **Unmodeled relics** (14) still drop, use up that reward and stock shops, so the odds stay honest. They do nothing and can't be bought.
 
 | Rarity | Modeled |
 |---|---|
 | Common (26 of 26) | Amethyst Aubergine, Anchor, Bag of Marbles, Bag of Preparation, Blood Vial, Book of Five Rings, Bronze Scales, Centennial Puzzle, Festive Popper, Gorget, Happy Flower, Juzu Bracelet, Lantern, Meal Ticket, Oddly Smooth Stone, Pendulum, Potion Belt, Red Mask, Red Skull, Regal Pillow, Strawberry, Strike Dummy, Vajra, Venerable Tea Set, War Paint, Whetstone |
 | Uncommon (30 of 32) | Akabeko, Bowler Hat, Candelabra, Eternal Feather, Gremlin Horn, Horn Cleat, Joss Paper, Kusarigama, Letter Opener, Lucky Fysh, Mercury Hourglass, Miniature Cannon, Nunchaku, Orichalcum, Ornamental Fan, Pantograph, Paper Phrog, Parrying Shield, Pear, Pen Nib, Permafrost, Planisphere, Reptile Trinket, Ripple Basin, Self-Forming Clay, Sparkling Rouge, Stone Cracker, Tiny Mailbox, Tuning Fork, Vambrace |
 | Rare (36 of 38) | Art of War, Beating Remnant, Bellows, Captain's Wheel, Chandelier, Charon's Ashes, Cloak Clasp, Demon Tongue, Frozen Egg, Game Piece, Girya, Ice Cream, Intimidating Helmet, Kunai, Lizard Tail, Mango, Meat on the Bone, Molten Egg, Mummified Hand, Old Coin, Pocketwatch, Prayer Wheel, Rainbow Ring, Ruined Helmet, Shovel, Shuriken, Stone Calendar, Sturdy Clamp, The Courier, Toxic Egg, Tungsten Rod, Unceasing Top, Unsettling Lamp, Vexing Puzzlebox, White Beast Statue, White Star |
-| Shop (15 of 26) | Belt Buckle, Bread, Brimstone, Burning Sticks, Cauldron, Chemical X, Dragon Fruit, Ghost Seed, Lee's Waffle, Membership Card, Orrery, Ringing Triangle, Screaming Flagon, Sling of Courage, The Abacus |
+| Shop (16 of 26) | Belt Buckle, Bread, Brimstone, Burning Sticks, Cauldron, Chemical X, Dragon Fruit, Ghost Seed, Lava Lamp, Lee's Waffle, Membership Card, Orrery, Ringing Triangle, Screaming Flagon, Sling of Courage, The Abacus |
 
-| Not modeled (15) | Why |
+| Not modeled (14) | Why |
 |---|---|
-| Razor Tooth, Lava Lamp | Razor Tooth upgrades the deck copy of each Attack or Skill played, and Lava Lamp upgrades card rewards after a damage-free fight (needs per-fight damage tracking) |
+| Razor Tooth | upgrades the deck copy of each Attack or Skill played, and the sim keeps in-combat upgrades off the deck |
 | Gnarled Hammer, Kifuda, Punch Dagger, Royal Stamp, Wing Charm | enchantments |
 | Gambling Chip, Dolly's Mirror | choosing a card |
 | Dingy Rug, Toolbox | colorless cards |
@@ -647,7 +647,8 @@ Ported in `agent/sim/act.py` (the run), `agent/sim/relics.py` and `agent/sim/eng
 - **Smith** (`SmithRestSiteOption`): enabled iff `Deck.UpgradableCardCount != 0`. It upgrades 1 chosen card. Rest options come in the order Heal, Smith, then relics' options (`TryModifyRestSiteOptions`): Girya's Lift, Shovel's Dig. Entering a rest site heals nothing; Heal is an option (30% of max HP, `HealRestSiteOption`, plus Regal Pillow's 15). Eternal Feather, Venerable Tea Set and Tiny Mailbox still act on entry.
 - **Relics** (all in `agent/decompiled/MegaCrit.Sts2.Core.Models.Relics/`):
   - **Whetstone** / **War Paint** (`AfterObtained`): upgrade 2 random upgradable Attacks / Skills in the deck.
-  - **Molten / Toxic / Frozen Egg:** a card of that type (Attack / Skill / Power) is upgraded when it joins the deck (`TryModifyCardBeingAddedToDeck`), and in reward and shop offers (`EggRelicHelper`). The sim does it on joining the deck, which gives the same deck.
+  - **Molten / Toxic / Frozen Egg:** cards of that type (Attack / Skill / Power) are upgraded in card rewards (any rarity) and shop stock (`EggRelicHelper.UpgradeValidCards`, from `TryModifyCardRewardOptionsLate` and `ModifyMerchantCardCreationResults`), and again when added to the deck (`TryModifyCardBeingAddedToDeck`), which changes nothing already upgraded. A shop price depends on rarity only (`MerchantCardEntry.GetCost`), so it is unchanged. The sim does all three.
+  - **Lava Lamp** (`LavaLamp.cs`): if no hit got through block this combat (`AfterDamageReceived`: `UnblockedDamage > 0` and not Unblockable, so card self-damage doesn't count), every upgradable card in that combat's rewards is upgraded, Rares too (`TryModifyCardRewardOptionsLate`; only in a CombatRoom, so not in shops).
   - **Girya** (`Girya.cs`): Lift at a rest site, up to 3 times (`maxLifts`). Each combat starts with Strength equal to the lifts.
   - **Shovel** (`DigRestSiteOption`): Dig gives a relic (`PullNextRelicFromFront` with a rolled rarity), every rest site, no limit.
   - **Miniature Cannon:** +3 damage (`ModifyDamageAdditive`) on Attacks from upgraded cards.

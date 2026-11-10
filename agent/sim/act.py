@@ -7,7 +7,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from .cards import CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, starter_deck, upgrade
+from .cards import CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, base_id, starter_deck, upgrade
 from .engine import ENCOUNTERS, HIVE_BOSSES, HIVE_ELITES, HIVE_NORMALS, HIVE_WEAK, PLAYER_MAX_HP
 from .events import EVENT_ALLOWED, HIVE_EVENT_ALLOWED, MODELED_EVENTS
 from .map import ActMap, Node, generate_map
@@ -231,8 +231,15 @@ class Shop:
     potion_prices: list[int] = field(default_factory=lambda: [0] * SHOP_POTIONS)
 
 
-def stock_card(rng: random.Random, odds: RarityOdds, ctype: str, taken: list) -> tuple[str, int]:
-    """One card slot (MerchantCardEntry.Populate): a card of `ctype` not in `taken`, and its full price."""
+def egg_upgrade(card: str, relics) -> str:
+    """EggRelicHelper.UpgradeValidCards: the Egg of a card's type upgrades it in offers and shops, any rarity."""
+    return upgrade(card) if any(r in relics and CARDS[card].type == t for r, t in EGGS.items()) else card
+
+
+def stock_card(rng: random.Random, odds: RarityOdds, ctype: str, taken: list, relics=()) -> tuple[str, int]:
+    """One card slot (MerchantCardEntry.Populate): a card of `ctype` not in `taken`, and its full price
+    (by rarity, so an Egg's upgrade doesn't change it). Shops roll no upgrades; only Eggs upgrade."""
+    taken = [base_id(c) for c in taken]
     rarity = odds.roll_shop(rng)
     for _ in range(3):  # CardFactory.GetNextAllowedRarity
         pool = [c for c in REWARD_POOLS[rarity] if card_type(c) == ctype and c not in taken]
@@ -240,7 +247,7 @@ def stock_card(rng: random.Random, odds: RarityOdds, ctype: str, taken: list) ->
             break
         rarity = NEXT_RARITY[rarity]
     card = rng.choice(pool)
-    return card, round(CARD_PRICE[rarity] * rng.uniform(0.95, 1.05))  # Mathf.RoundToInt: banker's, like round()
+    return egg_upgrade(card, relics), round(CARD_PRICE[rarity] * rng.uniform(0.95, 1.05))  # Mathf.RoundToInt: banker's, like round()
 
 
 def stock_relic(rng: random.Random, bags: RelicBags, rarity: str) -> tuple[str, int]:
@@ -252,7 +259,7 @@ def potion_price(rng: random.Random, pid: str) -> int:
     return round(POTION_PRICE[potion_rarity(pid)] * rng.uniform(0.95, 1.05))
 
 
-def make_shop(rng: random.Random, odds: RarityOdds, removals: int, bags: RelicBags) -> Shop:
+def make_shop(rng: random.Random, odds: RarityOdds, removals: int, bags: RelicBags, relics=()) -> Shop:
     """MerchantInventory.PopulateCharacterCardEntries: 5 typed slots, no repeats, one half price.
     Then 3 relics (two rolled, one SHOP, pulled from the back of the player bag) and 3 potions.
     Colorless cards aren't stocked yet."""
@@ -260,7 +267,7 @@ def make_shop(rng: random.Random, odds: RarityOdds, removals: int, bags: RelicBa
     cards: list[str | None] = []
     prices: list[int] = []
     for i, ctype in enumerate(SHOP_SLOTS):
-        card, price = stock_card(rng, odds, ctype, cards)
+        card, price = stock_card(rng, odds, ctype, cards, relics)
         cards.append(card)
         prices.append(price // 2 if i == sale else price)
     rarities = [roll_relic_rarity(rng), roll_relic_rarity(rng), "SHOP"]
@@ -306,6 +313,8 @@ class Run:
         self.event: str | None = None  # the modeled event waiting on a choice
         self.event_opts: list[tuple[int, int, int]] = []  # each option's (HP loss, gold gain, max HP gain)
         self.event_log: list[tuple] = []  # (event, option, hp, max_hp, gold) at each choice
+        self.fight_hit = True  # the last fight let a blockable hit through (Lava Lamp); run_env.play sets it
+        self.lava_ok = False  # Lava Lamp lights the card offers made inside win()
         self.bridge_card: int | None = None  # Slippery Bridge: deck index of the card at risk
         self.bridge_skipped: set[int] = set()
 
@@ -333,6 +342,10 @@ class Run:
             if "LIZARD_TAIL" in self.relics and not self.relic_state.get("lizard_used"):  # ShouldDieLate
                 self.relic_state["lizard_used"] = 1
                 self.hp = max(1, self.max_hp * 50 // 100)
+
+    def offer(self, **kw) -> list[str]:
+        """offer() as the player sees it: Eggs (any rarity) and a lit Lava Lamp (after a fight with no hit) upgrade the cards."""
+        return [upgrade(c) if self.lava_ok else egg_upgrade(c, self.relics) for c in offer(self.rng, self.card_odds, act=self.act, **kw)]
 
     def add_card(self, card: str) -> None:
         if any(r in self.relics and CARDS[card].type == t for r, t in EGGS.items()):
@@ -386,7 +399,7 @@ class Run:
         elif room == "Shop":
             if "MEAL_TICKET" in self.relics:
                 self.heal(15)
-            self.shop = make_shop(self.rng, self.card_odds, self.removals, self.bags)
+            self.shop = make_shop(self.rng, self.card_odds, self.removals, self.bags, self.relics)
         elif room == "Event":
             self.start_event(self.pull_event())
         elif room == "Treasure":
@@ -480,6 +493,14 @@ class Run:
         return queue.pop(0) if queue else self.rng.choice(pool)
 
     def win(self, room: str) -> list[str]:
+        """_win with Lava Lamp lit for its card offers when the fight (run.fight_hit, set by the env) took no hit."""
+        self.lava_ok = "LAVA_LAMP" in self.relics and not self.fight_hit
+        try:
+            return self._win(room)
+        finally:
+            self.lava_ok = False
+
+    def _win(self, room: str) -> list[str]:
         """After a won fight: Burning Blood, gold, a potion roll (sets potion_drop) and the card offer.
         After the boss the run ends, so neither the potion nor the card offer is rolled."""
         self.heal(BURNING_BLOOD_HEAL)
@@ -492,17 +513,17 @@ class Run:
             potion = roll_potions(self.rng)[0] if self.potion_odds.roll(self.rng, False, False) else None
             if potion:
                 self.pending.append(("potion", potion))
-            return offer(self.rng, self.card_odds, boss=True, act=self.act)
+            return self.offer(boss=True)
         # Rewards are generated (and modified by held relics) before the elite's relic is picked up.
         force, wheel, star = (r in self.relics for r in ("WHITE_BEAST_STATUE", "PRAYER_WHEEL", "WHITE_STAR"))
         if room == "Elite":
             self.obtain(self.bags.pull("player", roll_relic_rarity(self.rng)), "elite")
         potion = roll_potions(self.rng)[0] if self.potion_odds.roll(self.rng, room == "Elite", force) else None
-        offered = offer(self.rng, self.card_odds, room == "Elite", act=self.act)
+        offered = self.offer(elite=room == "Elite")
         if room == "Monster" and wheel:
-            self.pending.append(("cards", offer(self.rng, self.card_odds, act=self.act)))
+            self.pending.append(("cards", self.offer()))
         if room == "Elite" and star:
-            self.pending.append(("cards", offer(self.rng, self.card_odds, boss=True, act=self.act)))
+            self.pending.append(("cards", self.offer(boss=True)))
         if potion:
             self.pending.append(("potion", potion))
         return offered
@@ -529,7 +550,7 @@ class Run:
         self.spent += price
         self.add_card(card)
         if "THE_COURIER" in self.relics:  # RestockAfterPurchase: same type, not on sale; the bought card still counts as taken
-            s.cards[slot], s.prices[slot] = stock_card(self.rng, self.card_odds, SHOP_SLOTS[slot], [c for c in s.cards if c])
+            s.cards[slot], s.prices[slot] = stock_card(self.rng, self.card_odds, SHOP_SLOTS[slot], [c for c in s.cards if c], self.relics)
         else:
             s.cards[slot] = None
 
@@ -606,7 +627,7 @@ class Run:
             for i in self.rng.sample(ups, min(2, len(ups))):
                 self.deck[i] = upgrade(self.deck[i])
         elif relic == "ORRERY":
-            self.pending += [("cards", offer(self.rng, self.card_odds, base=True, act=self.act)) for _ in range(5)]
+            self.pending += [("cards", self.offer(base=True)) for _ in range(5)]
         elif relic == "CAULDRON":
             self.pending += [("potion", roll_potions(self.rng)[0]) for _ in range(5)]
 

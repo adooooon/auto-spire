@@ -185,6 +185,7 @@ class RunPolicyEnv(gym.Env):
             return False
         combat = env.client._combat
         self.choice_log += combat.choice_log
+        run.fight_hit = combat.lamp_hit
         run.hp, run.max_hp, run.potions = combat.player_hp, combat.player_max_hp, list(combat.potions)
         for card in combat.stolen:  # Thieving Hopper escaped with it
             run.deck.remove(card)

@@ -3,7 +3,7 @@ from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
 from sim.potions import POTION_IDS
-assert COMBAT_OBS == 1975 and COMBAT_ACTIONS == 191
+assert COMBAT_OBS == 1976 and COMBAT_ACTIONS == 191
 from env import CHOICE_FEATURES, POTION_FEATURES, RELIC_FEATURES
 POT0 = COMBAT_OBS - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
 from sim.engine import SimClient, SimLoopError
@@ -59,7 +59,7 @@ from sim.act import Shop
 
 from run_env import SHOP_RELIC, potion_take_action, drink_action, POTION_TAKE_2, DRINK_2
 
-assert N_ACTIONS == 128 and OBS_DIM == 1499  # Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs; 10 relics modeled in Task 4: +10 relic obs in the combat env, +40 in the run env
+assert N_ACTIONS == 128 and OBS_DIM == 1503  # Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs;  11 relics modeled in Task 4: +11 relic obs in the combat env, +44 in the run env
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -151,7 +151,7 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == 191 and COMBAT_OBS == 1975
+assert cenv.action_space.n == COMBAT_ACTIONS == 191 and COMBAT_OBS == 1976
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()

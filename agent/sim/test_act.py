@@ -681,3 +681,33 @@ r.rest("DIG"); r.rest("DIG")
 assert len(r.relic_log) == 2 and all(src == "dig" for _, src in r.relic_log) and len(r.relics) == 3
 r = fresh("GIRYA", "SHOVEL"); assert r.rest_options() == ["HEAL", "SMITH", "LIFT", "DIG"]
 print("upgrade checks ok")
+
+# Eggs upgrade the offered and shop cards themselves (any rarity), at the same price; no Egg: nothing upgraded.
+from .act import egg_upgrade
+assert egg_upgrade("BASH", {"MOLTEN_EGG"}) == "BASH+" and egg_upgrade("BASH", {"TOXIC_EGG"}) == "BASH"
+assert egg_upgrade("INFLAME", {"FROZEN_EGG"}) == "INFLAME+" and egg_upgrade("BASH+", {"MOLTEN_EGG"}) == "BASH+"
+for egg, kind in (("MOLTEN_EGG", "Attack"), ("TOXIC_EGG", "Skill"), ("FROZEN_EGG", "Power")):
+    r = fresh(egg); r.act = 0
+    seen = [c for _ in range(300) for c in r.win("Monster")] + [c for _ in range(100) for c in r.win("Boss")]
+    assert all(is_upgraded(c) == (CARDS[base_id(c)].type == kind) for c in seen), egg
+    assert any(is_upgraded(c) and CARDS[base_id(c)].rarity == "Rare" for c in seen), egg  # Rares too
+    for s in range(100):
+        sh = make_shop(random.Random(s), RarityOdds(), 0, RelicBags(random.Random(s)), {egg})
+        assert all(is_upgraded(c) == (CARDS[base_id(c)].type == kind) for c in sh.cards), egg
+        plain = make_shop(random.Random(s), RarityOdds(), 0, RelicBags(random.Random(s)))
+        assert [base_id(c) for c in sh.cards] == plain.cards and sh.prices == plain.prices  # same draws, same prices
+r = fresh("MOLTEN_EGG"); r.gold = 999; r.shop = make_shop(random.Random(3), RarityOdds(), 0, RelicBags(random.Random(3)), {"MOLTEN_EGG"})
+slot = next(i for i, c in enumerate(r.shop.cards) if is_upgraded(c)); up = r.shop.cards[slot]; r.buy(slot); assert r.deck[-1] == up  # not upgraded twice
+
+# Lava Lamp: after a fight with no blockable hit, every offered card (Rares too) is upgraded; after a hit, none.
+r = fresh("LAVA_LAMP"); r.fight_hit = False
+offered = [c for _ in range(100) for c in r.win("Monster")]
+assert offered and all(is_upgraded(c) for c in offered if c in UPGRADABLE or c + "+" in CARDS)
+r = fresh("LAVA_LAMP"); r.fight_hit = True
+assert not any(is_upgraded(c) for _ in range(50) for c in r.win("Monster"))
+r = fresh(); r.fight_hit = False
+assert not any(is_upgraded(c) for _ in range(50) for c in r.win("Monster"))  # no lamp
+r = fresh("LAVA_LAMP"); r.fight_hit = False; r.win("Elite")
+r.shop = make_shop(random.Random(1), RarityOdds(), 0, RelicBags(random.Random(1)), r.relics)
+assert not any(is_upgraded(c) for c in r.shop.cards)  # shops: not a CombatRoom
+print("egg and lava lamp checks ok")
