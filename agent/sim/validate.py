@@ -19,7 +19,7 @@ import copy
 import json
 import random
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 import requests
 
@@ -27,7 +27,7 @@ import env as env_module
 from client import AutoSpireClient
 from env import PLAYER_POWERS, STS2CombatEnv, _power, _ready, parse_encounters
 
-from .cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, upgrade
+from .cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, DeckCard, upgrade
 from .engine import frantic_escape, BRANCHES, ENEMY_PW, HISTORY_FIELDS, MONSTERS, WRIGGLER_SLOT_OPENERS, SimCombat, _Enemy, legal_moves
 
 # Random enemy picks (compared only with one hittable enemy): the cards, and powers that hit or
@@ -67,8 +67,10 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
         setattr(sim, name, copy.deepcopy(getattr(prev, name)))
     # A random step (e.g. Hellraiser autoplays after a reshuffle) can leave the carried count high.
     sim.attack_plays = min(sim.attack_plays, sim.cards_played)
-    # Thieving Hopper steals deck cards. ponytail: /combat doesn't mark generated cards, so every card counts as the deck's.
-    sim._deck_left = Counter(sim.hand + sim.draw_pile + sim.discard_pile + sim.exhaust_pile)
+    # Thieving Hopper steals deck cards. ponytail: /combat doesn't mark generated cards, so every card but a status
+    # or token counts as the deck's.
+    for pile in (sim.hand, sim.draw_pile, sim.discard_pile, sim.exhaust_pile):
+        pile[:] = [DeckCard(c) if CARDS[c].rarity not in ("Status", "Token") else c for c in pile]
     # Free-this-turn cards (Infernal Blade's) are visible live: cost 0 where the sim would charge.
     sim.free_cards = []
     sim.free_cards = [c for x, c in zip(p["hand"], ids(p["hand"])) if x["cost"] == 0 and sim.cost(c) > 0]

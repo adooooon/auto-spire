@@ -480,7 +480,7 @@ assert s.exec(f"potion 0 {nib}")["ok"] and s.combat()["potionSlots"] == [None, N
 import hashlib  # noqa: E402
 
 from . import engine  # noqa: E402
-from .cards import CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, starter_deck  # noqa: E402
+from .cards import CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, starter_deck, upgrade  # noqa: E402
 from .potions import POTION_IDS  # noqa: E402
 
 
@@ -512,7 +512,9 @@ def _no_relic_trace() -> str:
 
 
 # Aggression now upgrades the Attack it returns; with engine.upgrade a no-op the old hash b3732604... still holds.
-assert _no_relic_trace() == "fa4f8e6a40b79314a410a09a6a79413d010b77e07aa9d82705f55d065df4647d"
+# Aggression then took the Attack it picked out of its own slot (not the first equal copy), so the discard pile's order
+# moved; with that one line back to discard_pile.remove(c), fa4f8e6a... still holds.
+assert _no_relic_trace() == "5679464b2188aadb9271b46cc22ca43759b52a7b9017b3e86b02a85bae9647bb"
 # --- relics (sim/relics.py) ---------------------------------------------------------------------
 from .relics import NOT_MODELED, RELIC_POOL, RELICS, relic_rarity  # noqa: E402
 from .potions import MAX_POTION_SLOTS  # noqa: E402
@@ -1583,6 +1585,26 @@ assert c.pending_choice is None and len(c.exhaust_pile) == 1
 c = SimCombat(rng=random.Random(7)); c.fight("THIEVING_HOPPER_WEAK", ["BASH+"] * 10)
 c._steal(c.enemies[0])
 assert c.stolen == ["BASH+"], c.stolen
+# The deck's only copy: stolen as it is (it once came back as "UPPERCUT", not in the deck).
+c = SimCombat(rng=random.Random(7)); c.fight("THIEVING_HOPPER_WEAK", ["UPPERCUT+"] + ["STRIKE_IRONCLAD"] * 9)
+c.draw_pile += c.hand; c.hand = []  # the opening hand is out of reach
+c._steal(c.enemies[0])
+assert c.stolen == ["UPPERCUT+"] and "UPPERCUT+" not in c.draw_pile, c.stolen
+# A deck copy upgraded this fight (Armaments) keeps its DeckVersion: the deck loses the plain card it came from,
+# not one of the deck's own UPPERCUT+ (both in the exhaust pile, out of reach).
+c = SimCombat(rng=random.Random(7)); c.fight("THIEVING_HOPPER_WEAK", ["UPPERCUT"] + ["UPPERCUT+"] * 2 + ["STRIKE_IRONCLAD"] * 7)
+c.draw_pile += c.hand; c.hand = []  # the opening hand is out of reach
+c.exhaust_pile += [c.draw_pile.pop(c.draw_pile.index("UPPERCUT+")) for _ in range(2)]
+i = c.draw_pile.index("UPPERCUT"); c.draw_pile[i] = upgrade(c.draw_pile[i])  # in its slot, as Stone Cracker does
+c._steal(c.enemies[0])
+assert c.stolen == ["UPPERCUT"] and "UPPERCUT+" not in c.draw_pile, c.stolen
+# A generated copy of a deck card's id has no DeckVersion: with the deck's copy exhausted, a Strike goes instead.
+c = SimCombat(rng=random.Random(7)); c.fight("THIEVING_HOPPER_WEAK", ["UPPERCUT"] + ["STRIKE_IRONCLAD"] * 9)
+c.draw_pile += c.hand; c.hand = []  # the opening hand is out of reach
+c.exhaust_pile.append(c.draw_pile.pop(c.draw_pile.index("UPPERCUT")))
+c.discard_pile.append("UPPERCUT")
+c._steal(c.enemies[0])
+assert c.stolen == ["STRIKE_IRONCLAD"] and c.discard_pile == ["UPPERCUT"], c.stolen
 
 # Upgraded ids go through every id check: Stomp's discount, Ghost Seed, Howl from Beyond, Thrash eating Ashen Strike.
 c = solo(["STRIKE_IRONCLAD", "STOMP+"]); c.play_card(0, 1); assert c.cost("STOMP+") == 2

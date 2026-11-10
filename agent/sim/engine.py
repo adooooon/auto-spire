@@ -29,10 +29,9 @@ Known simplifications:
 from __future__ import annotations
 
 import random
-from collections import Counter
 from dataclasses import dataclass, field
 
-from .cards import CARDS, GENERATED, UPGRADABLE, base_id, card_to_dict, is_upgraded, starter_deck, upgrade
+from .cards import CARDS, GENERATED, UPGRADABLE, DeckCard, base_id, card_to_dict, is_upgraded, starter_deck, upgrade
 from .potions import MAX_POTION_SLOTS, POTION_SLOTS, POTIONS
 
 PLAYER_MAX_HP = 80
@@ -723,9 +722,7 @@ class SimCombat:
         for entry in encounter_roster(encounter, self.rng):
             model_id, _, first = entry.partition(":")
             self.enemies.append(_Enemy.spawn(MONSTERS[model_id], self.rng, first))
-        self.draw_pile = list(deck or starter_deck())  # draw_pile[-1] is the top card
-        # ponytail: deck copies by id, so a generated copy of a deck card's id can be taken in its place (same effect on the deck).
-        self._deck_left = Counter(self.draw_pile)  # ThievingHopper only takes cards with a DeckVersion
+        self.draw_pile = [DeckCard(c) for c in deck or starter_deck()]  # draw_pile[-1] is the top card
         self.rng.shuffle(self.draw_pile)
         self.hand, self.discard_pile, self.exhaust_pile = [], [], []
         self.player_block = 0
@@ -1291,7 +1288,7 @@ class SimCombat:
         if kind == "upgrade":
             pile[i] = upgrade(picked)
         else:
-            pile.remove(picked)  # (the first equal copy: same contents)
+            del pile[i]
         return picked
 
     def _finish_choice(self, source: str, picked: str | None) -> None:
@@ -1475,7 +1472,7 @@ class SimCombat:
                 self._joss_draw()
         if "BURNING_STICKS" in R and not self.rt.get("sticks") and CARDS[card_id].type == "Skill" and not self._ending():
             self.rt["sticks"] = 1
-            self._add_to_hand(card_id)
+            self._add_to_hand(str(card_id))  # a clone: no deck card
 
     def _joss_draw(self) -> None:
         n = self.relic_state.get("joss_paper", 0)
@@ -1655,22 +1652,18 @@ class SimCombat:
             raise ValueError(effect)
 
     def _steal(self, e: _Enemy) -> None:
-        """ThievingHopper._stealPriorities, over cards from the deck in the draw and discard piles."""
-        rarity = lambda c: CARDS[c].rarity  # noqa: E731
-        # A deck card upgraded this fight (Armaments) is still that deck card.
-        deck_id = lambda c: c if self._deck_left[c] > 0 else base_id(c)  # noqa: E731
-        cards = [(pile, c) for pile in (self.draw_pile, self.discard_pile) for c in pile
-                 if rarity(c) not in ("Status", "Token") and self._deck_left[deck_id(c)] > 0]
+        """ThievingHopper._stealPriorities, over the draw and discard pile cards with a DeckVersion. The deck loses
+        that copy's deck card: for one upgraded this fight (Armaments), the card before the upgrade."""
+        rarity = lambda x: CARDS[x[0][x[1]]].rarity  # noqa: E731
+        cards = [(pile, i) for pile in (self.draw_pile, self.discard_pile) for i, c in enumerate(pile) if isinstance(c, DeckCard)]
         for tier in (("Uncommon",), ("Common", "Rare"), ("Basic",)):
-            best = [x for x in cards if rarity(x[1]) in tier]
+            best = [x for x in cards if rarity(x) in tier]
             if best:
                 cards = best
                 break
         if cards:
-            pile, card = self.rng.choice(cards)
-            pile.remove(card)
-            self._deck_left[deck_id(card)] -= 1
-            self.stolen.append(deck_id(card))
+            pile, i = self.rng.choice(cards)
+            self.stolen.append(pile.pop(i).deck)
             e.pw["SwipePower"] = 1
 
     def _lose_hp(self, amount: int, from_card: bool = False) -> None:
@@ -1801,7 +1794,7 @@ class SimCombat:
         # BeforeSideTurnStart: Aggression moves random Attacks from discard to hand and upgrades them.
         attacks = [c for c in self.discard_pile if CARDS[c].type == "Attack"]
         for c in self.rng.sample(attacks, min(len(attacks), self.pw.get("AggressionPower", 0))):
-            self.discard_pile.remove(c)
+            del self.discard_pile[next(i for i, x in enumerate(self.discard_pile) if x is c)]  # this copy
             self._add_to_hand(upgrade(c))
         if "ICE_CREAM" in R and self.round > 1:  # ShouldPlayerResetEnergy false: AddMaxEnergyToCurrent
             self.energy += self.max_energy

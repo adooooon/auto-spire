@@ -679,12 +679,22 @@ renv.run.hp = renv.run.max_hp
 assert runmod.baseline_action(renv, brng, 1) == REST
 
 # Review focus 1: 300 random-policy runs, each deck seeded with 6 upgraded cards (a third also hold 3 upgrade relics), end
-# without an exception. Fights are skipped as wins so every run reaches rest sites, shops and Act 2's upgraded offers.
+# without an exception. Fights count as wins so every run reaches rest sites, shops and Act 2's upgraded offers; a
+# third of them first play a real random-policy fight against Thieving Hopper, whose steal leaves the run deck.
 t0 = time.time()
 fenv, frng, seen = RunPolicyEnv(), np.random.default_rng(5), Counter()
+real_play = fenv.play
 
 
 def win(encounter):
+    if frng.integers(3) == 0:
+        deck, hp = Counter(fenv.run.deck), fenv.run.hp
+        real_play("THIEVING_HOPPER_WEAK")
+        stolen = fenv.fight_env.client._combat.stolen
+        assert Counter(fenv.run.deck) == deck - Counter(stolen) and len(stolen) <= 1, (stolen, deck)
+        seen["stolen"] += len(stolen)
+        seen["stolen upgraded"] += sum(map(is_upgraded, stolen))
+        fenv.run.hp = hp
     fenv.run.fight_hit = bool(frng.integers(2))  # Lava Lamp lights after a fight with no hit
     return True
 
@@ -714,7 +724,7 @@ for seed in range(300):
             seen["buy upgraded"] += is_upgraded(run.shop.cards[a - SHOP])
         obs, _, done, trunc, info = fenv.step(a)
     assert done and info["cleared"], seed
-assert all(seen[k] for k in ("HEAL", "SMITH", "LIFT", "DIG", "remove", "remove upgraded", "pick upgraded", "buy upgraded")), seen
+assert all(seen[k] for k in ("HEAL", "SMITH", "LIFT", "DIG", "remove", "remove upgraded", "pick upgraded", "buy upgraded", "stolen", "stolen upgraded")), seen
 print(f"rest and upgrade checks ok ({time.time() - t0:.0f}s for 300 runs: {dict(seen)})")
 
 # A client without set_relics (the live game) never gets a prompt card in a random deck.

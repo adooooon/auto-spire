@@ -240,9 +240,21 @@ def base_id(cid: str) -> str:
     return cid[:-1] if is_upgraded(cid) else cid
 
 
+class DeckCard(str):
+    """A combat copy of a run-deck card (CardModel.DeckVersion is set): deck is that deck card's id. Upgrading it
+    this fight keeps the link; generated cards and clones are plain strs, with no deck card."""
+
+    def __new__(cls, cid: str, deck: str | None = None):
+        card = super().__new__(cls, cid)
+        card.deck = deck or cid
+        return card
+
+
 def upgrade(cid: str) -> str:
     """The upgraded id, or cid unchanged if it's upgraded already or can't be (statuses, Wound)."""
-    return cid + "+" if cid in UPGRADABLE else cid
+    if cid not in UPGRADABLE:
+        return cid
+    return DeckCard(cid + "+", cid.deck) if isinstance(cid, DeckCard) else cid + "+"
 
 
 # ponytail: COMMONS leaves Armaments out; act.REWARD_POOLS appends it last so seeded offers keep their order.
