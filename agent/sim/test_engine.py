@@ -1,5 +1,6 @@
 """Self-check for the sim's ported rules: python -m sim.test_engine (from agent/)."""
 import random
+from dataclasses import replace
 
 from .cards import DeckCard
 from .engine import PLAYER_MAX_HP, MONSTERS, SimCombat, SimClient, pick_move, player_attack_damage, ENCOUNTERS
@@ -1733,6 +1734,132 @@ for e in c.enemies:
     e.hp = e.max_hp = 100
 hps = sum(e.hp for e in c.enemies); c.play_card(0)
 assert hps - sum(e.hp for e in c.enemies) == 20
+# Colorless cards with their own logic (Dark Shackles, Panic Button and Prolong are powers: plan task 3).
+RARES_ = [x for x in CARDS if CARDS[x].rarity == "Rare" and not CARDS[x].colorless and not is_upgraded(x)]
+COLORLESS_SPECIAL = {  # card: (hand, setup, measure, base value, upgraded value) from <Card>.cs
+    "ANOINTED": ((), lambda c: setattr(c, "draw_pile", [RARES_[0]]), lambda c: CARDS[c.exhaust_pile[0]].retain, False, True),
+    "BEAT_DOWN": ((), lambda c: setattr(c, "discard_pile", [S] * 5), dmg, 18, 24),
+    "BOLAS": ((), None, dmg, 3, 4),
+    "CATASTROPHE": ((), lambda c: setattr(c, "draw_pile", [S] * 5), dmg, 12, 18),
+    "FISTICUFFS": ((), None, lambda c: (dmg(c), c.player_block), (7, 7), (9, 9)),
+    "GOLD_AXE": ((), None, lambda c: CARDS[c.discard_pile[-1]].retain, False, True),
+    "HAND_OF_GREED": ((), lambda c: setattr(c.enemies[0], "hp", 20), lambda c: c.gold_gained, 20, 25),
+    "HIDDEN_GEM": ((), lambda c: setattr(c, "draw_pile", [DeckCard(S)]), lambda c: tuple(c.replays.values()), (2,), (3,)),
+    "IMPATIENCE": ((D,), None, lambda c: len(c.hand), 3, 4),
+    "JACK_OF_ALL_TRADES": ((), None, lambda c: len(c.hand), 1, 2),
+    "JACKPOT": ((), None, lambda c: (dmg(c), len(c.hand)), (25, 3), (30, 3)),
+    "MIND_BLAST": ((), None, lambda c: c.energy, 9, 10),
+    "OMNISLICE": ((), None, dmg, 8, 11),
+    "REND": ((), None, dmg, 15, 18),
+    "RESTLESSNESS": ((), None, lambda c: (len(c.hand), c.energy), (2, 12), (3, 13)),
+    "SCRAWL": ((), lambda c: setattr(c, "draw_pile", [D] * 20), lambda c: CARDS[c.exhaust_pile[0]].retain, False, True),
+    "THRUMMING_HATCHET": ((), None, dmg, 11, 14),
+}
+assert len(COLORLESS_SPECIAL) == 17
+for cid, (hand_, setup, measure, want_b, want_u) in COLORLESS_SPECIAL.items():
+    b, u = upgraded(cid, hand_, setup or (lambda c: None))
+    assert (measure(b), measure(u)) == (want_b, want_u), (cid, measure(b), measure(u))
+# Anointed: a random Rare from the draw pile for each free hand slot (10 - hand), straight to hand.
+c = solo(["ANOINTED"] + [D] * 8); c.draw_pile = [S, RARES_[0], RARES_[1], S, RARES_[2]]; c.play_card(0)
+assert sorted(x for x in c.hand if x != D) == sorted(x for x in c.hand if x in RARES_) and len([x for x in c.hand if x in RARES_]) == 2
+assert len(c.draw_pile) == 3 and sum(x in RARES_ for x in c.draw_pile) == 1 and c.exhaust_pile == ["ANOINTED"]
+c = solo(["ANOINTED"] + [D] * 9); c.draw_pile = [RARES_[0]]; c.play_card(0); assert len(c.hand) == 10 and not c.draw_pile
+# Beat Down: 3 (4) random Attacks from the discard pile, free; Skills and Unplayable cards stay.
+c = big(solo(["BEAT_DOWN"])); c.discard_pile = [S, D, "WOUND", S, S, S]; c.energy = 3; c.play_card(0, 1)
+assert dmg(c) == 18 and c.energy == 0 and c.discard_pile.count(S) == 4 and "WOUND" in c.discard_pile
+c = big(solo(["BEAT_DOWN"])); c.discard_pile = [S, D]; c.play_card(0, 1); assert dmg(c) == 6
+# Bolas / Thrumming Hatchet come back to hand at the next turn start, and only if played last turn.
+for cid, d in (("BOLAS", 3), ("THRUMMING_HATCHET", 11)):
+    c = big(solo([DeckCard(cid), DeckCard(cid), D])); c.draw_pile = [D] * 40
+    assert dealt(c) == d
+    c.end_turn()  # one copy played; the other (in hand) is discarded unplayed
+    assert c.hand.count(cid) == 1 and c.discard_pile.count(cid) == 1, (cid, c.hand, c.discard_pile)
+    c.end_turn()  # not played this turn: the discarded one stays there
+    assert c.hand.count(cid) == 0 and c.discard_pile.count(cid) == 2, (cid, c.hand, c.discard_pile)
+c = big(solo([DeckCard("BOLAS")])); c.play_card(0, 1); c.draw_pile = c.draw_pile + [c.discard_pile.pop()]  # reshuffled away, hand full
+c.hand = ["RESTLESSNESS"] * 10; c._start_player_turn()
+assert len(c.hand) == 10 and c.discard_pile == ["BOLAS"] and "BOLAS" not in c.draw_pile
+c = big(solo([DeckCard("BOLAS")])); c.play_card(0, 1); c.hand = []; c._start_player_turn(); assert "BOLAS" in c.hand
+# Catastrophe: 2 (3) random playable draw-pile cards, free; with only Unplayable ones left it plays one of those.
+c = big(solo(["CATASTROPHE"])); c.draw_pile = [S, S, "WOUND", S]; c.energy = 2; c.play_card(0, 1)
+assert dmg(c) == 12 and sorted(c.draw_pile) == sorted([S, "WOUND"])
+c = big(solo(["CATASTROPHE"])); c.draw_pile = ["DAZED"]; c.play_card(0, 1); assert not c.draw_pile and "DAZED" in c.discard_pile
+c = big(solo(["CATASTROPHE"])); c.draw_pile = []; c.play_card(0, 1); assert dmg(c) == 0
+# Fisticuffs: block equals the damage dealt, blocked and overkill included, with Dexterity and Frail.
+c = big(solo(["FISTICUFFS"])); c.enemies[0].block = 5; c.play_card(0, 1)
+assert c.player_block == 7 and c.enemies[0].max_hp - c.enemies[0].hp == 2
+c = solo(["FISTICUFFS"], "SLIMES_WEAK"); c.enemies[0].hp = 3; c.enemies[1].hp = 100; c.play_card(0, 1); assert c.player_block == 7
+c = big(solo(["FISTICUFFS"])); c.dexterity = 2; c.frail = 1; c.play_card(0, 1); assert c.player_block == 9 * 3 // 4
+# Gold Axe: 1 damage per card play finished this combat (earlier turns too), not counting itself.
+c = big(solo([D, D, "GOLD_AXE", "GOLD_AXE"])); c.energy = 10; c.play_card(0); c.play_card(0)
+assert dealt(c) == 2 and dealt(c) == 3
+c = big(solo([D, "GOLD_AXE"])); c.play_card(0); c.end_turn(); c.hand = ["GOLD_AXE"]; c.energy = 3; assert dealt(c) == 1
+# Hand of Greed: gold on a kill (not a minion).
+c = solo(["HAND_OF_GREED"]); c.enemies[0].hp = 20; c.play_card(0, 1); assert c.won and c.gold_gained == 20
+c = solo(["HAND_OF_GREED+"]); c.enemies[0].hp = 25; c.play_card(0, 1); assert c.won and c.gold_gained == 25
+c = big(solo(["HAND_OF_GREED"])); c.play_card(0, 1); assert c.gold_gained == 0
+c = solo(["HAND_OF_GREED"], "SLIMES_WEAK"); c.enemies[0].defn = replace(c.enemies[0].defn, minion=True); c.enemies[0].hp = 5
+c.play_card(0, 1); assert not c.enemies[0].is_alive and c.gold_gained == 0
+c.fight("MAWLER_NORMAL"); assert c.gold_gained == 0
+# Hidden Gem: Replay on an Attack / Skill / Power in the draw pile (Status only as a fallback), plays 1 + Replay times.
+c = big(solo(["HIDDEN_GEM"])); pick = DeckCard(S); c.draw_pile = ["SLIMED", pick]; c.play_card(0)
+assert c.replays == {id(pick): 2}
+c.hand = [pick]; c.draw_pile = []; assert dealt(c) == 18
+c = big(solo(["HIDDEN_GEM+"])); pick = DeckCard(S); c.draw_pile = [pick]; c.play_card(0); c.hand = [pick]; assert dealt(c) == 24
+c = solo(["HIDDEN_GEM"]); slimed = DeckCard("SLIMED"); c.draw_pile = ["DAZED", slimed]; c.play_card(0); assert c.replays == {id(slimed): 2}
+c = solo(["HIDDEN_GEM"]); c.draw_pile = ["DAZED"]; c.play_card(0); assert not c.replays
+c = solo(["HIDDEN_GEM"]); c.draw_pile = []; c.play_card(0); assert not c.replays
+c = big(solo(["HIDDEN_GEM"])); c.draw_pile = [DeckCard(S)]; c.play_card(0); c.pw["OneTwoPunchPower"] = 1; c.hand = [c.draw_pile[0]]
+assert dealt(c) == 24  # 1 + Replay 2 + One-Two Punch's 1
+# Impatience: draws only with no Attack in hand.
+c = solo(["IMPATIENCE", D]); c.play_card(0); assert len(c.hand) == 3
+c = solo(["IMPATIENCE", S]); c.play_card(0); assert len(c.hand) == 1
+# Jack of All Trades: distinct colorless cards from the generatable pool, never itself; a full hand sends them to discard.
+from sim.cards import COLORLESS_GENERATED as CG  # noqa: E402
+for seed in range(60):
+    c = solo(["JACK_OF_ALL_TRADES+"], seed=seed); c.play_card(0)
+    assert len(set(c.hand)) == 2 and set(c.hand) <= set(CG) - {"JACK_OF_ALL_TRADES"}, c.hand
+c = solo(["JACK_OF_ALL_TRADES"] + [D] * 10); c.play_card(0)
+assert len(c.hand) == 10 and len(c.discard_pile) == 1 and c.discard_pile[0] in CG and c.exhaust_pile == ["JACK_OF_ALL_TRADES"]
+# Jackpot: 3 random 0-cost non-X Ironclad cards (upgraded if Jackpot is).
+for cid, up in (("JACKPOT", False), ("JACKPOT+", True)):
+    for seed in range(20):
+        c = big(solo([cid], seed=seed)); c.energy = 3; c.play_card(0, 1)
+        assert len(c.hand) == 3 and all(base_id(x) in GENERATED and CARDS[base_id(x)].cost == 0 and not CARDS[x].x_cost for x in c.hand), c.hand
+        assert all(is_upgraded(x) == (up and base_id(x) in UPGRADABLE) for x in c.hand), c.hand
+c = big(solo(["JACKPOT"] + [D] * 9)); c.energy = 3; c.play_card(0, 1); assert len(c.hand) == 10 and len(c.discard_pile) == 3  # Jackpot + 2 overflow
+c = solo(["JACKPOT"]); c.enemies[0].hp = 25; c.play_card(0, 1); assert c.won and not c.hand  # nothing is created once the fight is over
+# Mind Blast: 1 per draw-pile card; Innate (tested above); upgraded costs 0.
+c = big(solo(["MIND_BLAST"])); c.draw_pile = [D] * 7; c.play_card(0, 1); assert dmg(c) == 7
+c = big(solo(["MIND_BLAST"])); c.draw_pile = [D] * 7; c.strength = 2; c.play_card(0, 1); assert dmg(c) == 7 + 2
+assert CARDS["MIND_BLAST"].innate and CARDS["MIND_BLAST+"].cost == 0 and CARDS["MIND_BLAST+"].innate
+# Omnislice: the target takes a powered hit; every other enemy takes what it took (blocked and overkill too), Unpowered.
+c = big(solo(["OMNISLICE"], "SLIMES_WEAK")); c.strength = 3; c.enemies[0].vulnerable = 2
+for e in c.enemies[1:]:
+    e.vulnerable, e.weak = 2, 1
+c.play_card(0, 1)
+assert [500 - e.hp for e in c.enemies] == [16] * len(c.enemies), [500 - e.hp for e in c.enemies]
+c = solo(["OMNISLICE+"], "SLIMES_WEAK"); c.enemies[0].hp, c.enemies[0].block = 3, 0
+for e in c.enemies[1:]:
+    e.hp = e.max_hp = 100; e.block = 0
+c.play_card(0, 1)
+assert all(100 - e.hp == 11 for e in c.enemies[1:]) and not c.enemies[0].is_alive  # overkill counts
+c = big(solo(["OMNISLICE"], "SLIMES_WEAK")); c.enemies[0].block = 5; c.play_card(0, 1)
+assert all(500 - e.hp == 8 for e in c.enemies[1:])  # blocked damage counts
+# Rend: 15 + 5 (18 + 8) per non-temporary debuff, then the usual damage modifiers.
+c = big(solo(["REND"])); c.enemies[0].vulnerable, c.enemies[0].weak = 2, 1; c.play_card(0, 1); assert dmg(c) == (15 + 10) * 3 // 2
+c = big(solo(["REND+"])); c.enemies[0].vulnerable, c.enemies[0].weak = 2, 1; c.play_card(0, 1); assert dmg(c) == (18 + 16) * 3 // 2
+c = big(solo(["REND"])); c.play_card(0, 1); assert dmg(c) == 15
+# Mangle's own power is temporary and doesn't count; the negative Strength it applies is a separate debuff that does.
+c = big(solo(["REND"])); c.enemies[0].mangle, c.enemies[0].strength = 5, -5; c.play_card(0, 1); assert dmg(c) == 20
+c = big(solo(["REND"])); c.enemies[0].strength = 5; c.play_card(0, 1); assert dmg(c) == 15  # positive Strength is a buff
+c = big(solo(["REND"])); c.enemies[0].artifact = 1; c.play_card(0, 1); assert dmg(c) == 15
+# Restlessness: only when it is the only card in hand.
+c = solo(["RESTLESSNESS"]); c.play_card(0); assert len(c.hand) == 2 and c.energy == 5
+c = solo(["RESTLESSNESS", D]); c.play_card(0); assert len(c.hand) == 1 and c.energy == 3
+# Scrawl: draw to a full hand.
+c = solo(["SCRAWL", D, D]); c.draw_pile = [D] * 20; c.play_card(0); assert len(c.hand) == 10 and c.exhaust_pile == ["SCRAWL"]
+c = solo(["SCRAWL"] + [D] * 9); c.draw_pile = [D] * 20; c.play_card(0); assert len(c.hand) == 10
 print("colorless card checks ok")
 print("lava lamp engine checks ok")
 print("sim self-check ok")

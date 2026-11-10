@@ -31,7 +31,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from .cards import CARDS, GENERATED, UPGRADABLE, DeckCard, base_id, card_to_dict, is_upgraded, starter_deck, upgrade
+from .cards import CARDS, COLORLESS_GENERATED, GENERATED, UPGRADABLE, DeckCard, base_id, card_to_dict, is_upgraded, starter_deck, upgrade
 from .potions import MAX_POTION_SLOTS, POTION_SLOTS, POTIONS
 
 PLAYER_MAX_HP = 80
@@ -693,6 +693,17 @@ class SimCombat:
     choice_log: list[tuple[str, str, tuple[str, ...]]] = field(default_factory=list)  # (source, picked, options), paused prompts only
     _pausable: bool = False  # the play being resolved may stop at a prompt (not an autoplay)
     _paused: tuple | None = None  # what the rest of a paused play needs, see _run_plays
+    gold_gained: int = 0  # this fight's gold for the run (Hand of Greed); RunPolicyEnv adds it after the fight
+    # Hidden Gem's Replay (BaseReplayCount): extra plays, keyed by id() of the pile copy. _pinned keeps those
+    # copies alive so an id is never reused. ponytail: a copy upgraded later (a new object) loses its Replay,
+    # and generated copies of one id are the same object, so they share it.
+    replays: dict[int, int] = field(default_factory=dict)
+    _pinned: list = field(default_factory=list)
+    combat_plays: int = 0  # card plays finished this fight (CombatHistory.CardPlaysFinished: Gold Axe)
+    # Bolas / Thrumming Hatchet copies played this player turn / the one before (HappenedLastPlayerTurn)
+    played_now: list = field(default_factory=list)
+    played_last: list = field(default_factory=list)
+    _dealt: int = 0  # block + HP the last attack hit took, overkill included (DamageResult.TotalDamage + OverkillDamage)
 
     @property
     def max_energy(self) -> int:
@@ -716,6 +727,8 @@ class SimCombat:
     def fight(self, encounter: str, deck: list[str] | None = None) -> None:
         # A play abandoned at a prompt never finishes, so its depth and Rupture count go too.
         self.tender_plays, self.facing, self.stolen = 0, "Right", []
+        self.gold_gained, self.combat_plays, self._dealt = 0, 0, 0
+        self.replays, self._pinned, self.played_now, self.played_last = {}, [], [], []
         self.pending_choice, self.choice_log, self._paused, self._effect_depth, self._rupture = None, [], None, 0, None
         self.enemies = []
         for entry in encounter_roster(encounter, self.rng):
@@ -922,9 +935,9 @@ class SimCombat:
         """CardModel.OnPlayWrapper: the card is "in play" (in no pile) until its result pile."""
         card = CARDS[card_id]
         attack = card.type == "Attack"
-        plays = 1
+        plays = 1 + self.replays.get(id(card_id), 0)  # GetEnchantedReplayCount() + 1
         if attack and self.pw.get("OneTwoPunchPower"):  # ModifyCardPlayCount, then Decrement
-            plays = 2
+            plays += 1
             self._decrement("OneTwoPunchPower")
         self._run_plays(card_id, target, x, force_exhaust, energy_value, plays)
 
@@ -959,6 +972,8 @@ class SimCombat:
             if self.pending_choice:
                 self._paused = (card_id, target, x, force_exhaust, energy_value, plays_left, mine, outer)
                 return
+            if base_id(card_id) in ("BOLAS", "THRUMMING_HATCHET"):
+                self.played_now.append(card_id)  # CardPlayFinished entry; only these two cards read it back
             if not self._after_resolve(card, mine, outer):
                 return
         if card.type != "Power":  # Powers: PileType.None, removed from combat
@@ -977,6 +992,7 @@ class SimCombat:
             return False
         self.cards_played += 1
         self.cards_done += 1
+        self.combat_plays += 1
         if attack:
             self.attacks_done += 1
         elif card.type == "Skill":
@@ -1256,6 +1272,83 @@ class SimCombat:
             for _ in range(n):  # CardFactory.GetForCombat: uniform, repeats allowed; upgraded: all upgraded
                 c = self.rng.choice(GENERATED)
                 self._add_to_hand(upgrade(c) if up else c)
+        elif b == "ANOINTED":  # a random draw-pile Rare for every free hand slot
+            rares = [i for i, c in enumerate(self.draw_pile) if CARDS[c].rarity == "Rare"]
+            picked = self.rng.sample(rares, min(MAX_HAND_SIZE - len(self.hand), len(rares)))
+            for c in [self.draw_pile[i] for i in picked]:
+                self.draw_pile.pop(next(i for i, d in enumerate(self.draw_pile) if d is c))
+                self._add_to_hand(c)
+        elif b == "BEAT_DOWN":  # Cards 3, +1: random discard-pile Attacks, autoplayed
+            attacks = [c for c in self.discard_pile if CARDS[c].type == "Attack" and (CARDS[c].cost >= 0 or CARDS[c].x_cost)]
+            self.rng.shuffle(attacks)
+            for c in attacks[:3 + up]:
+                if self._ending():
+                    break
+                if any(c is d for d in self.discard_pile):
+                    self.discard_pile.pop(next(i for i, d in enumerate(self.discard_pile) if d is c))
+                self._autoplay(c)
+        elif b == "BOLAS":  # returns to hand at the next turn start (_start_player_turn)
+            self._hit(card, target, card.damage)
+        elif b == "CATASTROPHE":  # Cards 2, +1: a random playable draw-pile card, else any
+            for _ in range(2 + up):
+                pool = [c for c in self.draw_pile if CARDS[c].cost >= 0 or CARDS[c].x_cost] or self.draw_pile
+                if not pool:
+                    continue
+                c = self.rng.choice(pool)
+                self.draw_pile.pop(next(i for i, d in enumerate(self.draw_pile) if d is c))
+                self._autoplay(c)
+        elif b == "FISTICUFFS":  # block = the damage dealt, with Dexterity and Frail
+            self._hit(card, target, card.damage)
+            self._gain_block(self._dealt, card=True)
+        elif b == "GOLD_AXE":  # 1 per card play finished this fight, itself not yet
+            self._hit(card, target, self.combat_plays)
+        elif b == "HAND_OF_GREED":  # Gold 20, +5 when it kills (not a minion or illusion)
+            fatal = target is not None and target.is_alive and not (target.defn.minion or target.defn.illusion)
+            self._hit(card, target, card.damage)
+            if fatal and not target.is_alive:
+                self.gold_gained += 20 + 5 * up
+        elif b == "HIDDEN_GEM":  # Replay 2, +1 on a random draw-pile card, Attacks / Skills / Powers first
+            playable = [c for c in self.draw_pile if CARDS[c].cost >= 0 or CARDS[c].x_cost]
+            pool = [c for c in playable if CARDS[c].type in ("Attack", "Skill", "Power")] or playable
+            if pool:
+                c = self.rng.choice(pool)
+                self.replays[id(c)] = self.replays.get(id(c), 0) + 2 + up
+                self._pinned.append(c)
+        elif b == "IMPATIENCE":  # Cards 2, +1
+            if not any(CARDS[c].type == "Attack" for c in self.hand):
+                self._draw(2 + up)
+        elif b == "JACK_OF_ALL_TRADES":  # Cards 1, +1: distinct colorless cards
+            if not self._ending():
+                for c in self.rng.sample([c for c in COLORLESS_GENERATED if c != "JACK_OF_ALL_TRADES"], 1 + up):
+                    self._add_to_hand(c)
+        elif b == "JACKPOT":  # Cards 3: 0-cost Ironclad cards, upgraded when this is
+            self._hit(card, target, card.damage)
+            pool = [c for c in GENERATED if CARDS[c].cost == 0 and not CARDS[c].x_cost]
+            for _ in range(0 if self._ending() else 3):
+                c = self.rng.choice(pool)
+                self._add_to_hand(upgrade(c) if up else c)
+        elif b == "MIND_BLAST":  # 1 per draw-pile card
+            self._hit(card, target, len(self.draw_pile))
+        elif b == "OMNISLICE":  # what the target took, Unpowered, to everyone else
+            self._hit(card, target, card.damage)
+            if self.in_combat and target:
+                for e in [e for e in self._hittable() if e is not target]:
+                    self._damage_enemy(e, self._dealt)
+        elif b == "REND":  # 15 + 5 per non-temporary debuff on the target; 18 + 8 upgraded
+            n = 0
+            if target:
+                # Mangle's own power is temporary, but the negative Strength it applies is a debuff of its own.
+                n = sum([target.vulnerable > 0, target.weak > 0, target.strength < 0, target.defn.slow,
+                         target.plow > 0, "ImbalancedPower" in target.pw])
+            self._hit(card, target, 15 + 3 * up + (5 + 3 * up) * n)
+        elif b == "RESTLESSNESS":  # Cards 2, Energy 2; +1 each. Only when nothing else is in hand
+            if not self.hand:
+                self._draw(2 + up)
+                self._gain_energy(2 + up)
+        elif b == "SCRAWL":  # draws until the hand is full
+            self._draw(MAX_HAND_SIZE - len(self.hand))
+        elif b == "THRUMMING_HATCHET":  # returns to hand at the next turn start
+            self._hit(card, target, card.damage)
         else:
             raise KeyError(f"no special logic for {cid}")
 
@@ -1313,6 +1406,7 @@ class SimCombat:
         base += self.pw.get("VigorPower", 0) + (3 if "STRIKE_DUMMY" in self.relics and card.strike else 0)
         base += 3 if "MINIATURE_CANNON" in self.relics and is_upgraded(card.id) else 0  # ModifyDamageAdditive
         mult = 2 if self.rt.get("pen_play") == self._play_id else 1
+        self._dealt = 0
         cruelty = self.pw.get("CrueltyPower", 0) + (25 if "PAPER_PHROG" in self.relics else 0)
         for _ in range(hits):
             if card.target_type == "AllEnemies":
@@ -1329,7 +1423,7 @@ class SimCombat:
                 dmg = player_attack_damage(base + self.strength, t.vulnerable > 0, self.shrunk, self.weak > 0,
                                            self.cards_played if t.defn.slow else None, cruelty, mult,
                                            2 if t.pw.get("FlutterPower") else 1)
-                self._damage_enemy(t, dmg, attack=True)
+                self._dealt = self._damage_enemy(t, dmg, attack=True)
             if not self.in_combat:
                 return
         self.pw.pop("VigorPower", None)  # AfterAttack: Vigor is spent by the attack
@@ -1485,8 +1579,9 @@ class SimCombat:
 
     # --- damage ----------------------------------------------------------------------------------
 
-    def _damage_enemy(self, e: _Enemy, dmg: int, attack: bool = False) -> None:
-        """attack: a card's powered attack, which Flutter, Curl Up and Personal Hive answer."""
+    def _damage_enemy(self, e: _Enemy, dmg: int, attack: bool = False) -> int:
+        """attack: a card's powered attack, which Flutter, Curl Up and Personal Hive answer. Returns the block
+        and HP the hit took, overkill included (DamageResult.TotalDamage + OverkillDamage)."""
         if e.pw.get("HardToKillPower"):  # ModifyDamageCap
             dmg = min(dmg, e.pw["HardToKillPower"])
         had_block = e.block > 0
@@ -1497,6 +1592,7 @@ class SimCombat:
             hp_loss = 1
             e.slippery -= 1
         was_alive = e.hp > 0
+        total = absorbed + hp_loss
         e.hp = max(0, e.hp - hp_loss)
         if was_alive and e.hp == 0 and "GREMLIN_HORN" in self.relics:  # AfterDeath: minions and illusions too
             self._gain_energy(1)
@@ -1507,7 +1603,7 @@ class SimCombat:
             # temporary Strength powers) and get stunned (STUNNED, then BEAST_CRY_MOVE: phase 2).
             if e.plow and hp_loss > 0 and e.hp <= e.plow:
                 e.plow, e.strength, e.mangle, e.move, e.next_override = 0, 0, 0, "STUNNED", "BEAST_CRY_MOVE"
-            return
+            return total
         self._hive_death(e, attack)
         # InfestedPower.AfterDeath: spawns that start stunned, in slots after the dead one.
         for i, mid in enumerate(e.defn.on_death_spawn):
@@ -1524,6 +1620,7 @@ class SimCombat:
         if e.defn.illusion:  # keeps buffs, loses debuffs, revives on its next turn
             e.vulnerable = e.weak = 0
             e.move = "REVIVE_MOVE"
+        return total
 
     # --- Hive monsters -----------------------------------------------------------------------------
 
@@ -1760,6 +1857,7 @@ class SimCombat:
         """CombatManager.StartTurn + SetupPlayerTurn for the player side."""
         self.side = "Player"
         self.cards_last, self.cards_done = self.cards_done, 0  # Pocketwatch.BeforeSideTurnStart
+        self.played_last, self.played_now = self.played_now, []
         self.rt.pop("remnant", None)  # Beating Remnant, Demon Tongue: BeforeSideTurnStart
         self.rt.pop("tongue", None)
         self.exhausted_this_turn = self.hp_lost_this_turn = False
@@ -1808,6 +1906,12 @@ class SimCombat:
         if "VENERABLE_TEA_SET" in R and st.get("tea_set"):
             self._gain_energy(2)
             st["tea_set"] = 0
+        # BeforeHandDraw: Bolas and Thrumming Hatchet come back from any pile (a full hand sends them to discard).
+        for pile in (self.hand, self.draw_pile, self.discard_pile, self.exhaust_pile):
+            for card in [c for c in pile if base_id(c) in ("BOLAS", "THRUMMING_HATCHET")]:
+                if pile is not self.hand and any(card is p for p in self.played_last):
+                    pile.pop(next(i for i, c in enumerate(pile) if c is card))
+                    self._add_to_hand(card)
         draw = HAND_DRAW_COUNT + (2 if "BAG_OF_PREPARATION" in R and self.round == 1 else 0) + \
             (3 if "POCKETWATCH" in R and self.round > 1 and self.cards_last <= 3 else 0)
         if self.round == 1:  # Innate cards go on top of the draw pile, and the hand draw is at least that many

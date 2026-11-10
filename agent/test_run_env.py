@@ -107,6 +107,25 @@ renv.run.hp, renv.run.max_hp = 50, 90
 renv.play(renv.run.normals[0])
 assert renv.run.max_hp == 90 and renv.fight_env.client._combat.player_max_hp == 90
 
+# Hand of Greed's gold goes to the run after the fight.
+import run_env as _run_env
+renv.reset(seed=2)
+gold, real_fight = renv.run.gold, _run_env.play_fight
+
+
+def greedy(model, env, seed=None):
+    env.reset(seed=seed)
+    env.client._combat.gold_gained = 25
+    return True, 0
+
+
+_run_env.play_fight = greedy
+try:
+    renv.play(renv.run.normals[0])
+finally:
+    _run_env.play_fight = real_fight
+assert renv.run.gold == gold + 25, (gold, renv.run.gold)
+
 # Review focus 1: a sim error inside a fight ends the run as a loss.
 renv.reset(seed=3)
 renv.fight_env.client.exec = boom

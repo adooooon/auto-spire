@@ -196,6 +196,7 @@ class RunPolicyEnv(gym.Env):
         run.hp, run.max_hp, run.potions = combat.player_hp, combat.player_max_hp, list(combat.potions)
         for card in combat.stolen:  # Thieving Hopper escaped with it
             run.deck.remove(card)
+        run.gold += combat.gold_gained  # Hand of Greed
         self.used += before - Counter(p for p in run.potions if p)
         return won
 
