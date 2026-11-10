@@ -47,7 +47,9 @@ Find out why boss fights are lost before changing anything, so the result can be
 - **Colorless cards (user's call: all but multiplayer-only):** the 53 cards of `ColorlessCardPool` (64) without `CardMultiplayerConstraint.MultiplayerOnly`. The 11 left out: Beacon of Hope, Believe In You, Coordinate, Gang Up, Huddle Up, Intercept, Knockdown, Lift, Mimic, Rally, Tag Team. Each with its upgrade. They appear in shops and wherever relics, potions or cards produce them (Dingy Rug, Toolbox, Colorless Potion, Discovery and similar), filtered for one player as the game does (`FilterForPlayerCount`).
 - **Neow and Ancient relics (user's call):** the sim gets Neow at the start of Act 1 and the Act 2 Ancient's relic offer, with their real options, and the run policy learns the choice. `live.py` drops its fixed Neow rule for the policy. Check in the source which Ancients can appear in Act 2 (the live check met Pael).
 
-Stage 3 is now about as big as stage 2. If one item would take far more work than the rest (for example a potion that rewrites core rules), the builder may leave it out with a `ponytail:` comment and say why in the Results. That's a fallback, not a plan.
+**Update 2026-11-10 (user's calls):** stage 3 turned out about three times the size of stage 2, so it's three plans, each merged before the next: 2a colorless cards, 2b potions, 2c relics plus Neow and the Act 2 Ancient. The modded profile was fully unlocked with the dev console's `unlock all` (backup in `.superpowers/profile_backup_2026-11-10/`), so the sim models everything with no epoch filter. Act 2's Ancient is one of Orobas, Pael and Tezcatara (`Hive.AllAncients`), or Darv when `RunManager.GenerateRooms` gives the shared Ancient to Act 2 rather than Act 3.
+
+Stage 3 was first estimated at about the size of stage 2. If one item would take far more work than the rest (for example a potion that rewrites core rules), the builder may leave it out with a `ponytail:` comment and say why in the Results. That's a fallback, not a plan.
 
 ### 4. Retrain and evaluate in the sim
 
