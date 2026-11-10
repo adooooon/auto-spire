@@ -48,6 +48,10 @@ class CardDef:
     powers: tuple[tuple[str, int], ...] = ()  # (power class name, amount) applied to the player, last
     special: bool = False  # OnPlay has card-specific logic in the engine
     generated: bool = True  # CardModel.CanBeGeneratedInCombat (Stoke / Infernal Blade can create it)
+    colorless: bool = False  # ColorlessCardPool (not in any Ironclad pool, reward or shop slot)
+    innate: bool = False  # CardKeyword.Innate: starts in the opening hand
+    retain: bool = False  # CardKeyword.Retain: kept in hand at end of turn
+    defend: bool = False  # CardTag.Defend (Fasten's bonus block)
 
 
 CARDS: dict[str, CardDef] = {c.id: c for c in [
@@ -162,6 +166,61 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("UNMOVABLE", "Unmovable", "Power", 2, "Self", rarity="Rare", powers=(("UnmovablePower", 1),)),
     # Primal Force turns Attacks in hand into this.
     CardDef("GIANT_ROCK", "Giant Rock", "Attack", 1, "AnyEnemy", rarity="Token", damage=16),
+    # The 53 single-player ColorlessCardPool cards, in pool order (multiplayer-only ones left out). special=True ones are
+    # data only until Tasks 2-4 of the colorless plan add their logic.
+    CardDef("ALCHEMIZE", "Alchemize", "Skill", 1, "Self", rarity="Rare", colorless=True, exhaust=True, generated=False, special=True),
+    CardDef("ANOINTED", "Anointed", "Skill", 1, "Self", rarity="Rare", colorless=True, exhaust=True, special=True),
+    CardDef("AUTOMATION", "Automation", "Power", 1, "Self", rarity="Uncommon", colorless=True, special=True),
+    CardDef("BEAT_DOWN", "Beat Down", "Skill", 3, "RandomEnemy", rarity="Rare", colorless=True, special=True),
+    CardDef("BOLAS", "Bolas", "Attack", 0, "AnyEnemy", rarity="Rare", colorless=True, damage=3, special=True),
+    CardDef("CALAMITY", "Calamity", "Power", 3, "Self", rarity="Rare", colorless=True, special=True),
+    CardDef("CATASTROPHE", "Catastrophe", "Skill", 2, "Self", rarity="Uncommon", colorless=True, special=True),
+    CardDef("DARK_SHACKLES", "Dark Shackles", "Skill", 0, "AnyEnemy", rarity="Uncommon", colorless=True, exhaust=True, special=True),
+    CardDef("DISCOVERY", "Discovery", "Skill", 1, "Self", rarity="Uncommon", colorless=True, exhaust=True, special=True),
+    CardDef("DRAMATIC_ENTRANCE", "Dramatic Entrance", "Attack", 0, "AllEnemies", rarity="Uncommon", colorless=True, damage=11, exhaust=True, innate=True),
+    CardDef("ENTROPY", "Entropy", "Power", 1, "Self", rarity="Rare", colorless=True, special=True),
+    CardDef("EQUILIBRIUM", "Equilibrium", "Skill", 2, "Self", rarity="Uncommon", colorless=True, block=13, powers=(("RetainHandPower", 1),)),
+    CardDef("ETERNAL_ARMOR", "Eternal Armor", "Power", 3, "Self", rarity="Rare", colorless=True, special=True),
+    CardDef("FASTEN", "Fasten", "Power", 1, "Self", rarity="Uncommon", colorless=True, special=True),
+    CardDef("FINESSE", "Finesse", "Skill", 0, "Self", rarity="Uncommon", colorless=True, block=4, draw=1),
+    CardDef("FISTICUFFS", "Fisticuffs", "Attack", 1, "AnyEnemy", rarity="Uncommon", colorless=True, damage=7, special=True),
+    CardDef("FLASH_OF_STEEL", "Flash of Steel", "Attack", 0, "AnyEnemy", rarity="Uncommon", colorless=True, damage=5, draw=1),
+    CardDef("GOLD_AXE", "Gold Axe", "Attack", 1, "AnyEnemy", rarity="Rare", colorless=True, special=True),
+    CardDef("HAND_OF_GREED", "Hand of Greed", "Attack", 2, "AnyEnemy", rarity="Rare", colorless=True, damage=20, generated=False, special=True),
+    CardDef("HIDDEN_GEM", "Hidden Gem", "Skill", 1, "Self", rarity="Rare", colorless=True, generated=False, special=True),
+    CardDef("IMPATIENCE", "Impatience", "Skill", 0, "Self", rarity="Uncommon", colorless=True, special=True),
+    CardDef("JACK_OF_ALL_TRADES", "Jack of All Trades", "Skill", 0, "Self", rarity="Uncommon", colorless=True, exhaust=True, special=True),
+    CardDef("JACKPOT", "Jackpot", "Attack", 3, "AnyEnemy", rarity="Rare", colorless=True, damage=25, special=True),
+    CardDef("MASTER_OF_STRATEGY", "Master of Strategy", "Skill", 0, "Self", rarity="Rare", colorless=True, draw=3, exhaust=True),
+    CardDef("MAYHEM", "Mayhem", "Power", 2, "Self", rarity="Rare", colorless=True, special=True),
+    CardDef("MIND_BLAST", "Mind Blast", "Attack", 1, "AnyEnemy", rarity="Uncommon", colorless=True, innate=True, special=True),
+    CardDef("NOSTALGIA", "Nostalgia", "Power", 1, "Self", rarity="Rare", colorless=True, special=True),
+    CardDef("OMNISLICE", "Omnislice", "Attack", 0, "AnyEnemy", rarity="Uncommon", colorless=True, damage=8, special=True),
+    CardDef("PANACHE", "Panache", "Power", 0, "Self", rarity="Uncommon", colorless=True, special=True),
+    CardDef("PANIC_BUTTON", "Panic Button", "Skill", 0, "Self", rarity="Uncommon", colorless=True, block=30, exhaust=True, special=True),
+    CardDef("PREP_TIME", "Prep Time", "Power", 1, "Self", rarity="Uncommon", colorless=True, special=True),
+    CardDef("PRODUCTION", "Production", "Skill", 0, "Self", rarity="Uncommon", colorless=True, energy=2, exhaust=True),
+    CardDef("PROLONG", "Prolong", "Skill", 0, "Self", rarity="Uncommon", colorless=True, exhaust=True, special=True),
+    CardDef("PROWESS", "Prowess", "Power", 1, "Self", rarity="Uncommon", colorless=True, powers=(("StrengthPower", 1), ("DexterityPower", 1))),
+    CardDef("PURITY", "Purity", "Skill", 0, "Self", rarity="Uncommon", colorless=True, exhaust=True, retain=True, special=True),
+    CardDef("REND", "Rend", "Attack", 2, "AnyEnemy", rarity="Rare", colorless=True, special=True),
+    CardDef("RESTLESSNESS", "Restlessness", "Skill", 0, "Self", rarity="Uncommon", colorless=True, retain=True, special=True),
+    CardDef("ROLLING_BOULDER", "Rolling Boulder", "Power", 3, "Self", rarity="Rare", colorless=True, special=True),
+    CardDef("SALVO", "Salvo", "Attack", 1, "AnyEnemy", rarity="Rare", colorless=True, damage=12, powers=(("RetainHandPower", 1),)),
+    CardDef("SCRAWL", "Scrawl", "Skill", 1, "Self", rarity="Rare", colorless=True, exhaust=True, special=True),
+    CardDef("SECRET_TECHNIQUE", "Secret Technique", "Skill", 0, "Self", rarity="Rare", colorless=True, exhaust=True, special=True),
+    CardDef("SECRET_WEAPON", "Secret Weapon", "Skill", 0, "Self", rarity="Rare", colorless=True, exhaust=True, special=True),
+    CardDef("SEEKER_STRIKE", "Seeker Strike", "Attack", 1, "AnyEnemy", rarity="Uncommon", colorless=True, damage=9, strike=True, special=True),
+    CardDef("SHOCKWAVE", "Shockwave", "Skill", 2, "AllEnemies", rarity="Uncommon", colorless=True, weak=3, vulnerable=3, exhaust=True),
+    CardDef("SPLASH", "Splash", "Skill", 1, "Self", rarity="Uncommon", colorless=True, special=True),
+    CardDef("STRATAGEM", "Stratagem", "Power", 1, "Self", rarity="Uncommon", colorless=True, special=True),
+    CardDef("THE_BOMB", "The Bomb", "Skill", 2, "Self", rarity="Uncommon", colorless=True, special=True),
+    CardDef("THE_GAMBIT", "The Gambit", "Skill", 0, "Self", rarity="Rare", colorless=True, block=50, special=True),
+    CardDef("THINKING_AHEAD", "Thinking Ahead", "Skill", 0, "Self", rarity="Uncommon", colorless=True, exhaust=True, special=True),
+    CardDef("THRUMMING_HATCHET", "Thrumming Hatchet", "Attack", 1, "AnyEnemy", rarity="Uncommon", colorless=True, damage=11, special=True),
+    CardDef("ULTIMATE_DEFEND", "Ultimate Defend", "Skill", 1, "Self", rarity="Uncommon", colorless=True, block=11, defend=True),
+    CardDef("ULTIMATE_STRIKE", "Ultimate Strike", "Attack", 1, "AnyEnemy", rarity="Uncommon", colorless=True, damage=14, strike=True),
+    CardDef("VOLLEY", "Volley", "Attack", 0, "RandomEnemy", rarity="Uncommon", colorless=True, damage=10, x_cost=True),
 ]}
 # CardDef field changes for the upgraded card, from each card's OnUpgrade (MaxUpgradeLevel is 1 for all of these;
 # statuses and Wound have 0 and no entry). An empty entry is upgradable, but the upgrade changes no CardDef field: the
@@ -202,7 +261,7 @@ UPGRADES: dict[str, dict] = {
     "TAUNT": dict(block=8, vulnerable=2),
     "FEEL_NO_PAIN": dict(powers=(("FeelNoPainPower", 4),)), "INFERNO": dict(powers=(("InfernoPower", 9),)),
     "INFLAME": dict(powers=(("StrengthPower", 3),)),
-    "JUGGLING": {},  # engine: Innate (engine.INNATE: starts in the opening hand)
+    "JUGGLING": dict(innate=True),
     "RUPTURE": dict(powers=(("RupturePower", 2),)), "STAMPEDE": dict(cost=1),
     "STONE_ARMOR": dict(powers=(("PlatingPower", 6),)), "VICIOUS": dict(powers=(("ViciousPower", 2),)),
     "CONFLAGRATION": dict(hits=5),
@@ -218,13 +277,47 @@ UPGRADES: dict[str, dict] = {
     "ONE_TWO_PUNCH": dict(powers=(("OneTwoPunchPower", 2),)),
     "PRIMAL_FORCE": {},  # engine: the Giant Rocks it makes are upgraded (GIANT_ROCK+)
     "STOKE": {},  # engine: upgrade the cards it adds to hand
-    "AGGRESSION": {},  # engine: Innate
+    "AGGRESSION": dict(innate=True),
     "BARRICADE": dict(cost=2), "CRIMSON_MANTLE": dict(powers=(("CrimsonMantlePower", 10),)),
     "CRUELTY": dict(powers=(("CrueltyPower", 50),)), "DARK_EMBRACE": dict(cost=1),
     "DEMON_FORM": dict(powers=(("DemonFormPower", 3),)), "HELLRAISER": dict(cost=1),
     "JUGGERNAUT": dict(powers=(("JuggernautPower", 8),)),
     "PYRE": dict(powers=(("PyrePower", 2),)),  # PyrePower amount is the energy per turn
     "UNMOVABLE": dict(cost=1), "GIANT_ROCK": dict(damage=20),
+    # Colorless. Field changes from OnUpgrade; "engine:" notes say what a special card's logic reads.
+    "ALCHEMIZE": dict(cost=0), "ANOINTED": dict(retain=True), "AUTOMATION": dict(cost=0),
+    "BEAT_DOWN": {},  # engine: 4 cards instead of 3
+    "BOLAS": dict(damage=4), "CALAMITY": dict(cost=2),
+    "CATASTROPHE": {},  # engine: 3 cards instead of 2
+    "DARK_SHACKLES": {},  # engine: Strength loss 15 instead of 9
+    "DISCOVERY": dict(exhaust=False), "DRAMATIC_ENTRANCE": dict(damage=15), "ENTROPY": dict(innate=True),
+    "EQUILIBRIUM": dict(block=16), "ETERNAL_ARMOR": {},  # engine: Plating 12 instead of 9
+    "FASTEN": {},  # engine: extra Defend block 6 instead of 4
+    "FINESSE": dict(block=7), "FISTICUFFS": dict(damage=9), "FLASH_OF_STEEL": dict(damage=8),
+    "GOLD_AXE": dict(retain=True),
+    "HAND_OF_GREED": dict(damage=25),  # engine: 25 gold on a kill
+    "HIDDEN_GEM": {},  # engine: Replay 3 instead of 2
+    "IMPATIENCE": {},  # engine: 3 cards instead of 2
+    "JACK_OF_ALL_TRADES": {},  # engine: 2 cards instead of 1
+    "JACKPOT": dict(damage=30),  # engine: the 3 cards it creates are upgraded
+    "MASTER_OF_STRATEGY": dict(draw=4), "MAYHEM": dict(cost=1),
+    "MIND_BLAST": dict(cost=0), "NOSTALGIA": dict(cost=0), "OMNISLICE": dict(damage=11),
+    "PANACHE": {},  # engine: 14 damage instead of 10
+    "PANIC_BUTTON": dict(block=40), "PREP_TIME": {},  # engine: 6 instead of 4
+    "PRODUCTION": dict(energy=3), "PROLONG": dict(exhaust=False),
+    "PROWESS": dict(powers=(("StrengthPower", 2), ("DexterityPower", 2))),
+    "PURITY": {},  # engine: exhaust up to 5 cards instead of 3
+    "REND": {},  # engine: 18 base, +8 per debuff instead of 15, +5
+    "RESTLESSNESS": {},  # engine: 3 cards and 3 energy instead of 2 and 2
+    "ROLLING_BOULDER": {},  # engine: 10 instead of 5
+    "SALVO": dict(damage=16), "SCRAWL": dict(retain=True), "SECRET_TECHNIQUE": dict(exhaust=False),
+    "SECRET_WEAPON": dict(exhaust=False), "SEEKER_STRIKE": dict(damage=12),
+    "SHOCKWAVE": dict(weak=5, vulnerable=5),
+    "SPLASH": {},  # engine: the 3 Attacks it offers are upgraded
+    "STRATAGEM": dict(cost=0),
+    "THE_BOMB": {},  # engine: 50 damage instead of 40
+    "THE_GAMBIT": dict(block=75), "THINKING_AHEAD": dict(exhaust=False), "THRUMMING_HATCHET": dict(damage=14),
+    "ULTIMATE_DEFEND": dict(block=15), "ULTIMATE_STRIKE": dict(damage=20), "VOLLEY": dict(damage=14),
 }
 UPGRADABLE = frozenset(UPGRADES)
 for _id, _changes in UPGRADES.items():
@@ -258,11 +351,19 @@ def upgrade(cid: str) -> str:
 
 
 # ponytail: COMMONS leaves Armaments out; act.REWARD_POOLS appends it last so seeded offers keep their order.
-COMMONS, UNCOMMONS, RARES = (tuple(sorted(cid for cid in CARDS if CARDS[cid].rarity == r and cid != "ARMAMENTS" and not is_upgraded(cid)))
+COMMONS, UNCOMMONS, RARES = (tuple(sorted(cid for cid in CARDS if CARDS[cid].rarity == r and cid != "ARMAMENTS" and not is_upgraded(cid)
+                                           and not CARDS[cid].colorless))
                               for r in ("Common", "Uncommon", "Rare"))
 # CardFactory.FilterForCombat: what Stoke / Infernal Blade draw from (uniformly, unlocked pool).
 # Armaments is last (it isn't in COMMONS), so the draws over the other cards keep their order.
 GENERATED = tuple(c for c in COMMONS + UNCOMMONS + RARES + ("ARMAMENTS",) if CARDS[c].generated)
+# ColorlessCardPool order (Anointed etc. are Rare, the rest Uncommon). The shop sells all but NOT_BUYABLE.
+COLORLESS_UNCOMMONS, COLORLESS_RARES = (tuple(c for c in CARDS if CARDS[c].colorless and CARDS[c].rarity == r and not is_upgraded(c))
+                                        for r in ("Uncommon", "Rare"))
+COLORLESS = COLORLESS_UNCOMMONS + COLORLESS_RARES
+NOT_BUYABLE = frozenset({"SPLASH", "ALCHEMIZE"})
+# Colorless cards Jack of All Trades etc. can create (CanBeGeneratedInCombat; Splash is left out).
+COLORLESS_GENERATED = tuple(c for c in COLORLESS if CARDS[c].generated and c != "SPLASH")
 CHOICE_CARDS = ("BRAND", "BURNING_PACT", "HEADBUTT")
 
 
@@ -286,5 +387,5 @@ def card_to_dict(card_id: str, cost: int, can_play: bool) -> dict:
         "targetType": c.target_type,
         "upgraded": up,
         "upgradeLevel": int(up),
-        "keywords": ["Exhaust"] * c.exhaust + ["Ethereal", "Unplayable"] * c.ethereal,
+        "keywords": ["Exhaust"] * c.exhaust + ["Ethereal", "Unplayable"] * c.ethereal + ["Retain"] * c.retain + ["Innate"] * c.innate,
     }

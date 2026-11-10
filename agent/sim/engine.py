@@ -38,7 +38,6 @@ PLAYER_MAX_HP = 80
 PLAYER_MAX_ENERGY = 3
 HAND_DRAW_COUNT = 5
 MAX_HAND_SIZE = 10  # CardPile.MaxCardsInHand: draws stop, generated cards go to the discard pile
-INNATE = frozenset({"JUGGLING+", "AGGRESSION+"})  # their OnUpgrade adds CardKeyword.Innate
 MAX_SHUFFLES = 1000  # per fight; real fights reshuffle a handful of times
 
 
@@ -1339,6 +1338,9 @@ class SimCombat:
         if name == "StrengthPower":
             self._gain_strength(amount)
             return
+        if name == "DexterityPower":
+            self.dexterity += amount
+            return
         self.pw[name] = 1 if name in SINGLE_POWERS else self.pw.get(name, 0) + amount
         if name == "CrimsonMantlePower":  # IncrementSelfDamage
             self.crimson_self += 1
@@ -1809,8 +1811,8 @@ class SimCombat:
         draw = HAND_DRAW_COUNT + (2 if "BAG_OF_PREPARATION" in R and self.round == 1 else 0) + \
             (3 if "POCKETWATCH" in R and self.round > 1 and self.cards_last <= 3 else 0)
         if self.round == 1:  # Innate cards go on top of the draw pile, and the hand draw is at least that many
-            innate = [c for c in self.draw_pile if c in INNATE]
-            self.draw_pile = [c for c in self.draw_pile if c not in INNATE] + innate
+            innate = [c for c in self.draw_pile if CARDS[c].innate]
+            self.draw_pile = [c for c in self.draw_pile if not CARDS[c].innate] + innate
             draw = min(max(draw, len(innate)), MAX_HAND_SIZE)
         self._draw(draw, hand_draw=True)
         # AfterPlayerTurnStart. ponytail: hook order assumed Crimson Mantle, then Inferno.
@@ -1917,9 +1919,10 @@ class SimCombat:
                 self._damage_player(CARDS[c].end_turn_damage)
                 if not self.in_combat:
                     return {"ok": True}
-        if not ("RINGING_TRIANGLE" in R and self.round == 1):  # ShouldFlush; otherwise the whole hand is kept
-            self.discard_pile += self.hand  # hand flush
-            self.hand = []
+        if not ("RINGING_TRIANGLE" in R and self.round == 1) and not self.pw.get("RetainHandPower"):  # ShouldFlush
+            keep = [c for c in self.hand if CARDS[c].retain]  # ShouldRetainThisTurn; otherwise the whole hand is kept
+            self.discard_pile += [c for c in self.hand if not CARDS[c].retain]  # hand flush
+            self.hand = keep
         self.ringing = False
         self.attacks_last = self.attacks_done  # AfterSideTurnEnd (Art of War)
         self.cards_played = 0  # SlowPower resets at the start of the enemy turn
@@ -1939,6 +1942,7 @@ class SimCombat:
         self.temp_dexterity = 0
         for name in TURN_POWERS:
             self.pw.pop(name, None)
+        self._decrement("RetainHandPower")  # AfterSideTurnEnd
         if self._ethereal_exhausts and self.pw.get("DarkEmbracePower"):
             self._draw(self.pw["DarkEmbracePower"] * self._ethereal_exhausts)
         self._ethereal_exhausts = 0

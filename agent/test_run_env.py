@@ -3,7 +3,7 @@ from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
 from sim.potions import POTION_IDS
-assert COMBAT_OBS == 1979 and COMBAT_ACTIONS == 191  # + the upgrade prompt and True Grit / Armaments as its sources
+assert COMBAT_OBS == 2669 and COMBAT_ACTIONS == 244  # + the upgrade prompt and True Grit / Armaments as its sources, + 53 colorless cards and RetainHandPower
 from env import CHOICE_FEATURES, POTION_FEATURES, RELIC_FEATURES, UPGRADE_FEATURES
 POT0 = COMBAT_OBS - UPGRADE_FEATURES - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
 from sim.engine import SimClient, SimLoopError
@@ -59,7 +59,7 @@ from sim.act import Shop
 
 from run_env import SHOP_RELIC, potion_take_action, drink_action, POTION_TAKE_2, DRINK_2
 
-assert N_ACTIONS == 221 and OBS_DIM == 1603  # Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs;  11 relics modeled in Task 4: +11 relic obs in the combat env, +44 in the run env; rest: 3 + 90 actions, 5 + 90 + 5 obs
+assert N_ACTIONS == 327 and OBS_DIM == 2027  # +53 colorless card ids (was 221 / 1603). Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs;  11 relics modeled in Task 4: +11 relic obs in the combat env, +44 in the run env; rest: 3 + 90 actions, 5 + 90 + 5 obs
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -151,7 +151,7 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == 191 and COMBAT_OBS == 1979
+assert cenv.action_space.n == COMBAT_ACTIONS == 244 and COMBAT_OBS == 2669
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()
@@ -386,7 +386,7 @@ from run_env import EVENT, EVENT_OBS, PATH, REST
 E0 = OBS_DIM - UPGRADE_OBS - 1 - EVENT_OBS  # where the event block starts
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 
-assert REST == EVENT + EVENT_OPTIONS == 128 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
+assert REST == EVENT + EVENT_OPTIONS == 181 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
 renv = RunPolicyEnv()
 obs, _ = renv.reset(seed=11)
 assert not obs[E0:E0 + EVENT_OBS].any()  # all zero off an event, so a grown model sees what it knew
@@ -584,7 +584,8 @@ for s in fx["run_states"]:  # old states, read by the new env
     assert set(np.flatnonzero(not_old & (new_obs != 0))) <= ok_new, s["decision"]
     assert set(np.array(act_map)[new_mask[act_map] != s["mask"]]) <= ok_act and not np.delete(new_mask, act_map).any(), s["decision"]
 assert fx["run_obs"].shape == (200, len(obs_map)) and fx["run_mask"].shape == (200, len(act_map)) == (200, 127)
-old_ids = sorted(set(CARD_IDS) - {"ARMAMENTS"})
+from env import UPGRADE_CARDS
+old_ids = sorted(set(CARD_IDS) - UPGRADE_CARDS)  # a model before upgrades lacks Armaments and the colorless cards
 assert act_map[REMOVE + old_ids.index("TRUE_GRIT")] == REMOVE + CARD_IDS.index("TRUE_GRIT")
 
 # All three cards can be picked.

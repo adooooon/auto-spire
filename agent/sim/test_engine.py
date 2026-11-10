@@ -1666,7 +1666,7 @@ SPECIAL = {
                   ["STRIKE_IRONCLAD+", "DEFEND_IRONCLAD"], ["STRIKE_IRONCLAD+", "DEFEND_IRONCLAD+"]),
     "STOKE": (("WOUND", "WOUND"), None, lambda c: sum(map(is_upgraded, c.hand)), 0, 2),
 }
-assert set(SPECIAL) == {c for c in UPGRADABLE if CARDS[c].special}, set(SPECIAL) ^ {c for c in UPGRADABLE if CARDS[c].special}
+assert set(SPECIAL) == {c for c in UPGRADABLE if CARDS[c].special and not CARDS[c].colorless}
 for cid, (hand_, setup, measure, want_b, want_u) in SPECIAL.items():
     b, u = upgraded(cid, hand_, setup or (lambda c: None))
     assert (measure(b), measure(u)) == (want_b, want_u), (cid, measure(b), measure(u))
@@ -1678,5 +1678,61 @@ c.player_block = 5; c._damage_player(4); assert not c.lamp_hit and c.player_hp =
 c._damage_player(4); assert c.lamp_hit and c.player_hp == 77
 c = solo(["STRIKE_IRONCLAD"]); c._lose_hp(3, from_card=True); assert not c.lamp_hit  # Unblockable self-damage
 c.fight("MAWLER_NORMAL"); assert not c.lamp_hit
+# Colorless cards (ColorlessCardPool minus multiplayer-only): data, Innate, Retain, RetainHandPower and the generic ones.
+from sim.cards import COLORLESS, COLORLESS_GENERATED, COLORLESS_RARES, COLORLESS_UNCOMMONS, NOT_BUYABLE, UPGRADES  # noqa: E402
+assert len(COLORLESS) == 53 and COLORLESS == COLORLESS_UNCOMMONS + COLORLESS_RARES and len(set(COLORLESS)) == 53
+assert COLORLESS[:3] == ("AUTOMATION", "CATASTROPHE", "DARK_SHACKLES") and COLORLESS_RARES[:2] == ("ALCHEMIZE", "ANOINTED")
+assert all(CARDS[c].colorless and c in UPGRADES and c + "+" in CARDS for c in COLORLESS)
+assert NOT_BUYABLE == {"SPLASH", "ALCHEMIZE"} and "SPLASH" not in COLORLESS_GENERATED and "HAND_OF_GREED" not in COLORLESS_GENERATED
+from sim.cards import COMMONS, RARES, UNCOMMONS  # noqa: E402
+assert not any(CARDS[c].colorless for c in GENERATED + COMMONS + UNCOMMONS + RARES)  # Ironclad pools only
+for cid, spec in {"ULTIMATE_STRIKE": (1, "Attack", "Uncommon", "AnyEnemy"), "THE_BOMB": (2, "Skill", "Uncommon", "Self"),
+                  "ANOINTED": (1, "Skill", "Rare", "Self"), "VOLLEY": (0, "Attack", "Uncommon", "RandomEnemy"),
+                  "ETERNAL_ARMOR": (3, "Power", "Rare", "Self"), "BEAT_DOWN": (3, "Skill", "Rare", "RandomEnemy"),
+                  "SPLASH": (1, "Skill", "Uncommon", "Self"), "JACKPOT": (3, "Attack", "Rare", "AnyEnemy")}.items():
+    d = CARDS[cid]
+    assert (d.cost, d.type, d.rarity, d.target_type) == spec, cid
+# Innate: the opening hand holds Dramatic Entrance, Mind Blast and Entropy+ out of a 25-card deck.
+c = SimCombat(rng=random.Random(2)); c.fight("MAWLER_NORMAL", ["STRIKE_IRONCLAD"] * 20 + ["DRAMATIC_ENTRANCE", "MIND_BLAST", "ENTROPY+"])
+assert {"DRAMATIC_ENTRANCE", "MIND_BLAST", "ENTROPY+"} <= set(c.hand), c.hand
+c = SimCombat(rng=random.Random(2)); c.fight("MAWLER_NORMAL", ["STRIKE_IRONCLAD"] * 20 + ["JUGGLING+", "AGGRESSION+", "ENTROPY"])
+assert {"JUGGLING+", "AGGRESSION+"} <= set(c.hand) and "ENTROPY" not in c.hand, c.hand  # base Entropy isn't Innate
+# Retain keeps a card; the rest is flushed. Equilibrium keeps the whole hand one turn; Ethereal still exhausts.
+c = solo(["RESTLESSNESS", "STRIKE_IRONCLAD"]); c.end_turn()
+assert "RESTLESSNESS" in c.hand and "STRIKE_IRONCLAD" not in c.hand and "STRIKE_IRONCLAD" in c.discard_pile
+c = solo(["EQUILIBRIUM", "STRIKE_IRONCLAD", "DAZED"]); c.play_card(0); assert c.player_block == 13 and c.pw["RetainHandPower"] == 1
+c.end_turn()
+assert "STRIKE_IRONCLAD" in c.hand and "DAZED" in c.exhaust_pile and not c.pw.get("RetainHandPower")
+c.end_turn(); assert "STRIKE_IRONCLAD" not in c.hand  # one turn only
+c = solo(["SALVO+", "STRIKE_IRONCLAD"]); hp = c.enemies[0].hp; c.play_card(0, 1)
+assert c.enemies[0].hp == hp - 16 and c.pw["RetainHandPower"] == 1
+c.end_turn(); assert "STRIKE_IRONCLAD" in c.hand
+# Generic colorless cards.
+def hp_lost(hand, **kw):
+    c = solo(hand, **kw); c.energy = 10; hp = c.enemies[0].hp; c.play_card(0, 1); return c, hp - c.enemies[0].hp
+c, d = hp_lost(["ULTIMATE_STRIKE"]); assert d == 14 and c.energy == 9
+assert hp_lost(["ULTIMATE_STRIKE+"])[1] == 20
+assert hp_lost(["PERFECTED_STRIKE", "ULTIMATE_STRIKE"])[1] == 6 + 2 * 2 + 0  # Perfected + Ultimate are Strikes; draw pile has none
+c, d = hp_lost(["FLASH_OF_STEEL", "STRIKE_IRONCLAD"]); assert d == 5 and len(c.hand) == 2 and c.energy == 10
+c = solo(["FINESSE+"]); c.play_card(0); assert c.player_block == 7 and len(c.hand) == 1
+c = solo(["MASTER_OF_STRATEGY"]); c.play_card(0); assert len(c.hand) == 3 and c.exhaust_pile == ["MASTER_OF_STRATEGY"] and c.energy == 3
+c = solo(["PRODUCTION+"]); c.play_card(0); assert c.energy == 6 and c.exhaust_pile == ["PRODUCTION+"]
+c = solo(["ULTIMATE_DEFEND"]); c.play_card(0); assert c.player_block == 11 and c.energy == 2
+c = solo(["DRAMATIC_ENTRANCE+"], "SLIMES_WEAK")
+for e in c.enemies:
+    e.hp = e.max_hp = 100
+hps = [e.hp for e in c.enemies]; c.play_card(0)
+assert [h - e.hp for h, e in zip(hps, c.enemies)] == [15] * len(hps) and c.exhaust_pile == ["DRAMATIC_ENTRANCE+"]
+c = solo(["SHOCKWAVE"], "SLIMES_WEAK"); c.energy = 3; c.play_card(0)
+assert all((e.weak, e.vulnerable) == (3, 3) for e in c.enemies) and c.energy == 1
+c = solo(["PROWESS+"]); c.play_card(0); assert (c.strength, c.dexterity) == (2, 2)
+c = solo(["VOLLEY", "DEFEND_IRONCLAD"]); c.enemies[0].hp = c.enemies[0].max_hp = 100; c.energy = 3; c.play_card(0)
+assert c.enemies[0].hp == 70 and c.energy == 0  # X = 3 hits of 10
+c = solo(["VOLLEY"], "SLIMES_WEAK"); c.energy = 2
+for e in c.enemies:
+    e.hp = e.max_hp = 100
+hps = sum(e.hp for e in c.enemies); c.play_card(0)
+assert hps - sum(e.hp for e in c.enemies) == 20
+print("colorless card checks ok")
 print("lava lamp engine checks ok")
 print("sim self-check ok")

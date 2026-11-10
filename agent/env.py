@@ -29,7 +29,7 @@ from gymnasium import spaces
 
 from client import AutoSpireClient
 from grow import insert_map
-from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck
+from sim.cards import CARDS, CHOICE_CARDS, COLORLESS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck
 from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
 from sim.relics import RELIC_IDS, UPGRADE_RELICS
@@ -63,7 +63,7 @@ CARD_FEATURES = 6 + len(CARD_IDS)  # cost, can_play, is_attack, is_skill, is_pow
 # hp, block, energy, maxEnergy, shrunk, vulnerable, frail, tangled, constrict, strength, weak,
 # ringing, cards played this turn, round, + the amount of each power the player's cards apply.
 # ponytail: "exhausted / lost HP this turn" (Evil Eye, Spite, ...) aren't in /combat, so not observed.
-PLAYER_POWERS = sorted(({name for c in CARDS.values() for name, _ in c.powers} - {"StrengthPower"})
+PLAYER_POWERS = sorted(({name for c in CARDS.values() for name, _ in c.powers} - {"StrengthPower", "DexterityPower"})  # Dexterity has its own feature
                        | {"TenderPower", "TaintedPower", "SurroundedPower", "DisintegrationPower"})  # put there by Hive monsters
 PLAYER_FEATURES = 14 + len(PLAYER_POWERS)
 PILE_FEATURES = 3 * len(CARD_IDS)  # per-card counts in draw, discard and exhaust piles
@@ -112,7 +112,10 @@ def _asks(card: dict) -> bool:
     return b in CHOICE_CARDS or (b == "ARMAMENTS" and not up) or (b == "TRUE_GRIT" and up)
 
 
-UPGRADE_CARDS = {"ARMAMENTS"}  # card ids a model trained before upgrades lacks (UPGRADE_RELICS: its relics)
+UPGRADE_CARDS = {"ARMAMENTS", *COLORLESS}  # card ids a model trained before upgrades lacks (UPGRADE_RELICS: its relics)
+
+
+NEW_POWERS = {"RetainHandPower"}  # PLAYER_POWERS entries a model trained before colorless cards lacks
 
 
 def combat_maps() -> tuple[list[int], list[int]]:
@@ -120,7 +123,8 @@ def combat_maps() -> tuple[list[int], list[int]]:
     ponytail: only that layout; an Act 1 model first grows into it with grow.py at 9a11ac8."""
     old_cards = [c for c in CARD_IDS if c not in UPGRADE_CARDS]
     old_relics = [r for r in RELIC_IDS if r not in UPGRADE_RELICS]
-    obs = insert_map([6, "cards"] * MAX_HAND + [PLAYER_FEATURES] + ["cards"] * 3
+    old_powers = [p for p in PLAYER_POWERS if p not in NEW_POWERS]
+    obs = insert_map([6, "cards"] * MAX_HAND + [14, (old_powers, PLAYER_POWERS)] + ["cards"] * 3
                      + [MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES + (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS),
                         (old_relics, RELIC_IDS), len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES], old_cards, CARD_IDS)
     act = list(range(CHOOSE_DISCARD)) + [CHOOSE_DISCARD + CARD_IDS.index(c) for c in old_cards]
