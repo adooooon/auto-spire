@@ -3,7 +3,7 @@
 Every old weight is copied (insert_map places old cards and fixed segments among new ones); weights from new inputs and to new actions start at zero, so the grown
 model acts exactly like the old one until training moves them. New inputs and actions must be
 appended (old indices unchanged), as env.py and run_env.py do. From agent/:
-    python grow.py models/ppo_sts2_sim_act1_map_v10_final.zip models/ppo_sts2_sim_act1_map_v10p.zip --env combat
+    python grow.py models/ppo_sts2_sim_act2_b_final.zip models/ppo_sts2_sim_boss_g1.zip --env combat --insert-cards  # an Act 2 combat model; combat_maps maps the Act 2 layout
     python grow.py models/ppo_sts2_sim_act2_run_v1_final.zip models/ppo_sts2_sim_boss_run_g1.zip --env run --insert-cards
 """
 from __future__ import annotations

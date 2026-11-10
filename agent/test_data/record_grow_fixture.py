@@ -1,4 +1,4 @@
-"""Run from the pre-upgrade checkout (f9d9c98) agent/: records old-layout states for test_data/grow_fixture.pkl."""
+"""Run from the pre-upgrade checkout (f9d9c98) agent/: records old-layout states for test_data/grow_fixture.pkl.gz."""
 import copy, gzip, pickle, sys
 import numpy as np
 from sb3_contrib import MaskablePPO

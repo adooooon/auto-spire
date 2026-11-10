@@ -111,7 +111,7 @@ Same 500 generated maps, picker N = 16 (`run.py --model models/ppo_sts2_sim_boss
 | boss_g1 + boss_run_g1 | 79.4% | 1.6% | 10.8 | 294 | 3.76 | 2.89 | 91 / 194 / 82 / 113 |
 
 - Act 1 is 0.4 points above the reference, well within 4 points. `stuck=0`, and no fight crashed (no traceback in the log).
-- Of the runs that reached the Act 2 boss, 8 of 121 won (7%), against 11 of 117 (9%) for the reference.
+- Of the runs that reached the Act 2 boss, 8 of 121 won (7%), against 11 of 117 (9%) for the reference. The denominator here is boss reachers in the 500-run eval.
 
 Boss analysis (`boss_report.py` on the same pair, 1,500 runs, 337 boss fights in `~/projects/sts2-rl-bot/auto-spire/.superpowers/queue/boss_analysis_g1.jsonl`, exit 0), against the analysis above:
 
@@ -123,6 +123,8 @@ Boss analysis (`boss_report.py` on the same pair, 1,500 runs, 337 boss fights in
 | All | 21 / 331 (6%) | 25 / 337 (7%) |
 
 The rest logits of the grown run model start at zero, and generated-map eval predicts with `deterministic=True` (`run.py:211`), so it picks HEAL at every rest site, the same as the old auto-heal.
+
+The 500-run eval and the 1,500-run report use different denominators: 8 of 121 boss reachers in the eval, and 25 of 337 boss fights in the report. The Act 2 clear change (2.2% to 1.6%, 11 vs 8 of 500) and the per-boss changes are within sampling noise at these sizes. g1 is untrained on upgrades. These numbers were measured before the two fixes after them (Act 2 offers deduped by base card, Headbutt keeping its deck copy), which touch only Act 2 offers and Headbutt-then-Hopper fights.
 
 This pair, boss_g1 + boss_run_g1, is part 3's starting point.
 

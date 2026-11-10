@@ -629,7 +629,7 @@ Rules from `CardSelectCmd` (`decompiled/MegaCrit.Sts2.Core.Commands/CardSelectCm
 - With no legal cards, nothing happens and the rest of the card still resolves.
 - With exactly 1 legal card, it's chosen with no prompt.
 - If combat is ending, there's no prompt, as when Headbutt kills the last enemy.
-- Armaments offers only upgradable cards (not statuses, not cards already upgraded). Live, the mod reports its prompt as kind `hand`; the sim reports kind `upgrade`.
+- Armaments offers only upgradable cards (not statuses, not cards already upgraded). Both the mod and the sim report its prompt as kind `upgrade`.
 
 **Sim:** `SimCombat._ask` holds the play in `pending_choice` until the answer arrives. While it's held, the env masks every action except the legal choices: 10 hand slots, or a discard card by id.
 
@@ -645,7 +645,7 @@ Ported in `agent/sim/act.py` (the run), `agent/sim/relics.py` and `agent/sim/eng
 - **Reward upgrade roll** (`CardFactory.RollForUpgrade`, `CardFactory.cs:288`): after a card is picked for a reward, a float is drawn and the card is upgraded if it's at most `act index × UpgradedCardOddScaling` (0.25 at A0, 0.125 from `Scarcity`). That's 0 in Act 1 and 25% in Act 2. Rares get no act term, so they're never upgraded without a relic. The sim draws no float when the chance is 0.
 - **Shops never upgrade:** `CreateForMerchant` calls `RollForUpgrade(..., -999999999)`. The egg relics are the exception (below).
 - **Smith** (`SmithRestSiteOption`): enabled iff `Deck.UpgradableCardCount != 0`. It upgrades 1 chosen card. Rest options come in the order Heal, Smith, then relics' options (`TryModifyRestSiteOptions`): Girya's Lift, Shovel's Dig. Entering a rest site heals nothing; Heal is an option (30% of max HP, `HealRestSiteOption`, plus Regal Pillow's 15). Eternal Feather, Venerable Tea Set and Tiny Mailbox still act on entry.
-- **Relics** (all in `agent/decompiled/MegaCrit.Sts2.Core.Models.Relics/`):
+- **Relics** (all in `decompiled/MegaCrit.Sts2.Core.Models.Relics/`):
   - **Whetstone** / **War Paint** (`AfterObtained`): upgrade 2 random upgradable Attacks / Skills in the deck.
   - **Molten / Toxic / Frozen Egg:** cards of that type (Attack / Skill / Power) are upgraded in card rewards (any rarity) and shop stock (`EggRelicHelper.UpgradeValidCards`, from `TryModifyCardRewardOptionsLate` and `ModifyMerchantCardCreationResults`), and again when added to the deck (`TryModifyCardBeingAddedToDeck`), which changes nothing already upgraded. A shop price depends on rarity only (`MerchantCardEntry.GetCost`), so it is unchanged. The sim does all three.
   - **Lava Lamp** (`LavaLamp.cs`): if no hit got through block this combat (`AfterDamageReceived`: `UnblockedDamage > 0` and not Unblockable, so card self-damage doesn't count), every upgradable card in that combat's rewards is upgraded, Rares too (`TryModifyCardRewardOptionsLate`; only in a CombatRoom, so not in shops).

@@ -12,13 +12,13 @@ import sys
 import numpy as np
 
 from env import CARD_IDS, CHOOSE_DISCARD, CHOOSE_HAND, ENCOUNTER_GROUPS, MAX_HAND, STS2CombatEnv, _encode, random_deck
-from sim.cards import CARDS, card_to_dict
+from sim.cards import CARDS, base_id, card_to_dict
 
 BASIC = ("STRIKE_IRONCLAD", "DEFEND_IRONCLAD")  # Bash is not basic
 MIN_N = 30
 
 is_junk = lambda c: CARDS[c].rarity == "Status"
-is_good = lambda c: not is_junk(c) and c not in BASIC  # non-basic, non-junk
+is_good = lambda c: not is_junk(c) and base_id(c) not in BASIC  # non-basic, non-junk
 
 
 def _rates(prompts: list[dict], group, distinct: bool) -> tuple[float, float]:

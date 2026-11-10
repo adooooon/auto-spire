@@ -19,6 +19,7 @@ import numpy as np
 from sb3_contrib import MaskablePPO
 
 from run_env import RunPolicyEnv
+from sim.cards import base_id, is_upgraded
 from sim.engine import HIVE_BOSSES
 
 _model = _run_model = None
@@ -87,13 +88,15 @@ def summarize(fights: list[dict]) -> None:
         deaths = [f["turns"] for f in losses]
         # damage per turn: HP lost from arrival to the last turn start, over the turns before it
         dmg = [(f["hp"] - f["hp_by_turn"][-1]) / (f["turns"] - 1) for f in fs if f["turns"] > 1]
-        top = ", ".join(f"{c} {n}" for c, n in sum((Counter(f["deck"]) for f in fs), Counter()).most_common(10))
+        cards = [c for f in fs for c in f["deck"]]
+        top = ", ".join(f"{c} {n}" for c, n in Counter(base_id(c) for c in cards).most_common(10))
+        up = sum(is_upgraded(c) for c in cards) / max(len(cards), 1)
         print(f"{boss}: reached {len(fs)}, won {len(fs) - len(losses)} ({100 * (len(fs) - len(losses)) / len(fs):.0f}%)\n"
               f"  arrival hp {np.mean([f['hp'] for f in fs]):.1f}/{np.mean([f['max_hp'] for f in fs]):.1f}"
               f"  deck {np.mean([len(f['deck']) for f in fs]):.1f} cards  relics {np.mean([len(f['relics']) for f in fs]):.1f}"
               f"  potions held {np.mean([len(f['potions']) for f in fs]):.2f} used {np.mean([f['potions_used'] for f in fs]):.2f}\n"
               f"  turn of death: " + (f"median {statistics.median(deaths):g}, range {min(deaths)}-{max(deaths)}, sd {np.std(deaths):.1f}" if deaths else "n/a")
-              + f"\n  mean damage per turn (pre-final turns): {np.mean(dmg) if dmg else 0:.1f}\n  top cards: {top}")
+              + f"\n  mean damage per turn (pre-final turns): {np.mean(dmg) if dmg else 0:.1f}\n  top cards (by base card): {top}\n  upgraded share of deck cards: {100 * up:.0f}%")
 
 
 def main():
