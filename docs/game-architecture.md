@@ -614,13 +614,15 @@ Known shortcuts are marked `ponytail:` in `engine.py` and `act.py` (grep for the
 
 ## Card choices
 
-Headbutt, Burning Pact and Brand ask the player to choose another card. Both the sim and live play answer them. Armaments also asks, but its choice is which card to upgrade and the sim has no upgrades, so it stays out of the agent's offers and shops.
+Headbutt, Burning Pact, Brand, Armaments and True Grit+ ask the player to choose another card. Both the sim and live play answer them.
 
 | Card | Rarity | Cost | Effect, in order |
 |---|---|---|---|
 | Headbutt | Common | 1 | 9 damage, then choose a card from the discard pile to put on top of the draw pile |
 | Burning Pact | Uncommon | 1 | choose a card in hand to exhaust, then draw 2 |
 | Brand | Rare | 0 | lose 1 HP (Unblockable, Unpowered), choose a card in hand to exhaust, then gain 1 Strength |
+| Armaments | Common | 1 | 5 block, then choose an upgradable card in hand to upgrade (`FromHandForUpgrade`). Armaments+ upgrades every upgradable hand card with no prompt |
+| True Grit+ | Common | 1 | 9 block, then choose a card in hand to exhaust (base True Grit exhausts a random one) |
 
 Rules from `CardSelectCmd` (`decompiled/MegaCrit.Sts2.Core.Commands/CardSelectCmd.cs`):
 
@@ -628,6 +630,7 @@ Rules from `CardSelectCmd` (`decompiled/MegaCrit.Sts2.Core.Commands/CardSelectCm
 - With no legal cards, nothing happens and the rest of the card still resolves.
 - With exactly 1 legal card, it's chosen with no prompt.
 - If combat is ending, there's no prompt, as when Headbutt kills the last enemy.
+- Armaments offers only upgradable cards (not statuses, not cards already upgraded). Live, the mod reports its prompt as kind `hand`; the sim reports kind `upgrade`.
 
 **Sim:** `SimCombat._ask` holds the play in `pending_choice` until the answer arrives. While it's held, the env masks every action except the legal choices: 10 hand slots, or a discard card by id.
 

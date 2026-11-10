@@ -735,3 +735,19 @@ Where live differs from the sim, all because the sim doesn't model it: Neow and 
 A sim run now continues past the Act 1 boss through the Hive, and `live.py` plays on through the act change and the Ancient. The rules are in `docs/game-architecture.md`, "Act 2 (the Hive)". Models grow into the new inputs and actions, and the sim's Act 1 fights are unchanged, RNG included.
 
 Training on it (2026-11-09) raised the Act 2 clear rate from 0.4% to 2.2%, with Act 1 holding at 79.0% against 81.4%. Most Act 2 deaths are now at the boss. Numbers and the training stages are in the spec's "Results" (`docs/superpowers/specs/2026-11-06-act2-design.md`).
+
+### 2026-11-09: Upgraded cards in combat
+
+The sim now plays upgraded cards ("X+" ids, `sim/cards.py` `UPGRADES`) and Armaments. Every special card reads its upgraded number from the card's `OnUpgrade`. Armaments prompts for an upgradable hand card, and Armaments+ upgrades the whole hand. True Grit+ prompts for the card it exhausts. Aggression upgrades the Attacks it returns, Stoke+ and Primal Force+ make upgraded cards, Cascade+ plays X+1, and Juggling+ and Aggression+ are Innate. The prompt rules are in `docs/game-architecture.md`, "Card choices".
+
+**Live decks with upgrades:** the dev console's `upgrade` only takes hand cards, so the mod gained `upgrade_deck <ID>`, which upgrades the first un-upgraded deck copy, as Smith does. `AutoSpireClient.set_deck()` takes "X+" ids. `remove_card` can't tell the upgraded copy from the plain one, so a card whose copies differ is rebuilt. The live title format matches `card_to_dict`: "Bash+", "Strike+", "Armaments+".
+
+**Live validation** (`python -m sim.validate --upgraded`): each deck is 4 starter cards, 6 special cards and 4 other cards, and each card is upgraded with p=0.5.
+- One fight per Act 1 and Hive encounter: 701 steps, 33 with mismatches. None came from the upgrade logic.
+  - 14 were upgraded prompt cards (Brand+, Headbutt+) getting into live decks: the env's `CHOICE_CARDS` filter missed "X+" ids (fixed).
+  - 2 were True Grit+'s prompt, unmodeled until this run (fixed).
+  - 11 came from random picks: Stampede, Hellraiser after a reshuffle, Cascade's targets and reshuffles, Thrash's eaten card.
+  - 3 came from per-id ponytails: two Rampage+ copies sharing a bonus, and both Thrash copies free.
+  - 3 were in Hive code from before this task: Slumbering Beetle's Plating in a mid-stun `load()`, and Kaiser Crab facing.
+- A fixed deck of True Grit(+), Pillage(+), Second Wind(+), Armaments(+) and starters on the weak Act 1 and Hive encounters (2 fights each): 421 steps, 2 mismatches. Both were Pillage drawing from a fresh reshuffle (now skipped). 40 live prompts were answered (37 True Grit+, 3 Armaments), with no prompt mismatches.
+- `sim.validate` now restarts the game and moves on when it stops responding. One earlier pass hung the game's main thread (100% CPU) on a card play against Vine Shambler. The log doesn't say which card it was.

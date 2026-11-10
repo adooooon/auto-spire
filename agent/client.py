@@ -83,16 +83,18 @@ class AutoSpireClient:
         return self.exec("end")
 
     def set_deck(self, deck: list[str]) -> None:
-        """Make the run's deck exactly `deck` (card ids) via the dev console's card/remove_card,
-        touching only the difference. Takes effect from the next `fight`."""
-        have = Counter(c["id"] for c in (self.state().get("player") or {}).get("deck") or [])
+        """Make the run's deck exactly `deck` (card ids, "X+" upgraded) via the dev console's card/remove_card and
+        the mod's upgrade_deck. A card whose copies differ is rebuilt (remove_card can't pick the upgraded copy);
+        the rest is untouched. Takes effect from the next `fight`."""
+        have = Counter(c["id"] + "+" * bool(c.get("upgraded")) for c in (self.state().get("player") or {}).get("deck") or [])
         want = Counter(deck)
-        for cid, n in (have - want).items():
-            for _ in range(n):
+        for cid in {c.removesuffix("+") for c in set(have - want) | set(want - have)}:
+            for _ in range(have[cid] + have[cid + "+"]):
                 self.exec(f"remove_card {cid} Deck", settle=0.0)
-        for cid, n in (want - have).items():
-            for _ in range(n):
+            for _ in range(want[cid] + want[cid + "+"]):
                 self.exec(f"card {cid} Deck", settle=0.0)
+            for _ in range(want[cid + "+"]):
+                self.exec(f"upgrade_deck {cid}", settle=0.0)
 
     def wait_for(
         self,

@@ -1117,7 +1117,9 @@ class SimCombat:
             self._gain_energy(card.energy)
         if card.heal:
             self.heal(card.heal)
-        if card.exhaust_random and self.hand:  # Rng.CombatCardSelection.NextItem(hand)
+        if card.id == "TRUE_GRIT+":  # IsUpgraded: the player chooses (CardSelectCmd.FromHand), the card's last effect
+            self._ask("hand", card.id)
+        elif card.exhaust_random and self.hand:  # Rng.CombatCardSelection.NextItem(hand)
             self._exhaust(self.hand.pop(self.rng.randrange(len(self.hand))))
         if card.copy_to_discard:
             self.discard_pile.append(card.id)
@@ -1292,7 +1294,7 @@ class SimCombat:
             return
         if picked:
             self._exhaust(picked)
-        if self._ending():  # CardPileCmd.Draw and PowerCmd.Apply no-op once the fight is ending
+        if self._ending() or b == "TRUE_GRIT":  # CardPileCmd.Draw and PowerCmd.Apply no-op once the fight is ending
             return
         if b == "BURNING_PACT":  # Cards 2, +1
             self._draw(2 + is_upgraded(source))

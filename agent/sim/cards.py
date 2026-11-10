@@ -174,7 +174,8 @@ UPGRADES: dict[str, dict] = {
     "PERFECTED_STRIKE": dict(damage_per_strike=3), "POMMEL_STRIKE": dict(damage=10, draw=2),
     "SETUP_STRIKE": dict(damage=9, temp_strength=3), "SHRUG_IT_OFF": dict(block=11),
     "SWORD_BOOMERANG": dict(hits=4), "THUNDERCLAP": dict(damage=7), "TREMBLE": dict(vulnerable=4),
-    "TRUE_GRIT": dict(block=9), "TWIN_STRIKE": dict(damage=7),
+    "TRUE_GRIT": dict(block=9),  # engine: the player chooses the card to exhaust
+    "TWIN_STRIKE": dict(damage=7),
     "ARMAMENTS": {},  # engine: upgrade every upgradable card in hand instead of choosing one
     "ASHEN_STRIKE": {},  # engine: +4 per exhausted card
     "BLUDGEON": dict(damage=42),

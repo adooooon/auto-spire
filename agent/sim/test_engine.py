@@ -1556,6 +1556,14 @@ for _ in range(5):
     c = SimCombat(rng=random.Random(_)); c.fight("MAWLER_NORMAL", ["JUGGLING+", "AGGRESSION+"] + ["DEFEND_IRONCLAD"] * 20)
     assert {"JUGGLING+", "AGGRESSION+"} <= set(c.hand) and len(c.hand) == 5, c.hand
 
+# True Grit+ chooses the card to exhaust (base True Grit takes a random one).
+c = solo(["TRUE_GRIT+", "WOUND", "BASH", "STRIKE_IRONCLAD"]); c.play_card(0)
+assert c.player_block == 9 and c.pending_choice == {"kind": "hand", "source": "TRUE_GRIT"}
+assert c.choose_card(1)["ok"] and c.exhaust_pile == ["BASH"] and c.hand == ["WOUND", "STRIKE_IRONCLAD"]
+assert c.discard_pile == ["TRUE_GRIT+"] and c.pending_choice is None
+c = solo(["TRUE_GRIT", "WOUND", "BASH"]); c.play_card(0)
+assert c.pending_choice is None and len(c.exhaust_pile) == 1
+
 # Thieving Hopper steals the deck's upgraded card as it is.
 c = SimCombat(rng=random.Random(7)); c.fight("THIEVING_HOPPER_WEAK", ["BASH+"] * 10)
 c._steal(c.enemies[0])

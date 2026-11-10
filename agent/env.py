@@ -29,7 +29,7 @@ from gymnasium import spaces
 
 from client import AutoSpireClient
 from grow import insert_map
-from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, is_upgraded, starter_deck
+from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck
 from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, HIVE_MONSTERS, MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
 from sim.relics import RELIC_IDS
@@ -300,7 +300,7 @@ class STS2CombatEnv(gym.Env):
                 set_relics = getattr(self.client, "set_relics", None)  # sim only; before set_potions (Potion Belt)
                 deck = self.deck or (random_deck(self.np_random, self.prompt_practice) if self.random_decks else starter_deck())
                 if not set_relics and not self.deck:  # the live mod can't answer a card prompt
-                    deck = [c for c in deck if c not in CHOICE_CARDS]
+                    deck = [c for c in deck if base_id(c) not in CHOICE_CARDS]
                 self.client.set_deck(deck)
                 relics, state = (self.relics, self.relic_state) if self.relics is not None else (
                     random_relics(self.np_random) if self.random_decks else (set(), {}))

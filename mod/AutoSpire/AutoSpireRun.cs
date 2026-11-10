@@ -272,6 +272,13 @@ internal static class RunBridge
             case "choose_option":
                 Resolve(AgentSelector.Current!.Options[Arg(1)]);
                 break;
+            case "upgrade_deck": // a deck card by id, as Smith does; the dev console's `upgrade` takes hand cards only
+            {
+                var card = me.Deck.Cards.FirstOrDefault(c => c.Id.Entry == parts[1] && c.IsUpgradable)
+                    ?? throw new InvalidOperationException("no_upgradable_card");
+                CardCmd.Upgrade(card, CardPreviewStyle.None);
+                break;
+            }
             default:
                 throw new InvalidOperationException("unknown_command");
         }

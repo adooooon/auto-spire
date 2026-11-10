@@ -419,7 +419,7 @@ public static class AutoSpireMod
                 "newrun" => ExecNewRun(parts),
                 // A real run: map moves, rewards, events, rests, shops, treasure, card prompts.
                 "map" or "close_map" or "reward" or "pick" or "proceed" or "option" or "rest" or "chest" or "chest_relic" or "buy"
-                    or "drop_potion" or "choose" or "choose_discard" or "choose_option"
+                    or "drop_potion" or "choose" or "choose_discard" or "choose_option" or "upgrade_deck"
                     => OnMainThread<object>(() => RunBridge.Exec(verb, parts))!,
                 // Pass through to game's dev console (kill, godmode, draw, energy, gold, etc.)
                 _ => ExecConsole(cmd)

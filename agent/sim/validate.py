@@ -19,7 +19,9 @@ import copy
 import json
 import random
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
+
+import requests
 
 import env as env_module
 from client import AutoSpireClient
@@ -65,6 +67,8 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
         setattr(sim, name, copy.deepcopy(getattr(prev, name)))
     # A random step (e.g. Hellraiser autoplays after a reshuffle) can leave the carried count high.
     sim.attack_plays = min(sim.attack_plays, sim.cards_played)
+    # Thieving Hopper steals deck cards. ponytail: /combat doesn't mark generated cards, so every card counts as the deck's.
+    sim._deck_left = Counter(sim.hand + sim.draw_pile + sim.discard_pile + sim.exhaust_pile)
     # Free-this-turn cards (Infernal Blade's) are visible live: cost 0 where the sim would charge.
     sim.free_cards = []
     sim.free_cards = [c for x, c in zip(p["hand"], ids(p["hand"])) if x["cost"] == 0 and sim.cost(c) > 0]
@@ -126,7 +130,8 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs, skip: set
         if count(s["player"]) != count(p):
             out.append(f"live {status} in deck: sim={count(s['player'])} live={count(p)}")
     costs = lambda pl: sorted((x["id"], x["upgraded"], x["cost"], x["canPlay"]) for x in pl["hand"])  # noqa: E731
-    same_hand = sorted(x["id"] for x in s["player"]["hand"]) == sorted(x["id"] for x in p["hand"])  # not after a draw
+    hand_ids = lambda pl: sorted((x["id"], x["upgraded"]) for x in pl["hand"])  # noqa: E731
+    same_hand = hand_ids(s["player"]) == hand_ids(p)  # not after a random draw (which copy, upgraded or not)
     if same_hand and "piles" not in skip and costs(s["player"]) != costs(p):
         out.append(f"hand costs: sim={costs(s['player'])} live={costs(p)}")
     for x in p["hand"]:  # card_to_dict's upgraded title, e.g. "Bash+"
@@ -219,63 +224,76 @@ def main():
         env.encounters = [enc]
         for fight in range(args.fights):
             env.reset()
-            c = client.combat()
-            logs = defaultdict(list)  # combatId -> performed moves (summons join mid-fight)
-            sim = prev = None
-            print(f"[{enc} #{fight}] " + ", ".join(f"{e['modelId']}({e['hp']})" for e in c["enemies"]))
-            while c.get("inCombat"):
-                hand = c["player"]["hand"]
-                playable = [i for i, x in enumerate(hand) if x["canPlay"] and x["id"] in CARDS and x["id"] not in CHOICE_CARDS]  # (no prompts)
-                idx = random.choice(playable) if playable and random.random() < 0.85 else None
-                living = [e for e in c["enemies"] if e["isAlive"]]
-                played = hand[idx]["id"] if idx is not None else ""
-                played_ids |= {played} | ({played + "+"} if idx is not None and hand[idx]["upgraded"] else set())
-                powers = {x["name"] for x in c["player"]["powers"]}
-                skip = {"enemies"} if (played in RANDOM_TARGETS or powers & RANDOM_TARGET_POWERS) and \
-                    len(living) > 1 else set()
-                skip |= {"piles"} if played in RANDOM_EXHAUST or powers & RANDOM_PILE_POWERS else set()
-                if idx is None and "StampedePower" in powers:  # autoplays a random Attack from hand
-                    skip |= {"enemies", "piles"}
-                # Random target exercises targeting.
-                tgt = random.choice(living) if idx is not None and hand[idx]["targetType"] == "AnyEnemy" else None
-                action = "end" if idx is None else f"play {idx}" + ("" if tgt is None else f" @{tgt['modelId']}")
-                prev = sim
-                sim = load(c, logs, prev)
-                if idx is None:
-                    sim.end_turn()
-                    client.end_turn()
-                    for e in c["enemies"]:  # everything in combat acts, dead illusions included
-                        logs[e["combatId"]].append(e["intent"]["moveId"])
-                else:
-                    sim.play_card(idx, None if tgt is None else c["enemies"].index(tgt) + 1)
-                    client.play(idx, None if tgt is None else tgt["combatId"])
-                after = wait_ready(client)
-                prompt = [] if bool(sim.pending_choice) == bool(after.get("choice")) else \
-                    [f"prompt: sim={sim.pending_choice} live={after.get('choice')}"]
-                if sim.pending_choice or after.get("choice"):  # Armaments: the same random upgradable slot in both
-                    pick = random.choice([i for i, x in enumerate(sim.hand) if x in UPGRADABLE] or [0])
-                    if sim.pending_choice:
-                        sim.choose_card(pick)
-                    if after.get("choice"):
-                        client.exec(f"choose {pick}")
-                        after = wait_ready(client)
-                    action += f" choose {pick}"
-                if sim.shuffles and "HellraiserPower" in powers:  # drew random cards, and Strikes autoplay
-                    skip |= {"enemies", "piles"}
-                problems = prompt + diff(c, action, after, sim, logs, skip)
-                steps += 1
-                if problems:
-                    mismatched += 1
-                    print(f"  round {c['round']} {action} ({hand[idx]['id'] if idx is not None else ''}): " + "; ".join(problems))
-                    with open("validate_mismatches.jsonl", "a") as f:  # replay offline with load()
-                        f.write(json.dumps({"before": c, "action": action, "idx": idx, "after": after,
-                                            "target": None if tgt is None else c["enemies"].index(tgt) + 1,
-                                            "history": {k: getattr(prev, k) for k in HISTORY_FIELDS} if prev else None,
-                                            "logs": logs, "problems": problems}) + "\n")
-                    pw = lambda x: {q["name"]: q["amount"] for q in x["player"]["powers"]}  # noqa: E731
-                    print(f"    powers {pw(c)}; hand {[x['id'] for x in hand]} -> live "
-                          f"{[x['id'] for x in (after.get('player') or {}).get('hand', [])]} / sim {sim.hand}")
-                c = after
+            action = played = ""
+            hand = []
+            try:
+                c = client.combat()
+                logs = defaultdict(list)  # combatId -> performed moves (summons join mid-fight)
+                sim = prev = None
+                print(f"[{enc} #{fight}] " + ", ".join(f"{e['modelId']}({e['hp']})" for e in c["enemies"]))
+                while c.get("inCombat"):
+                    hand = c["player"]["hand"]
+                    playable = [i for i, x in enumerate(hand) if x["canPlay"] and x["id"] in CARDS and x["id"] not in CHOICE_CARDS]  # (no prompts)
+                    idx = random.choice(playable) if playable and random.random() < 0.85 else None
+                    living = [e for e in c["enemies"] if e["isAlive"]]
+                    played = hand[idx]["id"] if idx is not None else ""
+                    played_ids |= {played} | ({played + "+"} if idx is not None and hand[idx]["upgraded"] else set())
+                    powers = {x["name"] for x in c["player"]["powers"]}
+                    skip = {"enemies"} if (played in RANDOM_TARGETS or powers & RANDOM_TARGET_POWERS) and \
+                        len(living) > 1 else set()
+                    skip |= {"piles"} if played in RANDOM_EXHAUST or powers & RANDOM_PILE_POWERS else set()
+                    if idx is None and "StampedePower" in powers:  # autoplays a random Attack from hand
+                        skip |= {"enemies", "piles"}
+                        if len({c for x, c in zip(hand, ids(hand)) if x["type"] == "Attack"}) > 1:  # which one: random
+                            skip |= {"player"}
+                    # Random target exercises targeting.
+                    tgt = random.choice(living) if idx is not None and hand[idx]["targetType"] == "AnyEnemy" else None
+                    action = "end" if idx is None else f"play {idx}" + ("" if tgt is None else f" @{tgt['modelId']}")
+                    prev = sim
+                    sim = load(c, logs, prev)
+                    if idx is None:
+                        sim.end_turn()
+                        client.end_turn()
+                        for e in c["enemies"]:  # everything in combat acts, dead illusions included
+                            logs[e["combatId"]].append(e["intent"]["moveId"])
+                    else:
+                        sim.play_card(idx, None if tgt is None else c["enemies"].index(tgt) + 1)
+                        client.play(idx, None if tgt is None else tgt["combatId"])
+                    after = wait_ready(client)
+                    prompt = [] if bool(sim.pending_choice) == bool(after.get("choice")) else \
+                        [f"prompt: sim={sim.pending_choice} live={after.get('choice')}"]
+                    if sim.pending_choice or after.get("choice"):  # Armaments, True Grit+: the same random legal slot in both
+                        kind = (sim.pending_choice or {}).get("kind")
+                        pick = random.choice([i for i, x in enumerate(sim.hand) if kind != "upgrade" or x in UPGRADABLE] or [0])
+                        if sim.pending_choice:
+                            sim.choose_card(pick)
+                        if after.get("choice"):
+                            client.exec(f"choose {pick}")
+                            after = wait_ready(client)
+                        action += f" choose {pick}"
+                    if sim.shuffles and "HellraiserPower" in powers:  # drew random cards, and Strikes autoplay
+                        skip |= {"enemies", "piles"}
+                    if sim.shuffles and played == "CASCADE":  # autoplayed cards from a fresh shuffle: random
+                        skip |= {"enemies", "piles", "player"}
+                    if sim.shuffles and played == "PILLAGE":  # draws until a non-Attack from a fresh shuffle: random
+                        skip |= {"piles"}
+                    problems = prompt + diff(c, action, after, sim, logs, skip)
+                    steps += 1
+                    if problems:
+                        mismatched += 1
+                        print(f"  round {c['round']} {action} ({hand[idx]['id'] if idx is not None else ''}): " + "; ".join(problems))
+                        with open("validate_mismatches.jsonl", "a") as f:  # replay offline with load()
+                            f.write(json.dumps({"before": c, "action": action, "idx": idx, "after": after,
+                                                "target": None if tgt is None else c["enemies"].index(tgt) + 1,
+                                                "history": {k: getattr(prev, k) for k in HISTORY_FIELDS} if prev else None,
+                                                "logs": logs, "problems": problems}) + "\n")
+                        pw = lambda x: {q["name"]: q["amount"] for q in x["player"]["powers"]}  # noqa: E731
+                        print(f"    powers {pw(c)}; hand {[x['id'] for x in hand]} -> live "
+                              f"{[x['id'] for x in (after.get('player') or {}).get('hand', [])]} / sim {sim.hand}")
+                    c = after
+            except (requests.RequestException, TimeoutError) as exc:  # a hung live game: restart it, next fight
+                print(f"  live game stopped responding after {action} ({played}), hand {[x['title'] for x in hand]}: {exc!r}")
+                env._needs_restart = True
     print(f"\n{steps} steps compared, {mismatched} with mismatches")
     print(f"cards played: {len(played_ids - {''})}; new cards never played: "
           f"{sorted(set(UNCOMMONS + RARES) - played_ids)}")
