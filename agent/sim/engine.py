@@ -1227,6 +1227,8 @@ class SimCombat:
         elif cid == "BRAND":
             self._lose_hp(1, from_card=True)
             self._ask("hand", cid)
+        elif cid == "ARMAMENTS":  # ponytail: block only; Task 3 adds the choice of a hand card to upgrade
+            self._gain_block(card.block, card=True)
         elif cid == "STOKE":
             n = len(self.hand)
             for c in list(self.hand):

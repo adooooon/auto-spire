@@ -29,9 +29,7 @@ RELIC_PRICE = {"COMMON": 175, "UNCOMMON": 225, "RARE": 275, "SHOP": 200}  # Reli
 SHOP_RELICS = 3  # MerchantInventory.PopulateRelicEntries: two rolled, then one SHOP
 FALL_THROUGH = ("SHOP", "COMMON", "UNCOMMON", "RARE")  # RelicGrabBag.GetAvailableDeque
 
-# The Ironclad pool by rarity. Armaments chooses a card to upgrade and the sim has no upgrades, so it's
-# offered and stocked like any card but can't be picked or bought.
-PROMPT_CARDS = {"ARMAMENTS": "Skill"}
+# The Ironclad pool by rarity. Armaments goes last in COMMON (it isn't in COMMONS) so seeded offers keep their order.
 REWARD_POOLS = {"COMMON": COMMONS + ("ARMAMENTS",), "UNCOMMON": UNCOMMONS, "RARE": RARES}
 
 WEAK = tuple(e for e in ENCOUNTERS if e.endswith("_WEAK"))
@@ -52,7 +50,7 @@ QUEST_CARD = "WOUND"
 
 
 def card_type(card_id: str) -> str:
-    return CARDS[card_id].type if card_id in CARDS else PROMPT_CARDS[card_id]
+    return CARDS[card_id].type
 
 
 class RarityOdds:

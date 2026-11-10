@@ -29,7 +29,7 @@ from gymnasium import spaces
 
 from client import AutoSpireClient
 from grow import insert_map
-from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, starter_deck
+from sim.cards import CARDS, CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, is_upgraded, starter_deck
 from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, HIVE_MONSTERS, MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
 from sim.relics import RELIC_IDS
@@ -58,7 +58,7 @@ END_TURN = MAX_HAND * MAX_ENEMIES
 # Monster identity matters (which one applies Shrink, whose Strength stacks) and HP alone
 # only hints at it; the one-hots cover every monster and card the sim models.
 MONSTER_IDS = sorted(MONSTERS)
-CARD_IDS = sorted(CARDS)
+CARD_IDS = sorted(c for c in CARDS if not is_upgraded(c))
 CARD_FEATURES = 6 + len(CARD_IDS)  # cost, can_play, is_attack, is_skill, is_power, upgraded + identity
 # hp, block, energy, maxEnergy, shrunk, vulnerable, frail, tangled, constrict, strength, weak,
 # ringing, cards played this turn, round, + the amount of each power the player's cards apply.
@@ -104,7 +104,7 @@ def _encode_card(card: dict) -> list[float]:
 
 
 HIVE_PLAYER_POWERS = {"TenderPower", "TaintedPower", "SurroundedPower", "DisintegrationPower"}
-HIVE_CARDS = {"TOXIC", "FRANTIC_ESCAPE"}
+HIVE_CARDS = {"TOXIC", "FRANTIC_ESCAPE", "ARMAMENTS"}  # cards a pre-Act 2 model lacks (Armaments: added with upgrades)
 OLD_MAX_ENEMIES = 4
 
 

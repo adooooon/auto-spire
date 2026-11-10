@@ -1449,10 +1449,29 @@ cc.hand, cc.discard_pile = ["BRAND", "WOUND", "BASH"], []
 client.play(0); assert client.exec("choose 0")["ok"] and cc.exhaust_pile == ["WOUND"]
 cc.hand, cc.discard_pile = ["HEADBUTT"], ["BASH", "WOUND"]
 client.play(0, 1); assert client.exec("choose_discard WOUND")["ok"] and cc.draw_pile[-1] == "WOUND"
-from sim.act import PROMPT_CARDS, REWARD_POOLS
-from sim.cards import CARDS, CHOICE_CARDS, GENERATED
-assert set(CHOICE_CARDS) <= set(GENERATED) and "ARMAMENTS" not in CARDS and PROMPT_CARDS == {"ARMAMENTS": "Skill"}
-assert "HEADBUTT" in REWARD_POOLS["COMMON"] and REWARD_POOLS["COMMON"].count("ARMAMENTS") == 1
+from sim.act import REWARD_POOLS
+from sim.cards import CARDS, CHOICE_CARDS, GENERATED, UPGRADABLE, base_id, is_upgraded, upgrade, card_to_dict
+assert set(CHOICE_CARDS) <= set(GENERATED) and "ARMAMENTS" in CARDS and "ARMAMENTS" not in GENERATED
+assert REWARD_POOLS["COMMON"] == ('ANGER', 'BLOODLETTING', 'BLOOD_WALL', 'BODY_SLAM', 'BREAKTHROUGH', 'CINDER', 'HAVOC', 'HEADBUTT',
+    'IRON_WAVE', 'MOLTEN_FIST', 'PERFECTED_STRIKE', 'POMMEL_STRIKE', 'SETUP_STRIKE', 'SHRUG_IT_OFF', 'SWORD_BOOMERANG',
+    'THUNDERCLAP', 'TREMBLE', 'TRUE_GRIT', 'TWIN_STRIKE', 'ARMAMENTS')  # unchanged by adding Armaments to CARDS
+assert not any(is_upgraded(c) for c in GENERATED + REWARD_POOLS["COMMON"] + REWARD_POOLS["UNCOMMON"] + REWARD_POOLS["RARE"])
+
+# Upgraded cards (OnUpgrade in the decompiled source).
+assert CARDS["STRIKE_IRONCLAD+"].damage == 9 and CARDS["DEFEND_IRONCLAD+"].block == 8
+assert (CARDS["BASH+"].damage, CARDS["BASH+"].vulnerable) == (10, 3)
+assert CARDS["BODY_SLAM+"].cost == 0 and CARDS["HEADBUTT+"].damage == 12 and CARDS["ANGER+"].damage == 8
+assert upgrade("SLIMED") == "SLIMED" and "WOUND" not in UPGRADABLE
+assert upgrade("BASH+") == "BASH+" and upgrade("BASH") == "BASH+" and base_id("BASH+") == "BASH"
+assert is_upgraded("BASH+") and not is_upgraded("BASH")
+assert all(c + "+" in CARDS for c in UPGRADABLE) and "ARMAMENTS" in UPGRADABLE
+assert CARDS["BASH+"].id == "BASH+" and CARDS["BASH+"].title == "Bash+"
+d = card_to_dict("BASH+", 2, True)
+assert d["id"] == "BASH" and d["upgraded"] and d["upgradeLevel"] == 1 and d["title"] == "Bash+"
+d = card_to_dict("BASH", 2, True)
+assert d["upgraded"] is False and d["upgradeLevel"] == 0 and d["title"] == "Bash"
+# A picked Armaments still plays (block 5; the upgrade choice is the engine's job).
+c = solo(["ARMAMENTS"]); c.play_card(0); assert c.player_block == 5, c.player_block
 assert "BURNING_PACT" in REWARD_POOLS["UNCOMMON"] and "BRAND" in REWARD_POOLS["RARE"]
 
 # Invalid answers change nothing; so does an answer with no prompt open.

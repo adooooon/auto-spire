@@ -3,7 +3,7 @@ from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
 from sim.potions import POTION_IDS
-assert COMBAT_OBS == 1952 and COMBAT_ACTIONS == 190
+assert COMBAT_OBS == 1965 and COMBAT_ACTIONS == 191
 from env import CHOICE_FEATURES, POTION_FEATURES, RELIC_FEATURES
 POT0 = COMBAT_OBS - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
 from sim.engine import SimClient, SimLoopError
@@ -59,7 +59,7 @@ from sim.act import Shop
 
 from run_env import SHOP_RELIC, potion_take_action, drink_action, POTION_TAKE_2, DRINK_2
 
-assert N_ACTIONS == 127 and OBS_DIM == 1452  # Act 2: 3 more bosses, an act flag, 2 more card ids
+assert N_ACTIONS == 128 and OBS_DIM == 1459  # Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -85,16 +85,16 @@ a.reset(seed=11)
 b.reset(seed=11)
 assert [(n.col, n.row, n.type) for n in a.run.map.nodes()] == [(n.col, n.row, n.type) for n in b.run.map.nodes()]
 
-# Review focus 2: an offer of only unmodeled cards (Armaments) leaves only "skip".
+# Review focus 2: an offer of only unmodeled cards leaves only "skip".
 renv.reset(seed=1)
-renv.decision, renv.offered = "pick", ["ARMAMENTS"]
+renv.decision, renv.offered = "pick", ["NOT_A_CARD"]
 assert np.flatnonzero(renv.action_masks()).tolist() == [PICK + 3]
 
 # Review focus 3: a broke player in a shop can only leave; removal is masked once used.
 renv.decision, renv.run.gold = "shop", 0
 renv.run.shop = Shop(["NOT_A_CARD"] * 5, [50] * 5, 75)
 assert np.flatnonzero(renv.action_masks()).tolist() == [SHOP_LEAVE]
-renv.run.gold, renv.run.shop = 1000, Shop(["SHRUG_IT_OFF", None, "ARMAMENTS", None, None], [50] * 5, 75)
+renv.run.gold, renv.run.shop = 1000, Shop(["SHRUG_IT_OFF", None, "NOT_A_CARD", None, None], [50] * 5, 75)
 assert np.flatnonzero(renv.action_masks()).tolist() == [SHOP, SHOP_REMOVE, SHOP_LEAVE]
 renv.step(SHOP_REMOVE)
 assert renv.decision == "remove" and renv.action_masks()[REMOVE + CARD_INDEX["BASH"]]
@@ -151,7 +151,7 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == 190 and COMBAT_OBS == 1952
+assert cenv.action_space.n == COMBAT_ACTIONS == 191 and COMBAT_OBS == 1965
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()
@@ -385,7 +385,7 @@ print("run env checks ok")
 from run_env import EVENT, EVENT_OBS, PATH
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 
-assert N_ACTIONS == EVENT + EVENT_OPTIONS == 127 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
+assert N_ACTIONS == EVENT + EVENT_OPTIONS == 128 and EVENT_OBS == 1 + 5 + 6 + len(CARD_INDEX)
 renv = RunPolicyEnv()
 obs, _ = renv.reset(seed=11)
 assert not obs[-EVENT_OBS - 1:-1].any()  # all zero off an event, so a grown model sees what it knew
@@ -536,14 +536,14 @@ new_obs = renv._obs()
 assert np.array_equal(new_obs[obs_map], fx["run_obs"])
 assert not np.delete(new_obs, obs_map).any()
 assert np.array_equal(renv.action_masks()[act_map], fx["run_mask"])
-old_ids = sorted(set(CARD_IDS) - {"TOXIC", "FRANTIC_ESCAPE"})
+old_ids = sorted(set(CARD_IDS) - {"TOXIC", "FRANTIC_ESCAPE", "ARMAMENTS"})
 assert act_map[REMOVE + old_ids.index("TRUE_GRIT")] == REMOVE + CARD_IDS.index("TRUE_GRIT")
 
-# The three cards can be picked; Armaments can't.
+# All three cards can be picked.
 renv.reset(seed=1)
 renv.decision, renv.offered = "pick", ["HEADBUTT", "ARMAMENTS", "BRAND"]
 m = renv.action_masks()
-assert m[PICK] and not m[PICK + 1] and m[PICK + 2]
+assert m[PICK] and m[PICK + 1] and m[PICK + 2]
 
 # Choices made in a run's fights reach info, and the report reads them.
 from run import choice_report
