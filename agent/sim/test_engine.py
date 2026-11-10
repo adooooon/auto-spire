@@ -1860,6 +1860,19 @@ c = solo(["RESTLESSNESS", D]); c.play_card(0); assert len(c.hand) == 1 and c.ene
 # Scrawl: draw to a full hand.
 c = solo(["SCRAWL", D, D]); c.draw_pile = [D] * 20; c.play_card(0); assert len(c.hand) == 10 and c.exhaust_pile == ["SCRAWL"]
 c = solo(["SCRAWL"] + [D] * 9); c.draw_pile = [D] * 20; c.play_card(0); assert len(c.hand) == 10
+# A Decimillipede segment is fatal only once the other segments are dead (ReattachPower.ShouldOwnerDeathTriggerFatal).
+for cid, read, want in (("HAND_OF_GREED", lambda c: c.gold_gained, 20), ("FEED", lambda c: c.player_max_hp - PLAYER_MAX_HP, 3)):
+    c = solo([cid], "DECIMILLIPEDE_ELITE"); c.enemies[0].hp = 5; c.play_card(0, 1)
+    assert not c.enemies[0].is_alive and read(c) == 0, cid  # the others live: no gold, no max HP
+    c = solo([cid], "DECIMILLIPEDE_ELITE"); c.enemies[0].hp = 5
+    for e in c.enemies[1:]:
+        e.hp = 0
+    c.play_card(0, 1); assert read(c) == want, cid  # the last segment
+# Hidden Gem skips a card that already has Replay: two gems mark two different cards, a third finds none.
+a, b = DeckCard(S), DeckCard(S)
+c = solo(["HIDDEN_GEM", "HIDDEN_GEM", "HIDDEN_GEM"]); c.draw_pile = [a, b]; c.energy = 3
+c.play_card(0); c.play_card(0); assert c.replays == {id(a): 2, id(b): 2}
+c.play_card(0); assert c.replays == {id(a): 2, id(b): 2}
 print("colorless card checks ok")
 print("lava lamp engine checks ok")
 print("sim self-check ok")

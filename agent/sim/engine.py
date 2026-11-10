@@ -1200,7 +1200,7 @@ class SimCombat:
         elif b == "SPITE":  # Repeat 2, +1
             self._hit(card, target, card.damage, 2 + up if self.hp_lost_this_turn else 1)
         elif b == "FEED":  # ShouldOwnerDeathTriggerFatal: not for minions/illusions. MaxHp 3, +1
-            fatal = target is not None and target.is_alive and not (target.defn.minion or target.defn.illusion)
+            fatal = self._fatal(target)
             self._hit(card, target, card.damage)
             if fatal and not target.is_alive:
                 self.player_max_hp += 3 + up  # CreatureCmd.GainMaxHp also heals that much
@@ -1303,12 +1303,13 @@ class SimCombat:
         elif b == "GOLD_AXE":  # 1 per card play finished this fight, itself not yet
             self._hit(card, target, self.combat_plays)
         elif b == "HAND_OF_GREED":  # Gold 20, +5 when it kills (not a minion or illusion)
-            fatal = target is not None and target.is_alive and not (target.defn.minion or target.defn.illusion)
+            fatal = self._fatal(target)
             self._hit(card, target, card.damage)
             if fatal and not target.is_alive:
                 self.gold_gained += 20 + 5 * up
         elif b == "HIDDEN_GEM":  # Replay 2, +1 on a random draw-pile card, Attacks / Skills / Powers first
-            playable = [c for c in self.draw_pile if CARDS[c].cost >= 0 or CARDS[c].x_cost]
+            # GetEnchantedReplayCount() < 1 counts BaseReplayCount, so a card with Replay is out.
+            playable = [c for c in self.draw_pile if (CARDS[c].cost >= 0 or CARDS[c].x_cost) and id(c) not in self.replays]
             pool = [c for c in playable if CARDS[c].type in ("Attack", "Skill", "Power")] or playable
             if pool:
                 c = self.rng.choice(pool)
@@ -1351,6 +1352,12 @@ class SimCombat:
             self._hit(card, target, card.damage)
         else:
             raise KeyError(f"no special logic for {cid}")
+
+    def _fatal(self, target: _Enemy | None) -> bool:
+        """Every power's ShouldOwnerDeathTriggerFatal: false for minions and illusions, and for a Reattach segment
+        until the other segments are dead (ReattachPower.AreAllOtherSegmentsDead). Read before the hit."""
+        return target is not None and target.is_alive and not (target.defn.minion or target.defn.illusion) and \
+            not (target.defn.reattach and any(x.is_alive for x in self.enemies if x is not target))
 
     def _ashen_damage(self, cid: str) -> int:
         """Ashen Strike: 6 + ExtraDamage (3, upgraded +1) per card in the exhaust pile."""

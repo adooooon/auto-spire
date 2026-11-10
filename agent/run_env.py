@@ -90,6 +90,15 @@ FLOOR_REWARD, CLEAR_REWARD = 0.1, 1.0
 MAX_DECISIONS = 500  # a run is ~40 decisions; this only stops a broken env
 
 
+def take_fight_results(run, combat) -> None:
+    """What a finished fight leaves in the run: HP, potions, the Lava Lamp flag, stolen cards, Hand of Greed's gold."""
+    run.fight_hit = combat.lamp_hit
+    run.hp, run.max_hp, run.potions = combat.player_hp, combat.player_max_hp, list(combat.potions)
+    for card in combat.stolen:  # Thieving Hopper escaped with it
+        run.deck.remove(card)
+    run.gold += combat.gold_gained
+
+
 class RandomCombat:
     """Stands in for a combat model in tests: a random legal action."""
 
@@ -192,11 +201,7 @@ class RunPolicyEnv(gym.Env):
             return False
         combat = env.client._combat
         self.choice_log += combat.choice_log
-        run.fight_hit = combat.lamp_hit
-        run.hp, run.max_hp, run.potions = combat.player_hp, combat.player_max_hp, list(combat.potions)
-        for card in combat.stolen:  # Thieving Hopper escaped with it
-            run.deck.remove(card)
-        run.gold += combat.gold_gained  # Hand of Greed
+        take_fight_results(run, combat)
         self.used += before - Counter(p for p in run.potions if p)
         return won
 

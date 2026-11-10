@@ -28,7 +28,7 @@ from sb3_contrib import MaskablePPO
 
 from env import BOSS_ENCOUNTERS, ELITE_ENCOUNTERS, NORMAL_ENCOUNTERS, WEAK_ENCOUNTERS, STS2CombatEnv
 from picker import RarityOdds, offer, pick, play_fight
-from run_env import (CARD_INDEX, EVENT, PATH, PICK, POTION_SKIP, REMOVE, REST, SHOP_LEAVE, SHOP_REMOVE, SMITH, RandomCombat,
+from run_env import (CARD_INDEX, EVENT, PATH, PICK, POTION_SKIP, REMOVE, REST, SHOP_LEAVE, SHOP_REMOVE, SMITH, RandomCombat, take_fight_results,
                      RunPolicyEnv, potion_take_action)
 from choice_test import is_good, is_junk
 from sim.cards import CARDS, CHOICE_CARDS, UPGRADABLE, starter_deck
@@ -136,10 +136,7 @@ class MapRunModeEnv(STS2CombatEnv):
         obs, reward, terminated, truncated, info = super().step(action)
         if terminated or truncated:
             run, combat = self.driver.run, self.client._combat
-            run.fight_hit = combat.lamp_hit
-            run.hp, run.max_hp, run.potions = combat.player_hp, combat.player_max_hp, list(combat.potions)
-            for card in combat.stolen:  # Thieving Hopper escaped with it
-                run.deck.remove(card)
+            take_fight_results(run, combat)
             self.driver.after_fight(bool(info.get("won")) and not truncated)
         return obs, reward, terminated, truncated, info
 

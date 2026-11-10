@@ -349,6 +349,21 @@ assert after.shape == (OBS_DIM,)
 cut = OBS_DIM - UPGRADE_OBS - 1 - EVENT_OBS - (2 * len(POTION_IDS) + len(RELIC_IDS) + 3 * (len(RELIC_IDS) + 2))
 assert (after[:cut] == before[:cut]).all()
 
+# MapRunModeEnv takes Hand of Greed's gold after a fight too: the same fight with and without it differs by that gold.
+after = []
+for greed in (0, 25):
+    menv = MapRunModeEnv(run_model=None)
+    menv.reset(seed=5)
+    c = menv.client._combat
+    c.gold_gained = greed
+    for e in c.enemies:
+        e.hp = 0
+    c._check_win()
+    _, _, term, trunc, _ = menv.step(int(np.flatnonzero(menv.action_masks())[0]))
+    assert term or trunc
+    after.append(menv.driver.run.gold)
+assert after[1] - after[0] == 25, after
+
 # Carry through MapRunModeEnv reset/step.
 menv = MapRunModeEnv(run_model=None)
 menv.driver.done = False
