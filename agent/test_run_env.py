@@ -756,4 +756,17 @@ opt = lambda key, **kw: {"key": key, "locked": False, "kills": False, **kw}
 assert _fallback_option([opt("A"), opt("B.LEAVE")]) == 1
 assert _fallback_option([opt("A", kills=True), opt("B")]) == 1
 assert _fallback_option([opt("A"), opt("B", relic="GORGET")]) == 1
+# Upgrades: "X+" ids from the upgraded flag, the live rest mask, and removal taking the plain copy first (Run.remove).
+from live import _removal_index
+from run_env import REST, SMITH
+live.sync({"player": {"hp": 50, "maxHp": 80, "gold": 200, "relics": [], "deck": [
+    {"id": "BASH", "upgraded": True}, {"id": "STRIKE_IRONCLAD", "upgraded": True}, {"id": "STRIKE_IRONCLAD", "upgraded": False}]},
+    "potionSlots": [None] * 3})
+assert live.deck == ["BASH+", "STRIKE_IRONCLAD+", "STRIKE_IRONCLAD"]
+live.rest_opts, live_env.decision = ["HEAL", "SMITH", "HATCH"], "rest"
+assert list(np.flatnonzero(live_env.action_masks())) == [REST, SMITH + CARD_INDEX["STRIKE_IRONCLAD"]]
+assert _shop({"cards": [{"id": "BASH", "upgraded": True, "cost": 50}], "relics": [], "potions": []}).cards[0] == "BASH+"
+assert _removal_index(["STRIKE_IRONCLAD", "BASH", "STRIKE_IRONCLAD"], [True, False, False], "STRIKE_IRONCLAD") == 2
+assert _removal_index(["STRIKE_IRONCLAD", "BASH"], [True, False], "STRIKE_IRONCLAD") == 0
+assert _removal_index(["BASH"], [False], "INFLAME") == 0 and _removal_index(["BASH"], [False], None) == 0
 print("live run mapping ok")

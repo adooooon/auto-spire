@@ -655,6 +655,7 @@ Ported in `agent/sim/act.py` (the run), `agent/sim/relics.py` and `agent/sim/eng
   - Smith's card comes from `CardSelectCmd.FromDeckForUpgrade` (the deck's `IsUpgradable` cards, `RequireManualConfirmation`), which asks `CardSelectCmd.Selector` when one is set. If it gets nothing back, `OnSelect` returns false and the option stays.
   - Lift is just `Girya.TimesLifted++`. Girya's displayed counter is `TimesLifted`, and its Strength comes in `AfterRoomEntered` (the debug `fight` command counts).
   - Dig is `RelicCmd.Obtain`, with no reward screen.
+  - Byrdonis Egg (a deck card) adds a Hatch option that gives Byrdpip. The sim doesn't model it, and live play never chooses it.
 - **In-combat upgrade prompt:** Armaments calls `CardSelectCmd.FromHandForUpgrade` (the hand's upgradable cards, choose 1, no prompt for 0 or 1). Armaments+ upgrades every upgradable hand card itself (`CardCmd.Upgrade`). True Grit+ asks through `FromHand` (any hand card, to exhaust).
   - **Miniature Cannon:** +3 damage (`ModifyDamageAdditive`) on Attacks from upgraded cards.
   - **Bellows:** upgrades the hand on turn 1. **Stone Cracker:** upgrades 2 random upgradable cards in the draw pile at combat start. Both last for that fight only.

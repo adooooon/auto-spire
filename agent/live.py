@@ -79,6 +79,13 @@ def _cid(card: dict) -> str:
     return card["id"] + "+" * bool(card.get("upgraded"))
 
 
+def _removal_index(options: list[str], upgraded: list[bool], card: str | None) -> int:
+    """The prompt option to take for removing base id `card`: a plain copy, else an upgraded one, as Run.remove does.
+    0 when it isn't offered."""
+    copies = [i for i, o in enumerate(options) if o == card]
+    return next((i for i in copies if not upgraded[i]), copies[0] if copies else 0)
+
+
 def _pad(entries: list[dict], n: int) -> tuple[list, list]:
     entries = (entries + [{"id": None, "cost": 0}] * n)[:n]
     return [e.get("id") and _cid(e) for e in entries], [e["cost"] for e in entries]
@@ -280,7 +287,7 @@ class LiveGame:
 
     def do_choice(self, choice: dict) -> None:
         options = choice["options"]
-        i = options.index(self.pending_remove) if self.pending_remove in options else 0
+        i = _removal_index(options, choice.get("upgraded") or [False] * len(options), self.pending_remove)
         if self.pending_remove is None:
             print(f"  prompt: took {options[0]} of {len(options)}")
         self.pending_remove = None

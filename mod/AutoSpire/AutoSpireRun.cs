@@ -204,6 +204,7 @@ internal static class RunBridge
             kind,
             source,
             options = pending.Options.Select(c => c.Id.Entry).ToList(),
+            upgraded = pending.Options.Select(c => c.IsUpgraded).ToList(),  // per option: ids stay base ids for choose_discard
         };
     }
 
@@ -318,8 +319,15 @@ internal static class RunBridge
     private static async Task Rest(MegaCrit.Sts2.Core.Entities.RestSite.RestSiteOption option)
     {
         var sync = RunManager.Instance.RestSiteSynchronizer;
-        if (await sync.ChooseLocalOption(sync.GetLocalOptions().ToList().IndexOf(option)))
-            NRestSiteRoom.Instance?.AfterSelectingOption(option);
+        try
+        {
+            if (await sync.ChooseLocalOption(sync.GetLocalOptions().ToList().IndexOf(option)))
+                NRestSiteRoom.Instance?.AfterSelectingOption(option);
+        }
+        finally
+        {
+            AgentSelector.Next = null;  // unused (LIFT/DIG given an index, or a failed Smith): never answer a later prompt
+        }
     }
 
     private static void Resolve(CardModel card)

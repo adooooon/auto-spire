@@ -10,6 +10,7 @@ import random
 import time
 import traceback
 from collections import Counter, defaultdict
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -242,6 +243,29 @@ class Check:
         self.do("proceed")
         self.wait(lambda s: s["screen"] == "map", "the map")
 
+    def removal_plain_first(self) -> None:
+        """STRIKE+ ahead of STRIKE in the deck: removing STRIKE takes the plain copy, as Run.remove does."""
+        deck = [c for c in map(_cid, self.client.state()["player"]["deck"]) if c.removesuffix("+") != "STRIKE_IRONCLAD"]
+        self.client.set_deck(deck + ["STRIKE_IRONCLAD+", "STRIKE_IRONCLAD"])  # upgrade_deck takes the first copy added
+        s = self.open_shop()
+        strikes = [c["upgraded"] for c in s["player"]["deck"] if c["id"] == "STRIKE_IRONCLAD"]
+        assert strikes == [True, False], strikes
+        g = self.game
+        g.run.sync(s)
+        sim = Run(random.Random(0))
+        sim.deck, sim.gold, sim.shop = list(g.run.deck), 999, SimpleNamespace(removal_price=0, removal_used=False)
+        sim.remove("STRIKE_IRONCLAD")
+        g.pending_remove = "STRIKE_IRONCLAD"
+        self.do("buy removal", settle=0.5)
+        c = self.wait(lambda s: s["screen"] == "choice", "the removal prompt")["choice"]
+        assert len(c["upgraded"]) == len(c["options"]) and True in c["upgraded"], c
+        g.do_choice(c)
+        s = self.wait(lambda s: s["screen"] == "shop" and s.get("details") and s["details"]["removal"]["used"], "the removal")
+        g.run.sync(s)
+        assert Counter(g.run.deck) == Counter(sim.deck), (sorted(g.run.deck), sorted(sim.deck))
+        self.do("proceed")
+        self.wait(lambda s: s["screen"] == "map", "the map")
+
     def potions(self) -> None:
         self.clear_potions()
         for p in ("BLOOD_POTION", "SPEED_POTION", "ENERGY_POTION"):
@@ -399,6 +423,7 @@ class Check:
         self.event_option("THE_LEGENDS_WERE_TRUE", 1, None)
         self.run("shop relic", self.shop_relic)
         self.run("shop removal", self.shop_removal)
+        self.run("shop removal: plain copy first", self.removal_plain_first)
         self.run("potion drop and Blood Potion", self.potions)
         self.run("Armaments prompt", lambda: self.armaments(False))
         self.run("ARMAMENTS+", lambda: self.armaments(True))
