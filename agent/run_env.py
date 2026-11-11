@@ -13,7 +13,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from env import CARD_IDS, UPGRADE_CARDS, STS2CombatEnv
+from env import CARD_IDS, NEW_CARDS, STS2CombatEnv
 from grow import insert_map
 from picker import play_fight
 from sim.act import ALL_BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_COLORLESS, SHOP_SLOTS, Run
@@ -22,7 +22,7 @@ from sim.engine import SimClient
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 from sim.map import BOSS_ROW, COLS, ROOM_TYPES
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
-from sim.relics import RELIC_IDS, RELICS, UPGRADE_RELICS
+from sim.relics import RELIC_IDS, RELICS
 
 DECISIONS = ("path", "pick", "shop", "remove", "potion", "rest")
 HEAD_DECISIONS = DECISIONS[:4]  # the original observation head; the others are flagged in their appended blocks
@@ -396,12 +396,13 @@ class RunPolicyEnv(gym.Env):
 
 
 def run_maps() -> tuple[list[int], list[int]]:
-    """(obs_map, act_map) for grow.py: where a run policy trained before upgrades (Act 2's) keeps its inputs and actions.
-    The rest block and the Smith actions are new; nothing maps to them. ponytail: only that layout (see env.combat_maps)."""
-    old_ids = [c for c in CARD_IDS if c not in UPGRADE_CARDS]
-    old_relics = [r for r in RELIC_IDS if r not in UPGRADE_RELICS]
+    """(obs_map, act_map) for grow.py: where a part 1 run policy (boss_run_g1; 326edb2) keeps its inputs and actions.
+    The shop's colorless slots and their actions are new, appended after everything old; nothing maps to them.
+    ponytail: only that layout (see env.combat_maps)."""
+    old_ids = [c for c in CARD_IDS if c not in NEW_CARDS]
     lead = 2 + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS)  # up to the relics held
     tail = 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3  # after the shop's relics
     obs = [len(HEAD_DECISIONS) + 5, "cards", len(ALL_BOSSES)] + ["cards", 2] * len(SHOP_SLOTS)
-    obs += [lead, (old_relics, RELIC_IDS)] + [(old_relics, RELIC_IDS), 2] * SHOP_RELICS + [tail, "cards", 1]  # 1: the act
-    return insert_map(obs, old_ids, CARD_IDS), insert_map([REMOVE, "cards", REST - REMOVE - len(CARD_IDS)], old_ids, CARD_IDS)
+    obs += [lead, len(RELIC_IDS)] + [len(RELIC_IDS), 2] * SHOP_RELICS + [tail, "cards", 1 + 5, "cards", len(SHOP_SLOTS)]  # 1: the act; 5: rest flags
+    act = [REMOVE, "cards", REST - REMOVE - len(CARD_IDS) + len(REST_OPTIONS), "cards"]
+    return insert_map(obs, old_ids, CARD_IDS), insert_map(act, old_ids, CARD_IDS)

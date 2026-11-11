@@ -35,7 +35,7 @@ from grow import insert_map
 from sim.cards import CARDS, CHOICE_CARDS, COLORLESS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck
 from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
-from sim.relics import RELIC_IDS, UPGRADE_RELICS
+from sim.relics import RELIC_IDS
 
 MAX_HAND = 10
 MAX_ENEMIES = 6  # OvicopterNormal.Slots
@@ -127,7 +127,7 @@ def _asks(card: dict) -> bool:
     return b in CHOICE_CARDS + COLORLESS_PROMPT_CARDS or (b == "ARMAMENTS" and not up) or (b == "TRUE_GRIT" and up)
 
 
-UPGRADE_CARDS = {"ARMAMENTS", *COLORLESS}  # card ids a model trained before upgrades lacks (UPGRADE_RELICS: its relics)
+NEW_CARDS = set(COLORLESS)  # card ids a part 1 model (boss_g1) lacks
 
 
 # PLAYER_POWERS entries a model trained before colorless cards lacks
@@ -137,14 +137,13 @@ NEW_POWERS = {"RetainHandPower", "AutomationPower", "CalamityPower", "EntropyPow
 
 
 def combat_maps() -> tuple[list[int], list[int]]:
-    """(obs_map, act_map) for grow.py: where a model trained before upgrades (Act 2's) keeps its inputs and actions.
-    ponytail: only that layout; an Act 1 model first grows into it with grow.py at 9a11ac8."""
-    old_cards = [c for c in CARD_IDS if c not in UPGRADE_CARDS]
-    old_relics = [r for r in RELIC_IDS if r not in UPGRADE_RELICS]
+    """(obs_map, act_map) for grow.py: where a part 1 model (boss_g1; 326edb2) keeps its inputs and actions. The prompt block is new.
+    ponytail: only that layout; an older model first grows into it with grow.py at its own commit."""
+    old_cards = [c for c in CARD_IDS if c not in NEW_CARDS]
     old_powers = [p for p in PLAYER_POWERS if p not in NEW_POWERS]
     obs = insert_map([6, "cards"] * MAX_HAND + [14, (old_powers, PLAYER_POWERS)] + ["cards"] * 3
                      + [MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES + (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS),
-                        (old_relics, RELIC_IDS), len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES], old_cards, CARD_IDS)
+                        len(RELIC_IDS), len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES + UPGRADE_FEATURES], old_cards, CARD_IDS)
     act = list(range(CHOOSE_DISCARD)) + [CHOOSE_DISCARD + CARD_IDS.index(c) for c in old_cards]
     return obs, act
 

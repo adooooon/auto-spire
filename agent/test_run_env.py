@@ -504,10 +504,10 @@ print("event env checks ok")
 
 import gzip
 import pickle
-from env import CHOOSE_DISCARD, CHOOSE_HAND, CHOICE_FEATURES, CARD_IDS, UPGRADE_FEATURES, combat_maps, random_deck
+from env import CHOOSE_DISCARD, CHOOSE_HAND, CHOICE_FEATURES, CARD_IDS, NEW_CARDS, UPGRADE_FEATURES, combat_maps, random_deck
 from sim.cards import CHOICE_CARDS
 from sim.cards import card_to_dict
-fx = pickle.load(gzip.open("test_data/grow_fixture.pkl.gz"))  # recorded before upgrades (test_data/record_grow_fixture.py)
+fx = pickle.load(gzip.open("test_data/grow_fixture.pkl.gz"))  # recorded at part 1, 326edb2 (test_data/record_grow_fixture.py)
 
 # Every old input has the same value at its new index, and new inputs read 0 with no new cards.
 obs_map, act_map = combat_maps()
@@ -516,8 +516,8 @@ for c, old in fx["combat"]:
     new_obs = _encode(c)
     assert np.array_equal(new_obs[obs_map], old)
     assert not np.delete(new_obs, obs_map).any()
-assert len(act_map) == 190 and COMBAT_OBS == len(new_obs)  # the pre-upgrade action count
-assert act_map[:CHOOSE_DISCARD] == list(range(CHOOSE_DISCARD)) and CHOOSE_DISCARD + CARD_IDS.index("ARMAMENTS") not in act_map
+assert len(act_map) == 191 and COMBAT_OBS == len(new_obs)  # the part 1 action count
+assert act_map[:CHOOSE_DISCARD] == list(range(CHOOSE_DISCARD)) and not {CHOOSE_DISCARD + CARD_IDS.index(c) for c in NEW_CARDS} & set(act_map)
 
 
 def choice_env(hand, discard=(), draw=None):
@@ -644,40 +644,21 @@ print("choice env checks ok")
 from run_env import REMOVE, run_maps
 obs_map, act_map = run_maps()
 renv.reset(seed=1)
-assert {s["decision"] for s in fx["run_states"]} == {"path", "pick", "shop", "remove", "potion", "event"}
+assert {s["decision"] for s in fx["run_states"]} == {"path", "pick", "shop", "remove", "potion", "event", "rest"}
 from run_env import SHOP_RELIC, SLOT_FEATURES
 from sim.act import ALL_BOSSES
 from sim.relics import UPGRADE_RELICS
 S0 = len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(ALL_BOSSES)  # the offer / shop slots
 R0 = (OBS_DIM - COLORLESS_OBS) - UPGRADE_OBS - 1 - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)  # the shop's relics
-
-
-def became_modeled(env, decision):
-    """Armaments was a placeholder before upgrades (not in CARDS) and the upgrade relics were unmodeled: an old state's slot
-    holding one read no identity and couldn't be taken. Now it can, so its price / buyable inputs and its action may differ
-    (old indices), and its one-hot is set (a new index). Returns those old-input, new-input and action indices."""
-    shop = decision in ("shop", "remove")
-    cards = env.run.shop.cards if shop else env.offered if decision == "pick" else []
-    arm = [i for i, c in enumerate(cards) if c == "ARMAMENTS"]
-    rel = [k for k, r in enumerate(env.run.shop.relics if shop else []) if r in UPGRADE_RELICS]
-    old = {S0 + i * SLOT_FEATURES + SLOT_FEATURES - j for i in arm for j in (1, 2)} | {R0 + k * (len(RELIC_IDS) + 2) + len(RELIC_IDS) + 1 for k in rel}
-    new = {S0 + i * SLOT_FEATURES + CARD_INDEX["ARMAMENTS"] for i in arm}
-    new |= {R0 + k * (len(RELIC_IDS) + 2) + RELIC_IDS.index(env.run.shop.relics[k]) for k in rel}
-    act = {(SHOP if shop else PICK) + i for i in arm} | {SHOP_RELIC + k for k in rel}
-    return old, new, act
-
-
 not_old = np.isin(np.arange(OBS_DIM), obs_map, invert=True)
-for s in fx["run_states"]:  # old states, read by the new env
+for s in fx["run_states"]:  # part 1 states, read by the new env: old inputs and mask carry over, new inputs read 0
     renv.run, renv.decision, renv.offered, renv.back = s["run"], s["decision"], s["offered"], s["back"]
     new_obs, new_mask = renv._obs(), renv.action_masks()
-    ok_old, ok_new, ok_act = became_modeled(renv, s["decision"])
-    assert set(np.array(obs_map)[new_obs[obs_map] != s["obs"]]) <= ok_old, s["decision"]
-    assert set(np.flatnonzero(not_old & (new_obs != 0))) <= ok_new, s["decision"]
-    assert set(np.array(act_map)[new_mask[act_map] != s["mask"]]) <= ok_act and not np.delete(new_mask, act_map).any(), s["decision"]
-assert fx["run_obs"].shape == (200, len(obs_map)) and fx["run_mask"].shape == (200, len(act_map)) == (200, 127)
-from env import UPGRADE_CARDS
-old_ids = sorted(set(CARD_IDS) - UPGRADE_CARDS)  # a model before upgrades lacks Armaments and the colorless cards
+    assert np.array_equal(new_obs[obs_map], s["obs"]), s["decision"]
+    assert not new_obs[not_old].any(), s["decision"]
+    assert np.array_equal(new_mask[act_map], s["mask"]) and not np.delete(new_mask, act_map).any(), s["decision"]
+assert fx["run_obs"].shape == (200, len(obs_map)) and fx["run_mask"].shape == (200, len(act_map)) == (200, 221)
+old_ids = sorted(set(CARD_IDS) - NEW_CARDS)  # a part 1 model lacks the colorless cards
 assert act_map[REMOVE + old_ids.index("TRUE_GRIT")] == REMOVE + CARD_IDS.index("TRUE_GRIT")
 
 # All three cards can be picked.

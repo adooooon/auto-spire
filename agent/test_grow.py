@@ -42,14 +42,14 @@ with torch.no_grad():
     big.policy.mlp_extractor.policy_net[0].weight[0, 3] += 1.0  # a position that should hold old input 2
 assert not check(small, big, obs_map, act_map)
 
-# The real run policy, grown into the rest and upgrade layout, acts as before on 200 observations its own play recorded
-# before upgrades (test_data/record_grow_fixture.py), whatever the order of the new card and relic ids.
+# The real run policy, grown into the colorless layout, acts as before on 200 observations its own play recorded
+# at part 1 (326edb2) (test_data/record_grow_fixture.py), whatever the order of the new card ids.
 import gzip
 import pickle
 from run_env import N_ACTIONS, RunPolicyEnv, run_maps
 
 fx = pickle.load(gzip.open("test_data/grow_fixture.pkl.gz"))
-run_old = MaskablePPO.load("models/ppo_sts2_sim_act2_run_v1_final.zip", device="cpu")
+run_old = MaskablePPO.load("models/ppo_sts2_sim_boss_run_g1.zip", device="cpu")
 obs_map, act_map = run_maps()
 run_new = grow(run_old, RunPolicyEnv(), obs_map, act_map)
 assert check(run_old, run_new, obs_map, act_map)
