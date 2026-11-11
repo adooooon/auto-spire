@@ -209,11 +209,12 @@ internal static class RunBridge
         bool generated = CombatManager.Instance.DebugOnlyGetState()?.CurrentSide == CombatSide.Player && pending.Min == 0 && pending.Max == 1;
         string kind = In(pcs?.Hand) ? (pending.Multi ? "hand_multi" : "hand")
             : In(pcs?.DiscardPile) ? "discard" : In(pcs?.DrawPile) ? "draw" : pcs != null && generated ? "generated" : "deck";
-        // ponytail: Armaments is the only modeled card asking FromHandForUpgrade; a Harmony tag on it if more do.
-        if (kind == "hand" && source == "ARMAMENTS") kind = "upgrade";
+        // The last card play started is this fight's, so it's the prompt's source only while it's still running.
+        bool playing = history.CardPlaysStarted.Count() > history.CardPlaysFinished.Count();
         // No card play in progress: a turn-start prompt, and Entropy is the only modeled one.
-        if (kind == "hand" && history.CardPlaysStarted.Count() == history.CardPlaysFinished.Count()
-            && player.Creature.Powers.Any(p => p is EntropyPower)) source = "ENTROPY";
+        if (kind == "hand" && !playing && player.Creature.Powers.Any(p => p is EntropyPower)) source = "ENTROPY";
+        // ponytail: Armaments is the only modeled card asking FromHandForUpgrade; a Harmony tag on it if more do.
+        else if (kind == "hand" && playing && source == "ARMAMENTS") kind = "upgrade";
         return new
         {
             kind,

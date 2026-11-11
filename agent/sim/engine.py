@@ -803,7 +803,9 @@ class SimCombat:
             return c.cost
         if self.pw.get("FreeAttackPower"):  # TryModifyEnergyCostInCombatLate: after Tangled
             return 0
-        base = max(0, c.cost - self.attack_plays) if base_id(card_id) == "STOMP" else c.cost  # EnergyCost.AddThisTurn
+        # EnergyCost.AddThisTurn. ponytail: one count for every Stomp copy (Stomp.BeforeCardPlayed + AfterCardEnteredCombat);
+        # a copy entering combat while an Attack is still resolving would miss it, and no modeled card makes one.
+        base = max(0, c.cost - self.attack_plays) if base_id(card_id) == "STOMP" else c.cost
         return base + self.tangled  # TangledPower
 
     def can_play(self, card_id: str) -> bool:

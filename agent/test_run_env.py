@@ -907,3 +907,27 @@ assert o[0, CARD_INDEX["SPLASH"]] == 1 and abs(o[1, -3] - 1.72) < 1e-6 and o[1, 
 renv.step(SHOP_COLORLESS_ACTION + 1)
 assert renv.run.deck[-1] == "MAYHEM" and renv.run.gold == 1000 - 172 and renv.run.shop.cards[6] is None
 print("colorless run env checks ok")
+
+# AutoSpireClient never resends an /exec POST that may have reached the game (read timeout); it retries a failed
+# connection, and GETs as before.
+import requests as _rq
+import client as _client
+calls = []
+def _fake(exc):
+    def request(method, url, **kw):
+        calls.append(method)
+        raise exc
+    return request
+_real, c = _client.requests.request, _client.AutoSpireClient(retries=3)
+try:
+    for exc, method, want in ((_rq.ReadTimeout(), "POST", 1), (_rq.ConnectionError(), "POST", 3), (_rq.ReadTimeout(), "GET", 3)):
+        calls.clear()
+        _client.requests.request = _fake(exc)
+        try:
+            c.exec("choose 0", settle=0) if method == "POST" else c.state()
+        except _rq.RequestException:
+            pass
+        assert calls == [method] * want, (exc, calls)
+finally:
+    _client.requests.request = _real
+print("client retry checks ok")

@@ -40,6 +40,11 @@ class AutoSpireClient:
                 return r.json()
             except requests.RequestException as exc:
                 last_exc = exc
+                # A POST that may have reached the server (a read timeout, an HTTP error) is never sent again: /exec
+                # commands aren't idempotent (a second `fight`, `buy card`, or multi-pick `choose`). Only a connection
+                # that failed is retried.
+                if method != "GET" and not isinstance(exc, requests.ConnectionError):
+                    break
                 if attempt < retries - 1:
                     time.sleep(0.2 * (attempt + 1))
         raise last_exc  # type: ignore[misc]

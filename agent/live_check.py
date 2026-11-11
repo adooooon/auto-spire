@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from env import (CARD_IDS, CHOOSE_DISCARD, CHOOSE_DONE, CHOOSE_DRAW, CHOOSE_GENERATED, CHOOSE_HAND, CHOOSE_SKIP, MAX_ENEMIES,
+from env import (CARD_IDS, CHOOSE_DISCARD, CHOOSE_DONE, CHOOSE_DRAW, CHOOSE_GENERATED, CHOOSE_HAND, CHOOSE_SKIP, END_TURN, MAX_ENEMIES,
                  MAX_HAND, STS2CombatEnv, _ready)
 from live import LiveGame, _cid, _event_opts
 from run_env import CARD_INDEX, OBS_DIM as RUN_OBS_DIM, PICK, REST, REST_OPTIONS, SHOP_COLORLESS_ACTION, SMITH
@@ -254,6 +254,24 @@ class Check:
         for k in ("discardPile", "exhaustPile"):
             assert ids(p[k]) == ids(s[k]), (k, ids(p[k]), ids(s[k]))
         assert p["energy"] == s["energy"], (p["energy"], s["energy"])
+        self.finish_fight()
+
+    def entropy_after_armaments(self) -> None:
+        """Entropy's turn-start prompt is a hand prompt from ENTROPY, even when the last card played was Armaments (whose
+        prompt is "upgrade")."""
+        env, combat, a = self.fight_with("ARMAMENTS")
+        self.do("power ENTROPY_POWER 1 0")
+        env._combat = self.client.wait_for(lambda c: _ready(c) and power(c["player"], "EntropyPower") == 1, timeout=15.0)
+        env.step(a)
+        if env._combat.get("choice"):  # Armaments' own prompt: any upgradable card
+            assert env._combat["choice"]["kind"] == "upgrade", env._combat["choice"]
+            env.step(int(np.flatnonzero(env.action_masks())[0]))
+        env.step(END_TURN)
+        choice = env._combat.get("choice")
+        assert choice and (choice["kind"], choice["source"]) == ("hand", "ENTROPY"), choice
+        assert env.action_masks()[CHOOSE_HAND], "the env can answer it"
+        env.step(CHOOSE_HAND)
+        assert not env._combat.get("choice"), env._combat.get("choice")
         self.finish_fight()
 
     def hand_of_greed(self) -> None:
@@ -532,6 +550,7 @@ class Check:
         self.run("Secret Weapon", lambda: self.colorless_prompt(
             "SECRET_WEAPON", [lambda c: CHOOSE_DRAW + CARD_IDS.index(c["options"][-1])], draw=("STRIKE_IRONCLAD", "BASH")))
         self.run("Thinking Ahead", lambda: self.colorless_prompt("THINKING_AHEAD", [lambda c: CHOOSE_HAND + 1]))
+        self.run("Entropy prompt after Armaments", self.entropy_after_armaments)
         self.run("Hand of Greed: gold from a fatal hit", self.hand_of_greed)
         self.run("shop: colorless slots", self.shop_colorless)
         self.run("upgraded card reward", self.upgraded_reward)

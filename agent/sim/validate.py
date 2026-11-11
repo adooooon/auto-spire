@@ -81,6 +81,11 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
             sim.inst[name] = [[a, *state] for a in amounts]
     # A random step (e.g. Hellraiser autoplays after a reshuffle) can leave the carried count high.
     sim.attack_plays = min(sim.attack_plays, sim.cards_played)
+    # The game's own counts, when /combat has them (CardPlaysStarted this turn by type): a random step (Catastrophe's
+    # autoplays) leaves the carried ones wrong for the rest of the turn, and Stomp's cost reads them.
+    ctr = c.get("relicCounters") or {}
+    if "attacks" in ctr:
+        sim.attack_plays, sim.skill_plays = ctr["attacks"], ctr["skills"]
     # Thieving Hopper steals deck cards. ponytail: /combat doesn't mark generated cards, so every card but a status
     # or token counts as the deck's.
     for pile in (sim.hand, sim.draw_pile, sim.discard_pile, sim.exhaust_pile):
