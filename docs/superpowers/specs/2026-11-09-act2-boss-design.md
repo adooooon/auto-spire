@@ -149,9 +149,9 @@ Same eval as part 1 (`run.py --model models/ppo_sts2_sim_boss_g2.zip --maps gene
 
 - Act 1 is 1.6 points above part 1's 79.4%, so no regression. `stuck=0`, no crashes.
 - Of the runs that reached the Act 2 boss, 6 of 123 won (5%), against 8 of 121 (7%) for part 1.
-- The grown models are untrained on the colorless cards, the new powers and the prompt block. Shops now stock them; the run model sees those slots for the first time.
+- The grown models are untrained on the colorless cards, the new powers and the prompt block.
 
-Boss analysis (`boss_report.py` on the grown pair, 1,500 runs, 372 boss fights, exit 0):
+Boss analysis (`boss_report.py` on the grown pair, 1,500 runs, 372 boss fights in `~/projects/sts2-rl-bot/auto-spire/.superpowers/queue/boss_analysis_g2.jsonl`, exit 0):
 
 | Boss | Reference won | g1 won | g2 won |
 |---|---|---|---|
@@ -160,7 +160,7 @@ Boss analysis (`boss_report.py` on the grown pair, 1,500 runs, 372 boss fights, 
 | The Insatiable | 11 / 124 (9%) | 15 / 104 (14%) | 15 / 131 (11%) |
 | All | 21 / 331 (6%) | 25 / 337 (7%) | 25 / 372 (7%) |
 
-Noise: at 500 runs one standard error on Act 1 is about 1.8 points, and the Act 2 clear (6 to 11 runs of 500) and per-boss counts (4 to 15 wins) move by several wins from the seed alone. The Act 1 rise and the Act 2 and per-boss changes are within sampling noise; none shows a regression or an improvement. The "died" counts differ in total because the Act 1 clears differ. The two evals use different denominators (boss reachers vs boss fights), as in part 1.
+Noise: at 500 runs one standard error on Act 1 is about 1.8 points, and the Act 2 clear (6 to 11 runs of 500) and per-boss counts (4 to 15 wins) move by several wins from the seed alone. The Act 1 rise and the Act 2 and per-boss changes are all within sampling noise. The "died" counts differ in total because the Act 1 clears differ. The two evals use different denominators (boss reachers vs boss fights), as in part 1.
 
 ## Not in scope
 

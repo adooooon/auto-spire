@@ -678,7 +678,7 @@ Ported in `agent/sim/act.py` (the run), `agent/sim/relics.py` and `agent/sim/eng
   - Splash and Alchemize stock, so the odds stay right, but can't be bought (`NOT_BUYABLE`; `Run.buy` asserts, the run env masks them).
   - Run env: the 2 slots are the last obs block (card one-hot, price / 100, affordable, upgraded) and the last 2 actions (`SHOP_COLORLESS_ACTION`), appended so older models still map (`run_maps`).
 - **Keywords:** Innate (opening hand, `CardDef.innate`; Entropy upgraded gets it); Retain; `RetainHandPower` (Equilibrium, Salvo) keeps the whole hand at end of turn.
-- **Powers:** Automation, Calamity, Entropy, Fasten, Mayhem, Nostalgia, Panache, Plating, Prep Time, Rolling Boulder, Stratagem, The Gambit, plus Strength and No Block through existing powers.
+- **Powers:** Automation, Calamity, Entropy, Fasten, Mayhem, Nostalgia, Panache, Prep Time, Rolling Boulder, Stratagem, The Gambit, plus Strength and No Block through existing powers. Eternal Armor reuses the existing Plating (Stone Armor).
   - `PowerStackType.Single` (Barricade, The Gambit, No Draw, ...) only hides the number on the icon (`NPower`). `PowerCmd.Apply` adds to an existing power's Amount whatever its StackType, so a second The Gambit shows Amount 2. None of these powers reads its Amount.
 - **Prompts** (`SimCombat.pending_choice`): `generated` (choose 1 of N new cards, skippable), `draw` (pick from the draw pile), `hand_multi` (pick up to N from the hand, ends early with an empty pick). Entropy's prompt pauses the start of the turn. Stratagem's shuffle pick is random, not asked.
 - **Left out** (`ponytail:`): Splash (needs other characters' Attacks), Alchemize (random potion, with the potions), and 5 of Entropy's statuses that the sim doesn't have.
