@@ -342,6 +342,11 @@ assert c.ringing and beast.move == "STOMP_MOVE"
 c.hand = ["STRIKE_IRONCLAD", "STRIKE_IRONCLAD"]
 c.play_card(0, 1)
 assert c.play_card(0, 1)["error"] == "card_not_playable" and not c.combat_dict()["player"]["hand"][0]["canPlay"]
+# Plow strips Dark Shackles too (a TemporaryStrengthPower): no Strength handed back at the end of the beast's turn.
+c = solo(["STRIKE_IRONCLAD"], "CEREMONIAL_BEAST_BOSS"); c.end_turn(); c.end_turn(); c.hand = ["DARK_SHACKLES", "STRIKE_IRONCLAD"]
+beast = c.enemies[0]; c.play_card(0, 1); assert beast.pw["DarkShacklesPower"] == 9
+beast.hp = 155; c.play_card(0, 1); assert beast.plow == 0 and "DarkShacklesPower" not in beast.pw
+c.end_turn(); assert beast.strength == 0
 c = solo(["STRIKE_IRONCLAD"], "THE_KIN_BOSS")
 assert [e.move for e in c.enemies] == ["POWER_DANCE_MOVE", "QUICK_SLASH_MOVE", "ORB_OF_FRAILTY_MOVE"]
 c.weak, hp = 1, c.enemies[2].hp
@@ -1771,7 +1776,11 @@ COLORLESS_SPECIAL = {  # card: (hand, setup, measure, base value, upgraded value
     "THE_BOMB": ((), None, lambda c: c.inst["TheBombPower"], [[3, 40]], [[3, 50]]),
     "THE_GAMBIT": ((), None, lambda c: (c.player_block, c.pw["TheGambitPower"]), (50, 1), (75, 1)),
 }
-assert len(COLORLESS_SPECIAL) == 32
+assert set(COLORLESS_SPECIAL) == {
+    "ANOINTED", "BEAT_DOWN", "BOLAS", "CATASTROPHE", "FISTICUFFS", "GOLD_AXE", "HAND_OF_GREED", "HIDDEN_GEM", "IMPATIENCE",
+    "JACK_OF_ALL_TRADES", "JACKPOT", "MIND_BLAST", "OMNISLICE", "REND", "RESTLESSNESS", "SCRAWL", "THRUMMING_HATCHET",
+    "AUTOMATION", "CALAMITY", "DARK_SHACKLES", "ETERNAL_ARMOR", "FASTEN", "MAYHEM", "NOSTALGIA", "PANACHE", "PANIC_BUTTON",
+    "PREP_TIME", "PROLONG", "ROLLING_BOULDER", "STRATAGEM", "THE_BOMB", "THE_GAMBIT"}, set(COLORLESS_SPECIAL)
 for cid, (hand_, setup, measure, want_b, want_u) in COLORLESS_SPECIAL.items():
     b, u = upgraded(cid, hand_, setup or (lambda c: None))
     assert (measure(b), measure(u)) == (want_b, want_u), (cid, measure(b), measure(u))
@@ -2086,6 +2095,7 @@ for seed in range(200):
     for cid in PROMPTS + tuple(x + "+" for x in PROMPTS):
         c = big(solo(["HAVOC", S, D, "WOUND"], seed=seed)); c.draw_pile = [S, D, B, "SHRUG_IT_OFF", cid]
         assert c.play_card(0)["ok"] and c.pending_choice is None and c.in_combat, (seed, cid)
+        assert cid not in c.draw_pile, (seed, cid, "prompt card not autoplayed")
         c = big(solo(["MAYHEM"], seed=seed)); c.play_card(0); c.hand = [S, "WOUND"]; c.draw_pile = [S, D, B, "SHRUG_IT_OFF", cid] + [D] * 5
         assert c.end_turn()["ok"] and c.pending_choice is None and c.in_combat and c.is_play_phase, (seed, cid)
 print("colorless prompt checks ok")

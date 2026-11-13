@@ -1786,6 +1786,7 @@ class SimCombat:
             # temporary Strength powers) and get stunned (STUNNED, then BEAST_CRY_MOVE: phase 2).
             if e.plow and hp_loss > 0 and e.hp <= e.plow:
                 e.plow, e.strength, e.mangle, e.move, e.next_override = 0, 0, 0, "STUNNED", "BEAST_CRY_MOVE"
+                e.pw.pop("DarkShacklesPower", None)  # a TemporaryStrengthPower too: no Strength handed back at turn end
             return total
         self._hive_death(e, attack)
         # InfestedPower.AfterDeath: spawns that start stunned, in slots after the dead one.
@@ -2103,6 +2104,8 @@ class SimCombat:
         # BeforeHandDraw: Bolas and Thrumming Hatchet come back from any pile (a full hand sends them to discard).
         for pile in (self.hand, self.draw_pile, self.discard_pile, self.exhaust_pile):
             for card in [c for c in pile if base_id(c) in ("BOLAS", "THRUMMING_HATCHET")]:
+                # ponytail: generated copies of one id are the same interned str, so two copies both return when one was
+                # played; fix: wrap generated cards in a fresh str subclass in _add_to_hand.
                 if pile is not self.hand and any(card is p for p in self.played_last):
                     pile.pop(next(i for i, c in enumerate(pile) if c is card))
                     self._add_to_hand(card)

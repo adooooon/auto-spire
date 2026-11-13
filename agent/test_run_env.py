@@ -141,7 +141,8 @@ fights = 0
 for _ in range(30):
     obs, _ = menv.reset()
     hp_in = menv.client._combat.player_hp
-    assert hp_in == menv.driver.run.hp
+    # Blood Vial heals 2 at fight start, after the run HP is synced: allow exactly that, only when held (the run model is unseeded).
+    assert 0 <= hp_in - menv.driver.run.hp <= (2 if "BLOOD_VIAL" in menv.driver.run.relics else 0), (hp_in, menv.driver.run.hp)
     done = False
     while not done:
         obs, _, term, trunc, info = menv.step(int(rng2.choice(np.flatnonzero(menv.action_masks()))))
