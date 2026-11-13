@@ -132,6 +132,36 @@ This pair, boss_g1 + boss_run_g1, is part 3's starting point.
 
 The first eval crashed on `run.deck.remove` after a Thieving Hopper fight: `_steal` recorded the base id of the deck's last upgraded copy (UPPERCUT for UPPERCUT+), and commit 879f235 fixed it by having each combat copy of a deck card carry its deck card.
 
+## Part 2a results (2026-11-13)
+
+Grow commands, run from `agent/`, both exit 0:
+
+- `grow.py models/ppo_sts2_sim_boss_g1.zip models/ppo_sts2_sim_boss_g2.zip --env combat --insert-cards` gave "grow self-check ok: 1979->3122 inputs, 191->392 actions".
+- `grow.py models/ppo_sts2_sim_boss_run_g1.zip models/ppo_sts2_sim_boss_run_g2.zip --env run --insert-cards` gave "grow self-check ok: 1603->2319 inputs, 221->329 actions".
+
+Same eval as part 1 (`run.py --model models/ppo_sts2_sim_boss_g2.zip --maps generated --run-model models/ppo_sts2_sim_boss_run_g2.zip --runs 500 --n 16`, run under `caffeinate -i`, no traceback in the log):
+
+| Pair | Act 1 | Act 2 | Avg floor | Gold spent | Potions used | Relics | Died: A1 boss / A2 monster / A2 elite / A2 boss |
+|---|---|---|---|---|---|---|---|
+| Reference: act2_b + act2_run_v1 | 79.0% | 2.2% | 10.9 | 289 | 3.79 | 2.91 | 93 / 205 / 73 / 106 |
+| Part 1: boss_g1 + boss_run_g1 | 79.4% | 1.6% | 10.8 | 294 | 3.76 | 2.89 | 91 / 194 / 82 / 113 |
+| Part 2a: boss_g2 + boss_run_g2 | 81.0% | 1.2% | 10.7 | 304 | 3.76 | 2.92 | 76 / 206 / 76 / 117 |
+
+- Act 1 is 1.6 points above part 1's 79.4%, so no regression. `stuck=0`, no crashes.
+- Of the runs that reached the Act 2 boss, 6 of 123 won (5%), against 8 of 121 (7%) for part 1.
+- The grown models are untrained on the colorless cards, the new powers and the prompt block. Shops now stock them; the run model sees those slots for the first time.
+
+Boss analysis (`boss_report.py` on the grown pair, 1,500 runs, 372 boss fights, exit 0):
+
+| Boss | Reference won | g1 won | g2 won |
+|---|---|---|---|
+| Kaiser Crab | 0 / 104 (0%) | 3 / 116 (3%) | 4 / 114 (4%) |
+| Knowledge Demon | 10 / 103 (10%) | 7 / 117 (6%) | 6 / 127 (5%) |
+| The Insatiable | 11 / 124 (9%) | 15 / 104 (14%) | 15 / 131 (11%) |
+| All | 21 / 331 (6%) | 25 / 337 (7%) | 25 / 372 (7%) |
+
+Noise: at 500 runs one standard error on Act 1 is about 1.8 points, and the Act 2 clear (6 to 11 runs of 500) and per-boss counts (4 to 15 wins) move by several wins from the seed alone. The Act 1 rise and the Act 2 and per-boss changes are within sampling noise; none shows a regression or an improvement. The "died" counts differ in total because the Act 1 clears differ. The two evals use different denominators (boss reachers vs boss fights), as in part 1.
+
 ## Not in scope
 
 - Act 3, Ascension, other characters.

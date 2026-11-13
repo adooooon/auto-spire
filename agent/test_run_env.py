@@ -645,11 +645,9 @@ from run_env import REMOVE, run_maps
 obs_map, act_map = run_maps()
 renv.reset(seed=1)
 assert {s["decision"] for s in fx["run_states"]} == {"path", "pick", "shop", "remove", "potion", "event", "rest"}
-from run_env import SHOP_RELIC, SLOT_FEATURES
+from run_env import SLOT_FEATURES
 from sim.act import ALL_BOSSES
-from sim.relics import UPGRADE_RELICS
 S0 = len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(ALL_BOSSES)  # the offer / shop slots
-R0 = (OBS_DIM - COLORLESS_OBS) - UPGRADE_OBS - 1 - EVENT_OBS - 3 * (len(RELIC_IDS) + 2)  # the shop's relics
 not_old = np.isin(np.arange(OBS_DIM), obs_map, invert=True)
 for s in fx["run_states"]:  # part 1 states, read by the new env: old inputs and mask carry over, new inputs read 0
     renv.run, renv.decision, renv.offered, renv.back = s["run"], s["decision"], s["offered"], s["back"]
