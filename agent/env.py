@@ -32,7 +32,7 @@ from gymnasium import spaces
 
 from client import AutoSpireClient
 from grow import insert_map
-from sim.cards import CARDS, CHOICE_CARDS, COLORLESS, COMMONS, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck
+from sim.cards import CARDS, CHOICE_CARDS, COLORLESS, COLORLESS_RARES, COLORLESS_UNCOMMONS, COMMONS, NOT_BUYABLE, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck, upgrade
 from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
 from sim.relics import RELIC_IDS
@@ -155,13 +155,18 @@ def random_deck(rng: np.random.Generator, prompt_practice: bool = False) -> list
     deck = starter_deck()
     for _ in range(rng.integers(0, 4)):
         deck.remove(rng.choice([c for c in deck if c != "BASH"]))
-    pools = [COMMONS, UNCOMMONS, RARES]
+    pools = [COMMONS + ("ARMAMENTS",), UNCOMMONS, RARES]
     deck += [str(rng.choice(pools[rng.choice(3, p=[0.6, 0.3, 0.1])])) for _ in range(rng.integers(0, 9))]
     if prompt_practice and rng.random() < 0.5:  # the prompt cards are rare in offers, so seed them in
-        deck.append(str(rng.choice(CHOICE_CARDS)))
+        deck.append(str(rng.choice(CHOICE_CARDS + ("ARMAMENTS",) + COLORLESS_PROMPT_CARDS)))
         if rng.random() < 0.5:  # Wounds give Burning Pact and Brand something worth exhausting
             deck += ["WOUND"] * int(rng.integers(1, 3))
-    return deck
+    if rng.random() < 0.5:  # a shop's colorless card or two: Uncommon 75%, Rare 25% (a guess; shops stock one of each)
+        for _ in range(rng.integers(1, 3)):
+            pool = COLORLESS_UNCOMMONS if rng.random() < 0.75 else COLORLESS_RARES
+            deck.append(str(rng.choice([c for c in pool if c not in NOT_BUYABLE])))
+    # ponytail: 0.2 per card, between Act 1's 0 and Act 2's 0.25 reward roll plus Smith
+    return [upgrade(c) if rng.random() < 0.2 else c for c in deck]
 
 
 def random_potions(rng: np.random.Generator, slots: int = POTION_SLOTS) -> list[str]:
@@ -176,8 +181,15 @@ def random_relics(rng: np.random.Generator) -> tuple[set[str], dict[str, int]]:
     return held, {k: int(rng.integers(0, max(n, 2))) for k, n in RELIC_COUNTERS
                   if owner.get(k, k.upper()) in held}
 
+STACKABLE_POWERS = {"AutomationPower", "PanachePower", "RollingBoulderPower"}
+
+
 def _power(entity: dict, name: str) -> int:
-    return next((p["amount"] for p in entity.get("powers") or [] if p["name"] == name), 0)
+    amounts = [p["amount"] for p in entity.get("powers") or [] if p["name"] == name]
+    if not amounts:
+        return 0
+    # instanced powers: one entry per copy. Bomb's amount is its turns left, so the soonest matters; the rest add up.
+    return min(amounts) if name == "TheBombPower" else sum(amounts) if name in STACKABLE_POWERS else amounts[0]
 
 
 def _living(combat: dict) -> list[dict]:

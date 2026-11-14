@@ -635,7 +635,7 @@ assert env.action_masks()[:8 * MAX_ENEMIES:MAX_ENEMIES].tolist() == [False] * 7 
 # Prompt practice, in decks only and only when asked.
 rng = np.random.default_rng(0)
 decks = [random_deck(rng, prompt_practice=True) for _ in range(4000)]
-assert 0.50 < np.mean([any(x in CHOICE_CARDS for x in d) for d in decks]) < 0.68
+assert 0.15 < np.mean([any(x in CHOICE_CARDS for x in d) for d in decks]) < 0.30  # the seeded card is now 1 of 11 prompt cards
 assert 0.20 < np.mean(["WOUND" in d for d in decks]) < 0.30
 assert all(d.count("WOUND") <= 2 for d in decks)
 assert set(CHOICE_CARDS) <= {x for d in decks for x in d}
@@ -911,3 +911,28 @@ try:
 finally:
     _client.requests.request = _real
 print("client retry checks ok")
+
+# Training decks: upgrades, Armaments, colorless cards; every copy of a stackable power is observed.
+import hashlib
+import numpy as np
+from env import COLORLESS_PROMPT_CARDS, _power, random_deck
+from sim.cards import COLORLESS, NOT_BUYABLE, UPGRADABLE, base_id, is_upgraded
+_rng = np.random.default_rng(0)
+_decks = [random_deck(_rng) for _ in range(2000)]
+_ups = [is_upgraded(c) for d in _decks for c in d if base_id(c) in UPGRADABLE]
+assert 0.17 < sum(_ups) / len(_ups) < 0.23, sum(_ups) / len(_ups)
+assert any("ARMAMENTS" in d for d in _decks)
+_col = sum(any(base_id(c) in COLORLESS for c in d) for d in _decks) / 2000
+assert 0.45 < _col < 0.55, _col
+assert not any(base_id(c) in NOT_BUYABLE or (is_upgraded(c) and base_id(c) not in UPGRADABLE) for d in _decks for c in d)
+_pp = [c for _ in range(500) for c in random_deck(_rng, prompt_practice=True)]
+assert any(c in COLORLESS_PROMPT_CARDS for c in _pp) and any(base_id(c) == "ARMAMENTS" for c in _pp)
+_e = lambda *ps: {"powers": [{"name": n, "amount": a} for n, a in ps]}
+assert _power(_e(("RollingBoulderPower", 5), ("RollingBoulderPower", 10)), "RollingBoulderPower") == 15
+assert _power(_e(("TheBombPower", 3), ("TheBombPower", 1)), "TheBombPower") == 1
+assert _power(_e(("PanachePower", 3), ("AutomationPower", 2)), "PanachePower") == 3 and _power(_e(), "TheBombPower") == 0
+_c = {"player": {"hp": 50, "maxHp": 80, "block": 0, "energy": 3, "hand": [], "powers": [{"name": n, "amount": a} for n, a in
+      [("AutomationPower", 2), ("PanachePower", 3), ("RollingBoulderPower", 5), ("TheBombPower", 3), ("StrengthPower", 2)]]},
+      "enemies": [{"isAlive": True, "hp": 40, "maxHp": 40, "block": 0, "powers": [{"name": "VulnerablePower", "amount": 2}], "intents": []}]}
+assert hashlib.md5(np.asarray(_encode(_c)).tobytes()).hexdigest() == "cede48cad40a299516850c07d4e50ca3"  # recorded before the change
+print("training deck checks ok")

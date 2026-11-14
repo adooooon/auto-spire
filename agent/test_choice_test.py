@@ -43,6 +43,8 @@ class Stub:
         if c["choice"]["kind"] == "hand":
             junk = [i for i, x in enumerate(p["hand"]) if CARDS[x["id"]].rarity == "Status"]
             return np.array(CHOOSE_HAND + (junk or [0])[0]), None
+        if c["choice"]["kind"] != "discard":  # Armaments' upgrade prompt and the colorless prompts now turn up in the decks
+            return np.array(legal[0]), None
         want_block = p["hp"] < 0.5 * p["maxHp"]
         good = [a for a in legal if (CARDS[CARD_IDS[a - CHOOSE_DISCARD]].block > 0) == want_block]
         return np.array((good or legal)[0]), None
