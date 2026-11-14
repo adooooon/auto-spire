@@ -635,7 +635,7 @@ assert env.action_masks()[:8 * MAX_ENEMIES:MAX_ENEMIES].tolist() == [False] * 7 
 # Prompt practice, in decks only and only when asked.
 rng = np.random.default_rng(0)
 decks = [random_deck(rng, prompt_practice=True) for _ in range(4000)]
-assert 0.15 < np.mean([any(x in CHOICE_CARDS for x in d) for d in decks]) < 0.30  # the seeded card is now 1 of 11 prompt cards
+assert 0.25 < np.mean([any(x in CHOICE_CARDS for x in d) for d in decks]) < 0.35  # measured 0.297: half the seeded cards are Headbutt/Burning Pact/Brand
 assert 0.20 < np.mean(["WOUND" in d for d in decks]) < 0.30
 assert all(d.count("WOUND") <= 2 for d in decks)
 assert set(CHOICE_CARDS) <= {x for d in decks for x in d}

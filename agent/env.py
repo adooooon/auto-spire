@@ -158,7 +158,7 @@ def random_deck(rng: np.random.Generator, prompt_practice: bool = False) -> list
     pools = [COMMONS + ("ARMAMENTS",), UNCOMMONS, RARES]
     deck += [str(rng.choice(pools[rng.choice(3, p=[0.6, 0.3, 0.1])])) for _ in range(rng.integers(0, 9))]
     if prompt_practice and rng.random() < 0.5:  # the prompt cards are rare in offers, so seed them in
-        deck.append(str(rng.choice(CHOICE_CARDS + ("ARMAMENTS",) + COLORLESS_PROMPT_CARDS)))
+        deck.append(str(rng.choice(CHOICE_CARDS if rng.random() < 0.5 else ("ARMAMENTS",) + COLORLESS_PROMPT_CARDS)))
         if rng.random() < 0.5:  # Wounds give Burning Pact and Brand something worth exhausting
             deck += ["WOUND"] * int(rng.integers(1, 3))
     if rng.random() < 0.5:  # a shop's colorless card or two: Uncommon 75%, Rare 25% (a guess; shops stock one of each)
