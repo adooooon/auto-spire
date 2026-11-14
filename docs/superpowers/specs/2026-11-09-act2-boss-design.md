@@ -162,6 +162,10 @@ Boss analysis (`boss_report.py` on the grown pair, 1,500 runs, 372 boss fights i
 
 Noise: at 500 runs one standard error on Act 1 is about 1.8 points, and the Act 2 clear (6 to 11 runs of 500) and per-boss counts (4 to 15 wins) move by several wins from the seed alone. The Act 1 rise and the Act 2 and per-boss changes are all within sampling noise. The "died" counts differ in total because the Act 1 clears differ. The two evals use different denominators (boss reachers vs boss fights), as in part 1.
 
+## Part 3 results
+
+Run: `.superpowers/queue/boss.sh` (git-ignored), from the frozen worktree `auto-spire-retraint` at commit 2f97332. Stages: combat A 20M steps, combat B 20M, run policy 6M, eval 500 runs, boss report 1500 runs.
+
 ## Not in scope
 
 - Act 3, Ascension, other characters.
