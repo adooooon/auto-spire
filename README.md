@@ -2,6 +2,21 @@
 
 Automating Slay the Spire 2. Read game state, send commands, play intelligently.
 
+## This fork: a reinforcement-learning agent
+
+**Credit:** the bridge mod comes from [vorpus/auto-spire](https://github.com/vorpus/auto-spire) (March 2026): the AutoSpire HTTP server with `/state`, `/act` and `/exec`, the build setup, and the demo video below. Everything from October 2026 onward, on the `rl-agent-sim` branch, is my work (Aden Hsu):
+
+- **A simulator of the game** (`agent/sim/`): fights, maps, rewards, shops, events, rest sites, potions, relics, card upgrades and colorless cards for the Ironclad in Acts 1 and 2. Every rule is ported from the decompiled C# source. The sim is checked step by step against the real game (`agent/sim/validate.py`, `agent/live_check.py`).
+- **Gymnasium environments and MaskablePPO policies** (`agent/env.py`, `agent/run_env.py`, `agent/train.py`): a combat policy that plays cards and potions, and a run policy that picks paths, cards, shop purchases, events and rest-site actions. When the game grows (new cards, new actions), trained models grow into the bigger inputs without losing what they learned (`agent/grow.py`).
+- **Mod extensions so the policies play real runs** (`mod/AutoSpire/AutoSpireRun.cs`, `agent/live.py`): rewards, shops, events, rest sites and card choices, answered through the game's own selection hooks.
+
+Current results (sim, 500 generated maps):
+
+- **Act 1:** cleared in 81% of runs.
+- **Act 2:** cleared in about 1–2% of runs. The Act 2 boss wins about 7% of its fights and is the current focus.
+
+The design notes, analyses and results for each stage are in `docs/superpowers/specs/`.
+
 [![Demo: Claude playing STS2 via AutoSpire](https://img.youtube.com/vi/SXD6wWn3IX4/maxresdefault.jpg)](https://www.youtube.com/watch?v=SXD6wWn3IX4)
 
 STS2 is a C#/.NET 9 game on a custom Godot 4.5.1 Mono engine ("MegaDot"). It ships with HarmonyLib and a built-in mod loader, which we use to inject a bridge mod that exposes game state over HTTP.
