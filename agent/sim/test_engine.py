@@ -2334,21 +2334,35 @@ c = tpot("DUPLICATOR", ["DEFEND_IRONCLAD"])
 c.use_potion(0)
 c.play_card(0)
 assert c.player_block == 10
-# Review focus 4: Duplicator on prompt and X-cost cards, 200 seeded fights each.
+# Review focus 4: Duplicator on prompt and X-cost cards, 200 seeded fights each. The extra play prompts again (_run_plays
+# with _pausable, like One-Two Punch: the game replays OnPlay with a real choice context). A Headbutt whose discard pile is
+# down to one card has nothing to choose, so it doesn't ask.
 for seed in range(200):
-    for cid in ("HEADBUTT", "PURITY", "DISCOVERY", "WHIRLWIND"):
+    for cid, discard, prompts in (("HEADBUTT", [S, D], ["discard"]), ("HEADBUTT", [S, D, B], ["discard", "discard"]),
+                                  ("PURITY", [S, D], ["hand_multi"] * 2), ("DISCOVERY", [S, D], ["generated"] * 2),
+                                  ("WHIRLWIND", [S, D], [])):
         c = tpot("DUPLICATOR", [cid, S, D, "WOUND"], seed=seed)
-        c.draw_pile, c.discard_pile = [D, S, B, S], [S, D]
+        c.draw_pile, c.discard_pile = [D, S, B, S], list(discard)
         c.use_potion(0)
+        h, hand = c.enemies[0].hp, len(c.hand)
         assert c.play_card(0, 1)["ok"], (seed, cid)
+        kinds = []
         for _ in range(6):
             ch = c.pending_choice
             if not ch:
                 break
+            kinds.append(ch["kind"])
             r = c.choose_done() if ch["kind"] == "hand_multi" else c.choose_generated(0) if ch["kind"] == "generated" \
                 else c.choose_discard(c.discard_pile[0]) if ch["kind"] == "discard" else c.choose_card(0)
             assert r.get("ok"), (seed, cid, ch, r)
-        assert c.pending_choice is None and c.in_combat and c.is_play_phase, (seed, cid)
+        assert kinds == prompts, (seed, cid, kinds)
+        assert c.pending_choice is None and c.in_combat and c.is_play_phase and "DuplicationPower" not in c.pw, (seed, cid)
+        if cid == "WHIRLWIND":  # X = 3 energy, spent once: 3 hits of 5, twice
+            assert h - c.enemies[0].hp == 30 and c.energy == 0, (seed, h - c.enemies[0].hp, c.energy)
+        elif cid == "DISCOVERY":  # two cards added (the Discovery itself leaves the hand)
+            assert len(c.hand) == hand - 1 + 2, (seed, len(c.hand))
+        elif cid == "HEADBUTT":
+            assert h - c.enemies[0].hp == 18 and len(c.draw_pile) == 4 + 2, (seed, len(c.draw_pile))  # 9 twice; two discards moved
         assert c.end_turn()["ok"] and c.in_combat, (seed, cid)
 # Powdered Demise: Unblockable, Unpowered at the end of each of the enemy's turns; never decrements; stacks.
 c = tpot("POWDERED_DEMISE", [])
@@ -2485,10 +2499,14 @@ assert not c.in_combat and c.won is False
 c = tpot("FAIRY_IN_A_BOTTLE", ["OFFERING"], player_hp=6)
 c.play_card(0)
 assert c.in_combat and c.player_hp == 24 and c.potions[0] is None
-c = tpot("FAIRY_IN_A_BOTTLE", [], player_hp=6)
-c._lose_hp(6)
-assert c.in_combat and c.player_hp == 24
-assert c.end_turn()["ok"] and c.in_combat and c.is_play_phase
+for status, dmg in (("TOXIC", 5), ("INFECTION", 3)):  # a real end-of-turn self-damage case: the status hits at DoTurnEnd
+    c = tpot("FAIRY_IN_A_BOTTLE", [status], player_hp=2)
+    c.player_block = 0
+    eot(c)
+    assert c.in_combat and c.potions[0] is None and c.player_hp == 24 and c.hp_loss_events == 1, (status, c.player_hp)
+    c = tpot("FAIRY_IN_A_BOTTLE", [status], player_hp=dmg)  # exactly lethal; the real turn change goes on
+    c.player_block = 0
+    assert c.end_turn()["ok"] and c.in_combat and c.potions[0] is None and c.round == 2 and c.is_play_phase, status
 # AfterPotionUsed runs for Fairy (Belt Buckle: the last potion gone gives Dexterity).
 c = rc("BELT_BUCKLE", hp=5)
 c.potions = ["FAIRY_IN_A_BOTTLE", None, None]
@@ -2567,5 +2585,18 @@ d = c.combat_dict()
 d["relicCounters"] = {"attacks": 1, "skills": 3}
 again = load(d, defaultdict(list), prev=c)
 assert (again.attack_plays, again.skill_plays) == (1, 3)
+# Shackling Potion live: the game reports ShacklingPotionPower (Strength already -7); the sim keeps it as DarkShacklesPower so
+# the Strength comes back at the end of the enemy's turn.
+c = solo([], "SLIMES_WEAK")
+d = c.combat_dict()
+base = [e.strength for e in c.enemies]
+for x in d["enemies"]:
+    x["powers"] = [{"name": "StrengthPower", "amount": -7}, {"name": "ShacklingPotionPower", "amount": 7}]
+again = load(d, defaultdict(list), prev=c)
+assert all(e.pw.get("DarkShacklesPower") == 7 and e.strength == -7 for e in again.enemies)
+again.end_turn()
+assert all(e.strength == 0 for e in again.enemies if e.is_alive), [e.strength for e in again.enemies]
+d["enemies"][0]["powers"].append({"name": "DarkShacklesPower", "amount": 9})  # alongside Dark Shackles: they add up
+assert load(d, defaultdict(list), prev=c).enemies[0].pw["DarkShacklesPower"] == 16
 print("validate load checks ok")
 print("sim self-check ok")

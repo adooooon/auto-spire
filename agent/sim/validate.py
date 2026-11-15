@@ -116,6 +116,8 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
                                   slippery=_power(e, "SlipperyPower"), plow=_power(e, "PlowPower"),
                                   weak=_power(e, "WeakPower"), mangle=_power(e, "ManglePower"),
                                   pw={x["name"]: x["amount"] for x in e["powers"] if x["name"] in ENEMY_PW or x["name"] == "DarkShacklesPower"}
+                                  | ({"DarkShacklesPower": _power(e, "DarkShacklesPower") + _power(e, "ShacklingPotionPower")}  # the sim keeps both under one name
+                                     if _power(e, "ShacklingPotionPower") else {})
                                   | ({"reviving": 1} if e["hp"] <= 0 and MONSTERS[e["modelId"]].reattach else {}),
                                   log=list(logs[e["combatId"]])))
     # Stun follow-ups aren't in the move graph: the Beast's STUNNED leads into phase 2, and a
