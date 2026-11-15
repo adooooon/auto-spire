@@ -148,19 +148,22 @@ def combat_maps() -> tuple[list[int], list[int]]:
     return obs, act
 
 
-def random_deck(rng: np.random.Generator, prompt_practice: bool = False) -> list[str]:
+def random_deck(rng: np.random.Generator, prompt_practice: bool = False, extras: bool = True) -> list[str]:
     """Starter deck minus 0-3 Strikes/Defends, plus 0-8 random Ironclad cards (with replacement) —
     roughly the decks an Act 1 run sees. Rarity 60/30/10%: Rares oversampled vs. the ~3% of offers
-    so the policy learns to play them."""
+    so the policy learns to play them. extras=False skips the upgrade roll, Armaments in the Commons and
+    the colorless additions (the pre-b46b756 decks and rng draws, for choice_test)."""
     deck = starter_deck()
     for _ in range(rng.integers(0, 4)):
         deck.remove(rng.choice([c for c in deck if c != "BASH"]))
-    pools = [COMMONS + ("ARMAMENTS",), UNCOMMONS, RARES]
+    pools = [COMMONS + (("ARMAMENTS",) if extras else ()), UNCOMMONS, RARES]
     deck += [str(rng.choice(pools[rng.choice(3, p=[0.6, 0.3, 0.1])])) for _ in range(rng.integers(0, 9))]
     if prompt_practice and rng.random() < 0.5:  # the prompt cards are rare in offers, so seed them in
         deck.append(str(rng.choice(CHOICE_CARDS if rng.random() < 0.5 else ("ARMAMENTS",) + COLORLESS_PROMPT_CARDS)))
         if rng.random() < 0.5:  # Wounds give Burning Pact and Brand something worth exhausting
             deck += ["WOUND"] * int(rng.integers(1, 3))
+    if not extras:
+        return deck
     if rng.random() < 0.5:  # a shop's colorless card or two: Uncommon 75%, Rare 25% (a guess; shops stock one of each)
         for _ in range(rng.integers(1, 3)):
             pool = COLORLESS_UNCOMMONS if rng.random() < 0.75 else COLORLESS_RARES

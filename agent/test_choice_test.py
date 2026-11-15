@@ -43,8 +43,6 @@ class Stub:
         if c["choice"]["kind"] == "hand":
             junk = [i for i, x in enumerate(p["hand"]) if CARDS[x["id"]].rarity == "Status"]
             return np.array(CHOOSE_HAND + (junk or [0])[0]), None
-        if c["choice"]["kind"] != "discard":  # Armaments' upgrade prompt and the colorless prompts now turn up in the decks
-            return np.array(legal[0]), None
         want_block = p["hp"] < 0.5 * p["maxHp"]
         good = [a for a in legal if (CARDS[CARD_IDS[a - CHOOSE_DISCARD]].block > 0) == want_block]
         return np.array((good or legal)[0]), None
@@ -86,6 +84,28 @@ assert from_card([{"source": "BRAND"}, {"source": "HEADBUTT"}], "BRAND") == [{"s
 assert print_verdict([("a", 100, "x", True), ("b", 29, "y", True)]) == "NOT ALL PASS"
 assert print_verdict([("a", 100, "x", True), ("b", 30, "y", True)]) == "ALL PASS"
 print("choice test fix checks ok")
+
+# extras=False reproduces the pre-b46b756 random_deck exactly (same draws), so the open choice test is unchanged
+from env import random_deck, starter_deck, COMMONS, UNCOMMONS, RARES, CHOICE_CARDS
+
+
+def old_random_deck(rng, prompt_practice=False):  # body of random_deck at 54875c9
+    deck = starter_deck()
+    for _ in range(rng.integers(0, 4)):
+        deck.remove(rng.choice([c for c in deck if c != "BASH"]))
+    pools = [COMMONS, UNCOMMONS, RARES]
+    deck += [str(rng.choice(pools[rng.choice(3, p=[0.6, 0.3, 0.1])])) for _ in range(rng.integers(0, 9))]
+    if prompt_practice and rng.random() < 0.5:
+        deck.append(str(rng.choice(CHOICE_CARDS)))
+        if rng.random() < 0.5:
+            deck += ["WOUND"] * int(rng.integers(1, 3))
+    return deck
+
+
+for s in range(10):
+    a, b = np.random.default_rng(s), np.random.default_rng(s)
+    assert random_deck(a, extras=False) == old_random_deck(b) and a.random() == b.random(), s
+print("random_deck extras=False ok")
 
 # The colorless prompts are read by kind: every pick is one of the options, or None for skip / done.
 from env import CHOOSE_DONE, CHOOSE_GENERATED, CHOOSE_SKIP

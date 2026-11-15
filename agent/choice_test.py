@@ -66,7 +66,7 @@ def collect(model, card: str, fights: int = 200, seed: int = 0, env=None) -> lis
     env = env or STS2CombatEnv(client=SimClient(seed=seed))
     out = []
     for f in range(fights):
-        env.deck = random_deck(rng) + [card, "WOUND", "WOUND"]
+        env.deck = random_deck(rng, extras=False) + [card, "WOUND", "WOUND"]
         env.encounters = [str(rng.choice(ENCOUNTER_GROUPS["act1"]))]
         obs, _ = env.reset(seed=seed if f == 0 else None)
         done = False
