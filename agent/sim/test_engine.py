@@ -655,6 +655,18 @@ assert c.potions == [random_potion(r, True), "FIRE_POTION", None] and c.energy =
 c = solo(["ALCHEMIZE+"])
 c.potions = ["FIRE_POTION"] * 3
 assert c.cost("ALCHEMIZE+") == 0 and c.play_card(0)["ok"] and c.potions == ["FIRE_POTION"] * 3 and c.exhaust_pile == ["ALCHEMIZE+"]
+# Belt Buckle (AfterPotionProcured): gaining a potion takes the +2 Dexterity away, using it gives it back, once at a time.
+c = solo(["ALCHEMIZE"])
+c.relics = {"BELT_BUCKLE"}
+c.potions = [None, None, None]
+c.fight("MAWLER_NORMAL")
+c.hand, c.draw_pile, c.player_block = ["ALCHEMIZE"], ["DEFEND_IRONCLAD"] * 5, 0
+assert c.dexterity == 2
+c.play_card(0)
+assert sum(bool(p) for p in c.potions) == 1 and c.dexterity == 0  # the game removes it; the sim must too
+c.potions = ["BLOCK_POTION", None, None]
+c.use_potion(0)
+assert c.dexterity == 2  # +2, not +4
 # A potion gained mid-fight is still there in the next fight.
 c = potion("ENTROPIC_BREW")
 c.use_potion(0)

@@ -788,7 +788,7 @@ class SimCombat:
         if "PANTOGRAPH" in R and boss:
             self.heal(25)
         if "BELT_BUCKLE" in R and not any(self.potions):
-            self.dexterity += 2
+            self._buckle(True)
         self._red_skull()
         self._start_player_turn()
 
@@ -1046,7 +1046,7 @@ class SimCombat:
             self._gain_strength(3)
             self.temp_strength += 3  # ponytail: Ruined Helmet doubles the gain, not this (TemporaryStrengthPower takes back its own amount)
         if "BELT_BUCKLE" in self.relics and not any(self.potions):
-            self.dexterity += 2
+            self._buckle(True)
         self._check_win()
         self._check_empty_hand()  # after AfterPotionUsed
         return {"ok": True, "used": pid, "slot": slot}
@@ -1056,7 +1056,15 @@ class SimCombat:
         if None not in self.potions:
             return False
         self.potions[self.potions.index(None)] = pid
+        if "BELT_BUCKLE" in self.relics and self.in_combat:  # AfterPotionProcured
+            self._buckle(False)
         return True
+
+    def _buckle(self, on: bool) -> None:
+        """BeltBuckle Apply/RemoveDexterity: +-2, guarded by its DexterityApplied flag (rt["buckle"])."""
+        if bool(self.rt.get("buckle")) != on:
+            self.rt["buckle"] = on
+            self.dexterity += 2 if on else -2
 
     def _check_win(self) -> None:
         # CombatManager.IsEnding: won once no *primary* enemy (non-minion) is alive.
