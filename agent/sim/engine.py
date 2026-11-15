@@ -18,7 +18,7 @@ integer math, so 0.7 * 1.5 products don't hit float error). Damage from powers
 Strength/Vulnerable/Weak.
 
 Known simplifications:
-  - Relics are modeled in sim/relics.py (Burning Blood is applied by run.py between fights); the potions with an effect so far (sim/potions.py).
+  - Relics are modeled in sim/relics.py (Burning Blood is applied by run.py between fights); the potions in sim/potions.py.
   - An upgraded card is the id "X+" (cards.UPGRADES); id checks go through cards.base_id. In-combat upgrades
     (Armaments, Aggression, Stoke+, Primal Force+) replace the id in its pile for this fight only.
   - Enemy-targeted cards hit the enemy with the given combatId, or the first
@@ -43,9 +43,11 @@ MAX_SHUFFLES = 1000  # per fight; real fights reshuffle a handful of times
 
 class CardCopy(str):
     """A card id with per-copy cost state: Frantic Escape adds 1 to the copy that was played (AddThisCombat), and
-    Snecko Oil sets a cost on the copies in hand (cost_override: CardEnergyCost.SetThisTurnOrUntilPlayed)."""
+    Snecko Oil sets a cost on the copies in hand (cost_override: CardEnergyCost.SetThisTurnOrUntilPlayed), and Touch of
+    Insanity makes one free (free_combat: SetToFreeThisCombat)."""
     extra = 0
     cost_override = None
+    free_combat = False
 
 
 def frantic_escape(extra: int) -> str:
@@ -703,7 +705,7 @@ class SimCombat:
     _multi: list = field(default_factory=list)  # hand_multi: [max picks, picks so far]
     choice_log: list[tuple[str, str, tuple[str, ...]]] = field(default_factory=list)  # (source, picked, options), paused prompts only
     _pausable: bool = False  # the play being resolved may stop at a prompt (not an autoplay)
-    _paused: tuple | None = None  # what the rest of a paused play needs, see _run_plays
+    _paused: tuple | str | None = None  # what the rest of a paused play needs (see _run_plays), or the paused potion
     gold_gained: int = 0  # this fight's gold for the run (Hand of Greed); RunPolicyEnv adds it after the fight
     # Hidden Gem's Replay (BaseReplayCount): extra plays, keyed by id() of the pile copy. _pinned keeps those
     # copies alive so an id is never reused. ponytail: a copy upgraded later (a new object) loses its Replay,
@@ -797,7 +799,7 @@ class SimCombat:
     def cost(self, card_id: str) -> int:
         """Energy cost with this turn's modifiers (X-cost cards show 0)."""
         c = CARDS[card_id]
-        if c.x_cost or card_id in self.free_cards:
+        if c.x_cost or card_id in self.free_cards or getattr(card_id, "free_combat", False):
             return 0
         ov = getattr(card_id, "cost_override", None)  # a local modifier: before the global ones below
         if card_id == "FRANTIC_ESCAPE":
@@ -810,6 +812,15 @@ class SimCombat:
         # a copy entering combat while an Attack is still resolving would miss it, and no modeled card makes one.
         base = ov if ov is not None else max(0, c.cost - self.attack_plays) if base_id(card_id) == "STOMP" else c.cost
         return base + self.tangled  # TangledPower
+
+    def _costs_energy(self, card_id: str) -> bool:
+        """CardModel.CostsEnergyOrStars(false) || (true): it costs energy with its own (local) modifiers, or with all."""
+        c = CARDS[card_id]
+        if c.x_cost or c.cost < 0:
+            return False
+        ov = getattr(card_id, "cost_override", None)
+        own = 0 if card_id in self.free_cards or getattr(card_id, "free_combat", False) else c.cost if ov is None else ov
+        return own > 0 or self.cost(card_id) > 0
 
     @staticmethod
     def _spend_cost_override(card_id: str) -> None:
@@ -860,17 +871,19 @@ class SimCombat:
         """Answer a pending "hand" or "upgrade" prompt with the card at hand_index (upgrade: an upgradable one), or add it
         to a "hand_multi" selection (it ends at its max or an empty hand)."""
         kind = (self.pending_choice or {}).get("kind")
+        source = (self.pending_choice or {}).get("source")
         if kind not in ("hand", "upgrade", "hand_multi") or not 0 <= hand_index < len(self.hand) or \
-                (kind == "upgrade" and self.hand[hand_index] not in UPGRADABLE):
+                not self._offered(kind, source, self.hand[hand_index]):
             return {"error": "invalid_choice"}
         if kind == "hand_multi":
             self._multi[1].append(self.hand.pop(hand_index))
+            self.pending_choice["left"] -= 1
             return self.choose_done() if len(self._multi[1]) >= self._multi[0] or not self.hand else \
                 {"ok": True, "choice": self.pending_choice}
-        options = tuple(c for c in self.hand if kind == "hand" or c in UPGRADABLE)
-        if self.pending_choice["source"] == "ENTROPY":
+        options = tuple(c for c in self.hand if self._offered(kind, source, c))
+        if source == "ENTROPY":
             return self._resume_turn(hand_index, options)
-        return self._resume_play(self._take(kind, hand_index), options)
+        return self._resume_play(self._take(kind, hand_index, source), options)
 
     def choose_generated(self, i: int | None) -> dict:
         """Answer a pending "generated" prompt with option i, or None to skip."""
@@ -924,6 +937,12 @@ class SimCombat:
         """The rest of the play that stopped at the prompt: AfterCardPlayed, further plays, result pile."""
         self.choice_log.append((self.pending_choice["source"], picked, options))
         self.pending_choice = None
+        if isinstance(self._paused, str):  # a potion's prompt: the rest of its OnUse, then AfterPotionUsed
+            pid, self._paused = self._paused, None
+            self._finish_choice(pid, picked)
+            self._effect_depth -= 1
+            self._after_potion_used()
+            return {"ok": True, "choice": self.pending_choice}
         card_id, target, x, force_exhaust, energy_value, plays_left, mine, outer, to_top = self._paused
         self._finish_choice(card_id, picked)  # only the card being played pauses, so it's the prompt's source
         self._effect_depth -= 1
@@ -952,6 +971,7 @@ class SimCombat:
                 return {"error": "invalid_target", "targetId": target_id}
         self.potions[slot] = None
         self._effect_depth += 1
+        self._pausable = True  # the prompt potions below stop at their prompt; _resume_play finishes them
         if pid == "BLOCK_POTION":
             self._gain_block(12)
         elif pid == "DEXTERITY_POTION":
@@ -1071,6 +1091,21 @@ class SimCombat:
                             c = pile[i] = CardCopy(c)
                         self.replays[id(c)] = self.replays.get(id(c), 0) + 1
                         self._pinned.append(c)
+        elif pid in ("ATTACK_POTION", "SKILL_POTION", "POWER_POTION"):  # GetDistinctForCombat(3) of that type, canSkip
+            kind = pid.split("_")[0].title()
+            self._ask("generated", pid, self.rng.sample([c for c in GENERATED if CARDS[c].type == kind], 3))
+        elif pid == "COLORLESS_POTION":
+            self._ask("generated", pid, self.rng.sample(COLORLESS_GENERATED, 3))
+        elif pid in ("GAMBLERS_BREW", "ASHWATER"):  # FromHand(Discard), 0 to any
+            self._ask("hand_multi", pid, most=len(self.hand))
+        elif pid in ("TOUCH_OF_INSANITY", "LIQUID_MEMORIES"):  # FromHand (costs energy) / FromCombatPile(Discard), 1
+            self._ask("hand" if pid == "TOUCH_OF_INSANITY" else "discard", pid)
+        elif pid == "DROPLET_OF_PRECOGNITION":  # FromCombatPile(Draw), 1
+            self._ask("draw", pid, list(self.draw_pile))
+        self._pausable = False
+        if self.pending_choice:
+            self._paused = pid
+            return {"ok": True, "used": pid, "slot": slot, "choice": self.pending_choice}
         self._effect_depth -= 1
         self._after_potion_used()
         return {"ok": True, "used": pid, "slot": slot}
@@ -1596,26 +1631,37 @@ class SimCombat:
         answer too: "generated" (FromChooseACardScreen, canSkip: 1 of `options`, new cards) and "hand_multi"
         (FromHand, min 0: up to `most` hand cards, picked one at a time; _finish_choice gets them as a tuple)."""
         pile = {"discard": self.discard_pile, "draw": options, "generated": options}.get(kind, self.hand)
-        slots = [i for i, c in enumerate(pile) if kind != "upgrade" or c in UPGRADABLE]
+        slots = [i for i, c in enumerate(pile) if self._offered(kind, source, c)]
         self._options, self._multi = list(pile), [most, []]  # what _take and the answer read
         if self._ending() or not slots:
             self._finish_choice(source, None)
         elif len(slots) == 1 and kind not in ("generated", "hand_multi"):
-            self._finish_choice(source, self._take(kind, slots[0]))
+            self._finish_choice(source, self._take(kind, slots[0], source))
         elif self._pausable:
             self.pending_choice = {"kind": kind, "source": base_id(source)}
             if kind in ("draw", "generated"):
                 self.pending_choice["options"] = [str(c) for c in pile]
+            elif kind == "hand_multi":
+                self.pending_choice["left"] = most  # picks left
+            elif source == "TOUCH_OF_INSANITY":
+                self.pending_choice["slots"] = slots  # the hand slots offered
         # ponytail: the game prompts the player here too (only Whispering Earring has a selector). Autoplays
         # nest inside other effects, so pausing one needs a stack of paused plays; add it if Havoc's pick matters.
         elif kind == "hand_multi":  # a random number of random cards
             picks = sorted(self.rng.sample(slots, self.rng.randint(0, min(most, len(slots)))), reverse=True)
             self._finish_choice(source, tuple(self.hand.pop(i) for i in picks))
         else:
-            self._finish_choice(source, self._take(kind, self.rng.choice(slots)))
+            self._finish_choice(source, self._take(kind, self.rng.choice(slots), source))
 
-    def _take(self, kind: str, i: int) -> str:
-        """The picked card: out of its pile, or for "upgrade" upgraded where it is. Returns the card as offered.
+    def _offered(self, kind: str, source: str | None, card_id: str) -> bool:
+        """A card the prompt offers: "upgrade" the upgradable ones, Touch of Insanity the ones that cost energy."""
+        if kind == "upgrade":
+            return card_id in UPGRADABLE
+        return source != "TOUCH_OF_INSANITY" or self._costs_energy(card_id)
+
+    def _take(self, kind: str, i: int, source: str | None = None) -> str:
+        """The picked card: out of its pile, or for "upgrade" upgraded where it is (Touch of Insanity: free for the
+        combat where it is). Returns the card as offered.
         "draw" / "generated": option i of the open prompt (a draw-pile copy leaves the draw pile)."""
         if kind == "generated":
             return self._options[i]
@@ -1627,31 +1673,40 @@ class SimCombat:
         picked = pile[i]
         if kind == "upgrade":
             pile[i] = upgrade(picked)
+        elif source == "TOUCH_OF_INSANITY":  # SetToFreeThisCombat
+            if type(picked) is str:  # its own object, so an equal id elsewhere isn't free too
+                picked = pile[i] = CardCopy(picked)
+            picked.free_combat = True
         else:
             del pile[i]
         return picked
 
     def _finish_choice(self, source: str, picked: str | None) -> None:
-        """The rest of the card after its prompt. picked is already out of its pile (or upgraded in it)."""
+        """The rest of the card or potion after its prompt. picked is already out of its pile (or changed in it)."""
         b = base_id(source)
         if b in ("HEADBUTT", "THINKING_AHEAD"):
             if picked:
                 self.draw_pile.append(picked)  # CardPilePosition.Top
             return
-        if b in ("SECRET_TECHNIQUE", "SECRET_WEAPON", "SEEKER_STRIKE"):  # CardPileCmd.Add(Hand)
+        if b in ("SECRET_TECHNIQUE", "SECRET_WEAPON", "SEEKER_STRIKE", "DROPLET_OF_PRECOGNITION"):  # CardPileCmd.Add(Hand)
             if picked:
                 self._add_to_hand(picked)
             return
-        if b == "DISCOVERY":  # SetToFreeThisTurn, then AddGeneratedCardToCombat(Hand)
+        # SetToFreeThisTurn, then AddGeneratedCardToCombat(Hand) (Liquid Memories: CardPileCmd.Add(Hand))
+        if b in ("DISCOVERY", "ATTACK_POTION", "SKILL_POTION", "POWER_POTION", "COLORLESS_POTION", "LIQUID_MEMORIES"):
             if picked:
                 self.free_cards.append(picked)
                 self._add_to_hand(picked)
             return
-        if b == "PURITY":
+        if b in ("PURITY", "ASHWATER"):
             for c in picked or ():
                 self._exhaust(c)
             return
-        if b == "ARMAMENTS":
+        if b == "GAMBLERS_BREW":  # CardCmd.DiscardAndDraw: all discarded, then as many drawn
+            self.discard_pile += picked or ()
+            self._draw(len(picked or ()))
+            return
+        if b in ("ARMAMENTS", "TOUCH_OF_INSANITY"):  # done in _take
             return
         if picked:
             self._exhaust(picked)

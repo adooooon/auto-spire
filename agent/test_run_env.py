@@ -3,9 +3,9 @@ from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
 from sim.potions import POTION_IDS
-assert COMBAT_OBS == 3321 and COMBAT_ACTIONS == 392  # 3302 -> 3321 in plan 2b task 2: +7 player powers, +2 enemy powers x 6 slots. 48 potion ids (was 12): +5 slots x 36. + the colorless prompts (3 kinds, 3 generated one-hots, 7 sources; 3 + 1 + 143 + 1 actions), + the upgrade prompt and True Grit / Armaments as its sources, + 53 colorless cards, RetainHandPower and the 14 colorless powers
-from env import CHOICE_FEATURES, POTION_FEATURES, PROMPT_FEATURES, RELIC_FEATURES, UPGRADE_FEATURES
-POT0 = COMBAT_OBS - PROMPT_FEATURES - UPGRADE_FEATURES - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
+assert COMBAT_OBS == 3474 and COMBAT_ACTIONS == 392  # 3321 -> 3474 in plan 2b task 3: + the potion prompt block (9 sources, picks left, 143 draw options). 3302 -> 3321 in plan 2b task 2: +7 player powers, +2 enemy powers x 6 slots. 48 potion ids (was 12): +5 slots x 36. + the colorless prompts (3 kinds, 3 generated one-hots, 7 sources; 3 + 1 + 143 + 1 actions), + the upgrade prompt and True Grit / Armaments as its sources, + 53 colorless cards, RetainHandPower and the 14 colorless powers
+from env import CHOICE_FEATURES, POTION_FEATURES, POTION_PROMPT_FEATURES, PROMPT_FEATURES, RELIC_FEATURES, UPGRADE_FEATURES
+POT0 = COMBAT_OBS - POTION_PROMPT_FEATURES - PROMPT_FEATURES - UPGRADE_FEATURES - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
 from sim.engine import SimClient, SimLoopError
 
 # Review focus 1: a sim infinite loop ends the episode as aborted instead of hanging or raising.
@@ -171,11 +171,11 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == 392 and COMBAT_OBS == 3321
+assert cenv.action_space.n == COMBAT_ACTIONS == 392 and COMBAT_OBS == 3474
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()
-cenv._combat["potionSlots"] = ["FIRE_POTION", "ATTACK_POTION", "BLOCK_POTION"]
+cenv._combat["potionSlots"] = ["FIRE_POTION", "NOT_A_POTION", "BLOCK_POTION"]  # an id the sim does not know stays masked
 assert np.flatnonzero(cenv.action_masks()[POTION_ACTION:]).tolist() == [0, 1, 2 * MAX_ENEMIES]  # Fire x2 targets, Block on 0
 # Review focus 2: a potion that ends the fight is a win, minus the use cost.
 cenv.potions = ["EXPLOSIVE_AMPOULE", None, None]
@@ -196,14 +196,14 @@ from run_env import HEAD_DECISIONS, DRINK, POTION_SKIP, POTION_TAKE, SHOP_POTION
 renv.reset(seed=6)
 renv.decision, renv.run.gold = "shop", 1000
 renv.run.potions = ["FIRE_POTION", "FIRE_POTION", "FIRE_POTION"]
-renv.run.shop = Shop([None] * 5, [50] * 5, 75, potions=["BLOCK_POTION", "ATTACK_POTION", None], potion_prices=[50, 50, 0])
+renv.run.shop = Shop([None] * 5, [50] * 5, 75, potions=["BLOCK_POTION", "NOT_A_POTION", None], potion_prices=[50, 50, 0])
 assert not renv.action_masks()[SHOP_POTION:SHOP_POTION + 3].any()
 renv.run.potions[1] = None
 assert renv.action_masks()[SHOP_POTION:SHOP_POTION + 3].tolist() == [True, False, False]
 renv.step(SHOP_POTION)
 assert renv.run.potions[1] == "BLOCK_POTION" and renv.decision == "shop"
 # Review focus 3: an unmodeled drop is skipped without a decision; a modeled one asks where it goes.
-renv.decision, renv.offered, renv.run.pending = "pick", ["ARMAMENTS", "HEADBUTT", "BRAND"], [("potion", "ATTACK_POTION")]
+renv.decision, renv.offered, renv.run.pending = "pick", ["ARMAMENTS", "HEADBUTT", "BRAND"], [("potion", "NOT_A_POTION")]
 renv.step(PICK + 3)
 assert renv.decision == "path" and renv.run.potion_drop is None
 renv.decision, renv.run.pending = "pick", [("potion", "WEAK_POTION")]
@@ -306,7 +306,7 @@ assert not renv.action_masks()[POTION_TAKE_2:POTION_TAKE_2 + 2].any()
 # Cauldron with full slots: 5 potion decisions in a row, unmodeled skipped.
 renv.reset(seed=2)
 renv.run.potions = ["FIRE_POTION"] * 3
-renv.run.pending = [("potion", "WEAK_POTION"), ("potion", "ATTACK_POTION"), ("potion", "FIRE_POTION")] + [("potion", "BLOCK_POTION")] * 2
+renv.run.pending = [("potion", "WEAK_POTION"), ("potion", "NOT_A_POTION"), ("potion", "FIRE_POTION")] + [("potion", "BLOCK_POTION")] * 2
 renv._advance()
 seen = 0
 while renv.decision == "potion":
@@ -540,7 +540,7 @@ env.step(0)
 m = env.action_masks()
 assert m.nonzero()[0].tolist() == [CHOOSE_HAND, CHOOSE_HAND + 1]
 obs = _encode(env._combat)
-C0 = COMBAT_OBS - PROMPT_FEATURES - UPGRADE_FEATURES - CHOICE_FEATURES  # where the prompt block starts
+C0 = COMBAT_OBS - POTION_PROMPT_FEATURES - PROMPT_FEATURES - UPGRADE_FEATURES - CHOICE_FEATURES  # where the prompt block starts
 U0 = C0 + CHOICE_FEATURES  # the upgrade prompt block
 assert obs[C0] == 1 and obs[C0 + 2 + CHOICE_CARDS.index("BURNING_PACT")] == 1 and not obs[C0 + CHOICE_FEATURES:].any()
 env.step(CHOOSE_HAND + 1)
@@ -575,7 +575,8 @@ from env import CHOOSE_DONE, CHOOSE_DRAW, CHOOSE_GENERATED, CHOOSE_SKIP, COLORLE
 assert (CHOOSE_GENERATED, CHOOSE_SKIP, CHOOSE_DRAW, CHOOSE_DONE, CA) == \
     (CHOOSE_DISCARD + len(CARD_IDS), CHOOSE_DISCARD + len(CARD_IDS) + 3, CHOOSE_DISCARD + len(CARD_IDS) + 4,
      CHOOSE_DISCARD + 2 * len(CARD_IDS) + 4, CHOOSE_DISCARD + 2 * len(CARD_IDS) + 5)
-P0, NC = COMBAT_OBS - PROMPT_FEATURES, len(CARD_IDS)
+Q0 = COMBAT_OBS - POTION_PROMPT_FEATURES  # the potion prompt block: source, picks left, draw options
+P0, NC = Q0 - PROMPT_FEATURES, len(CARD_IDS)
 SRC0 = P0 + 3 + 3 * NC
 assert PROMPT_FEATURES == 3 + 3 * NC + len(COLORLESS_PROMPT_CARDS) and "STRATAGEM" not in COLORLESS_PROMPT_CARDS
 
@@ -584,7 +585,7 @@ def prompt_obs(env, kind, source):
     obs = _encode(env._combat)
     assert obs.shape == (COMBAT_OBS,) == env.observation_space.shape
     assert obs[P0:P0 + 3].tolist() == [float(kind == k) for k in ("generated", "draw", "hand_multi")]
-    assert obs[SRC0:].tolist() == [float(source == s) for s in COLORLESS_PROMPT_CARDS]
+    assert obs[SRC0:Q0].tolist() == [float(source == s) for s in COLORLESS_PROMPT_CARDS]
     return obs
 
 
@@ -622,6 +623,53 @@ env.step(0); env.step(END_TURN)
 assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_HAND + i for i in range(5)]
 assert prompt_obs(env, None, "ENTROPY")[C0] == 1
 env.step(CHOOSE_HAND + 1); assert c.hand[1] != "STRIKE_IRONCLAD" and c.pending_choice is None and env.action_masks()[END_TURN]
+
+# The potion prompt block (plan 2b task 3): which potion asked, a hand_multi's picks left, a draw prompt's offered cards.
+from env import POTION_PROMPTS
+NP = len(POTION_PROMPTS)
+assert POTION_PROMPT_FEATURES == NP + 1 + NC and Q0 + POTION_PROMPT_FEATURES == COMBAT_OBS == _encode(env._combat).shape[0]
+env, c = choice_env(["PURITY+"] + ["WOUND"] * 6)  # picks left: 5, then 0.1 less per pick
+env.step(0)
+left = []
+for _ in range(3):
+    left.append(round(float(_encode(env._combat)[Q0 + NP]), 6)); env.step(CHOOSE_HAND)
+assert left == [0.5, 0.4, 0.3] and not _encode(env._combat)[Q0:Q0 + NP].any()
+env, c = choice_env(["SEEKER_STRIKE"], draw=["STRIKE_IRONCLAD", "DEFEND_IRONCLAD", "BASH", "ANGER", "SHRUG_IT_OFF"])
+env.step(0); opts = c.pending_choice["options"]
+obs = _encode(env._combat)
+assert np.flatnonzero(obs[Q0 + NP + 1:]).tolist() == sorted(CARD_IDS.index(x) for x in opts) and not obs[Q0:Q0 + NP + 1].any()
+
+
+def potion_env(pid, hand, draw=None, discard=()):
+    env, c = choice_env(hand, discard, draw)
+    c.potions = [pid, None, None]
+    env._combat = env.client.combat()
+    env.step(POTION_ACTION)
+    obs = _encode(env._combat)
+    assert obs[Q0:Q0 + NP].tolist() == [float(pid == p) for p in POTION_PROMPTS], pid
+    return env, c, obs
+
+
+for pid in ("ATTACK_POTION", "SKILL_POTION", "POWER_POTION", "COLORLESS_POTION"):
+    env, c, obs = potion_env(pid, ["BASH"])
+    assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_GENERATED, CHOOSE_GENERATED + 1, CHOOSE_GENERATED + 2, CHOOSE_SKIP]
+    opts = c.pending_choice["options"]; env.step(CHOOSE_GENERATED)
+    assert c.hand == ["BASH", opts[0]] and c.pending_choice is None and env.action_masks()[END_TURN]
+for pid in ("GAMBLERS_BREW", "ASHWATER"):
+    env, c, obs = potion_env(pid, ["BASH", "WOUND"], draw=["ANGER"] * 3)
+    assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_HAND, CHOOSE_HAND + 1, CHOOSE_DONE] and abs(obs[Q0 + NP] - 0.2) < 1e-6
+    env.step(CHOOSE_HAND + 1); env.step(CHOOSE_DONE)
+    assert c.hand == ["BASH"] + ["ANGER"] * (pid == "GAMBLERS_BREW") and c.pending_choice is None
+env, c, obs = potion_env("TOUCH_OF_INSANITY", ["WOUND", "BASH", "ANGER", "STRIKE_IRONCLAD"])  # only the cards that cost energy
+assert env.action_masks().nonzero()[0].tolist() == [CHOOSE_HAND + 1, CHOOSE_HAND + 3] and obs[C0] == 1
+env.step(CHOOSE_HAND + 1); assert c.cost(c.hand[1]) == 0 and c.pending_choice is None
+env, c, obs = potion_env("DROPLET_OF_PRECOGNITION", [], draw=["BASH", "ANGER", "BASH"])
+assert env.action_masks().nonzero()[0].tolist() == sorted(CHOOSE_DRAW + CARD_IDS.index(x) for x in ("BASH", "ANGER"))
+assert np.flatnonzero(obs[Q0 + NP + 1:]).tolist() == sorted(CARD_IDS.index(x) for x in ("BASH", "ANGER"))
+env.step(CHOOSE_DRAW + CARD_IDS.index("ANGER")); assert c.hand == ["ANGER"] and c.draw_pile == ["BASH", "BASH"]
+env, c, obs = potion_env("LIQUID_MEMORIES", [], discard=["BASH", "WOUND"])
+assert env.action_masks().nonzero()[0].tolist() == sorted(CHOOSE_DISCARD + CARD_IDS.index(x) for x in ("BASH", "WOUND"))
+env.step(CHOOSE_DISCARD + CARD_IDS.index("BASH")); assert c.hand == ["BASH"] and c.cost("BASH") == 0
 
 # Review focus 5: live has no simRelics, so the three cards stay masked and a live pick can't take them.
 live = {k: v for k, v in env.client.combat().items() if k != "simRelics"}
@@ -937,5 +985,5 @@ assert _power(_e(("PanachePower", 3), ("AutomationPower", 2)), "PanachePower") =
 _c = {"player": {"hp": 50, "maxHp": 80, "block": 0, "energy": 3, "hand": [], "powers": [{"name": n, "amount": a} for n, a in
       [("AutomationPower", 2), ("PanachePower", 3), ("RollingBoulderPower", 5), ("TheBombPower", 3), ("StrengthPower", 2)]]},
       "enemies": [{"isAlive": True, "hp": 40, "maxHp": 40, "block": 0, "powers": [{"name": "VulnerablePower", "amount": 2}], "intents": []}]}
-assert hashlib.md5(np.asarray(_encode(_c)).tobytes()).hexdigest() == "72e9129887182b6cd4d67f7b62fbc777"  # re-recorded when the potion ids went from 12 to 48, and again for plan 2b task 2 (+7 player and 2 x 6 enemy powers); both times the values are unchanged (the old md5 fdb31545... is this vector minus those 19 columns)
+assert hashlib.md5(np.asarray(_encode(_c)).tobytes()).hexdigest() == "7b0eb826bb10abb6e432e99d50fc48f9"  # re-recorded when the potion ids went from 12 to 48, for plan 2b task 2 (+7 player and 2 x 6 enemy powers) and task 3 (+153 potion prompt columns, the last); each time the values are unchanged (the old md5s fdb31545... and 72e91298... are this vector minus the new columns)
 print("training deck checks ok")

@@ -95,8 +95,12 @@ COLORLESS_PROMPT_CARDS = ("DISCOVERY", "PURITY", "SECRET_TECHNIQUE", "SECRET_WEA
 PROMPT_KINDS = ("generated", "draw", "hand_multi")
 GENERATED_OPTIONS = 3
 PROMPT_FEATURES = len(PROMPT_KINDS) + GENERATED_OPTIONS * len(CARD_IDS) + len(COLORLESS_PROMPT_CARDS)
+# Appended last (plan 2b): which potion asked, a hand_multi's picks left / 10, and a draw prompt's offered cards by id.
+POTION_PROMPTS = ("ATTACK_POTION", "SKILL_POTION", "POWER_POTION", "COLORLESS_POTION", "GAMBLERS_BREW", "ASHWATER",
+                  "TOUCH_OF_INSANITY", "DROPLET_OF_PRECOGNITION", "LIQUID_MEMORIES")
+POTION_PROMPT_FEATURES = len(POTION_PROMPTS) + 1 + len(CARD_IDS)
 OBS_DIM = (MAX_HAND * CARD_FEATURES + PLAYER_FEATURES + PILE_FEATURES + MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES
-           + RELIC_FEATURES + CHOICE_FEATURES + UPGRADE_FEATURES + PROMPT_FEATURES)
+           + RELIC_FEATURES + CHOICE_FEATURES + UPGRADE_FEATURES + PROMPT_FEATURES + POTION_PROMPT_FEATURES)
 POTION_ACTION = END_TURN + 1  # potion actions come after END_TURN, so old action indices are unchanged
 # Card prompts: pick hand slot i, or a discard-pile card by id. Appended after the potion block.
 CHOOSE_HAND = POTION_ACTION + MAX_POTION_SLOTS * MAX_ENEMIES  # slots 3-4 extend the potion block
@@ -284,6 +288,10 @@ def _encode(combat: dict) -> np.ndarray:
     gen = (choice.get("options") or []) if choice.get("kind") == "generated" else []
     choice_feats += [float(i < len(gen) and base_id(gen[i]) == cid) for i in range(GENERATED_OPTIONS) for cid in CARD_IDS]
     choice_feats += [float(choice.get("source") == cid) for cid in COLORLESS_PROMPT_CARDS]
+    choice_feats += [float(choice.get("source") == pid) for pid in POTION_PROMPTS]
+    choice_feats.append(min(choice.get("left", 0) / 10.0, 1.0) if choice.get("kind") == "hand_multi" else 0.0)
+    drawn = {base_id(c) for c in choice.get("options") or []} if choice.get("kind") == "draw" else set()
+    choice_feats += [float(cid in drawn) for cid in CARD_IDS]
 
     return np.array(hand_feats + player_feats + pile_feats + enemy_feats + potion_feats + relic_feats + choice_feats,
                     dtype=np.float32)
@@ -497,7 +505,8 @@ class STS2CombatEnv(gym.Env):
         choice = self._combat.get("choice")
         if choice:  # a card prompt is open: only its answers are legal
             if choice["kind"] in ("hand", "hand_multi"):
-                mask[CHOOSE_HAND:CHOOSE_HAND + min(len(hand), MAX_HAND)] = True
+                for i in choice.get("slots", range(min(len(hand), MAX_HAND))):  # slots: Touch of Insanity offers only some
+                    mask[CHOOSE_HAND + i] = True
                 mask[CHOOSE_DONE] = choice["kind"] == "hand_multi"
             elif choice["kind"] == "generated":
                 mask[CHOOSE_GENERATED:CHOOSE_GENERATED + len(choice["options"][:GENERATED_OPTIONS])] = mask[CHOOSE_SKIP] = True

@@ -1,8 +1,7 @@
-"""Potions: every id the shared and Ironclad pools can drop (USABLE: the ones with an effect so far).
+"""Potions: every id the shared and Ironclad pools can drop.
 
 Ids are the game's ModelId entries (UPPER_SNAKE of the class name). Effects live in
-SimCombat.use_potion; drop and shop rules in sim/act.py. Pending potions still drop and
-stock shops (so the odds stay right) but can't be taken.
+SimCombat.use_potion; drop and shop rules in sim/act.py.
 """
 POTION_SLOTS = 3  # Player.initialMaxPotionSlotCount
 
@@ -22,12 +21,7 @@ POTIONS = {
     "SOLDIERS_STEW": "self", "SPEED_POTION": "self", "STABLE_SERUM": "self", "STRENGTH_POTION": "self",
     "SWIFT_POTION": "self", "TOUCH_OF_INSANITY": "self", "VULNERABLE_POTION": "enemy", "WEAK_POTION": "enemy",
 }
-# Potions whose effect isn't written yet (plan 2b, tasks 2-4 remove their ids). They still drop and stock shops, but
-# the run, env and live bridge skip them (use USABLE, not POTIONS, to ask "can it be held and used?").
-PENDING = frozenset({
-    "ASHWATER", "ATTACK_POTION", "COLORLESS_POTION", "DROPLET_OF_PRECOGNITION", "GAMBLERS_BREW", "LIQUID_MEMORIES",
-    "POWER_POTION", "SKILL_POTION", "TOUCH_OF_INSANITY"})
-USABLE = {p: k for p, k in POTIONS.items() if p not in PENDING}
+USABLE = POTIONS  # every potion has its effect (plan 2b); USABLE[p] == "auto" is never used by hand
 # PotionUsage.AnyTime (the rest are CombatOnly; Fairy in a Bottle is Automatic).
 ANY_TIME = frozenset({"BLOOD_POTION", "FRUIT_JUICE", "ENTROPIC_BREW"})
 # CanBeGeneratedInCombat is false.

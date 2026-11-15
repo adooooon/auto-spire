@@ -402,7 +402,7 @@ c.fight("NIBBITS_WEAK")
 assert c.shuffles == 0  # the cap is per fight
 # Potions (sim/potions.py; effects from Models/Potions/*.OnUse). Potion damage and Block Potion's
 # block are Unpowered: block absorbs the damage, but Strength/Vulnerable/Weak/Dexterity/Frail don't apply.
-from .potions import ANY_TIME, NOT_IN_COMBAT_GEN, PENDING, POTION_POOL, POTIONS, USABLE, random_potion
+from .potions import ANY_TIME, NOT_IN_COMBAT_GEN, POTION_POOL, POTIONS, USABLE, random_potion
 
 # Every pool id is in POTIONS, with the source's TargetType (Self/AnyPlayer -> self, AnyEnemy -> enemy, AllEnemies -> all);
 # Fairy in a Bottle is Automatic.
@@ -414,7 +414,7 @@ assert all(k == ("auto" if p == "FAIRY_IN_A_BOTTLE" else "enemy" if p in _ENEMY 
            for p, k in POTIONS.items())
 assert ANY_TIME == {"BLOOD_POTION", "FRUIT_JUICE", "ENTROPIC_BREW"}
 assert NOT_IN_COMBAT_GEN == {"REGEN_POTION", "FAIRY_IN_A_BOTTLE", "FRUIT_JUICE"}
-assert len(PENDING) == 9 and len(USABLE) == 39 and not PENDING & set(USABLE)
+assert USABLE == POTIONS  # every potion has its effect (plan 2b task 3)
 
 
 def potion(pid, hand=("DEFEND_IRONCLAD",), encounter="MAWLER_NORMAL"):
@@ -2599,4 +2599,83 @@ assert all(e.strength == 0 for e in again.enemies if e.is_alive), [e.strength fo
 d["enemies"][0]["powers"].append({"name": "DarkShacklesPower", "amount": 9})  # alongside Dark Shackles: they add up
 assert load(d, defaultdict(list), prev=c).enemies[0].pw["DarkShacklesPower"] == 16
 print("validate load checks ok")
+# --- plan 2b task 3: potions that ask the player ------------------------------------------------------------------
+from .cards import COLORLESS_GENERATED  # noqa: E402
+
+for pid, kind in (("ATTACK_POTION", "Attack"), ("SKILL_POTION", "Skill"), ("POWER_POTION", "Power"), ("COLORLESS_POTION", None)):
+    pool = COLORLESS_GENERATED if kind is None else [x for x in GENERATED if _CARDS[x].type == kind]
+    c = tpot(pid, [D])
+    r = c.use_potion(0); ch = c.pending_choice
+    assert r["ok"] and r["choice"] is ch and c.potions[0] is None, r
+    assert ch["kind"] == "generated" and ch["source"] == pid and len(set(ch["options"])) == 3 and set(ch["options"]) <= set(pool), ch
+    assert c.play_card(0)["error"] == "choice_pending" and c.end_turn()["error"] == "choice_pending"
+    pick = ch["options"][1]
+    assert c.choose_generated(1)["ok"] and c.pending_choice is None and c.hand == [D, pick] and pick in c.free_cards
+    assert c.choice_log[-1] == (pid, pick, tuple(ch["options"]))
+    c = tpot(pid, [D]); c.use_potion(0)
+    assert c.choose_skip()["ok"] and c.hand == [D] and c.pending_choice is None and not c.free_cards
+assert len({tuple(tpot("ATTACK_POTION", seed=s).use_potion(0)["choice"]["options"]) for s in range(10)}) > 1
+# Review focus 1: with 10 cards in hand the pick goes to the discard pile (AddGeneratedCardToCombat).
+c = tpot("ATTACK_POTION", [D] * 10); c.use_potion(0); pick = c.pending_choice["options"][0]
+c.choose_generated(0); assert c.hand == [D] * 10 and c.discard_pile == [pick]
+# AfterPotionUsed waits for the prompt: Reptile Trinket's Strength comes after the pick, not before.
+c = tpot("ATTACK_POTION", [D]); c.relics = {"REPTILE_TRINKET"}
+c.use_potion(0); assert c.strength == 0 and c.pending_choice
+c.choose_skip(); assert c.strength == 3 and c.temp_strength == 3
+c = tpot("GAMBLERS_BREW", []); c.relics = {"REPTILE_TRINKET"}
+assert "choice" not in c.use_potion(0) and c.strength == 3  # no prompt: at once
+# Gambler's Brew: any number of hand cards, discarded, then as many drawn (DiscardAndDraw).
+c = tpot("GAMBLERS_BREW", [S, D, "WOUND", B]); c.draw_pile = ["ANGER", "SHRUG_IT_OFF", "BLOODLETTING"]
+c.use_potion(0); ch = c.pending_choice
+assert ch["kind"] == "hand_multi" and ch["source"] == "GAMBLERS_BREW" and ch["left"] == 4
+c.choose_card(2); assert c.pending_choice["left"] == 3
+c.choose_card(0); assert c.choose_done()["ok"] and c.pending_choice is None
+assert c.discard_pile == ["WOUND", S] and c.hand == [D, B, "BLOODLETTING", "SHRUG_IT_OFF"] and c.draw_pile == ["ANGER"]
+c = tpot("GAMBLERS_BREW", [S, D]); c.draw_pile = [B] * 5; c.use_potion(0); c.choose_card(0); c.choose_card(0)
+assert c.pending_choice is None and c.discard_pile == [S, D] and c.hand == [B, B]  # the whole hand: done at once
+c = tpot("GAMBLERS_BREW", [S]); c.use_potion(0); assert c.pending_choice  # min 0: one card still asks
+assert c.choose_done()["ok"] and c.hand == [S] and not c.discard_pile
+# Ashwater: any number of hand cards, exhausted.
+c = tpot("ASHWATER", [S, "WOUND", D, "WOUND"]); c.pw["FeelNoPainPower"] = 3
+c.use_potion(0); ch = c.pending_choice
+assert ch["kind"] == "hand_multi" and ch["source"] == "ASHWATER" and ch["left"] == 4
+c.choose_card(1); c.choose_card(2); c.choose_done()
+assert c.exhaust_pile == ["WOUND", "WOUND"] and c.hand == [S, D] and c.player_block == 6 and c.pending_choice is None
+# Touch of Insanity: a hand card that costs energy, free for the rest of combat (it stays where it is).
+c = tpot("TOUCH_OF_INSANITY", ["WOUND", "WHIRLWIND", "ANGER", S, B])
+c.use_potion(0); ch = c.pending_choice
+assert ch["kind"] == "hand" and ch["source"] == "TOUCH_OF_INSANITY" and ch["slots"] == [3, 4], ch
+assert c.choose_card(2)["error"] == "invalid_choice" and c.pending_choice
+assert c.choose_card(4)["ok"] and c.pending_choice is None and c.hand == ["WOUND", "WHIRLWIND", "ANGER", S, B]
+assert c.cost(c.hand[4]) == 0 and c.cost(c.hand[3]) == 1 and not c.exhaust_pile and not c.free_cards
+card = c.hand[4]; c.player_block = 999; c.end_turn(); c.player_block = 999; c.end_turn()
+assert c.cost(card) == 0 and c.round == 3  # this combat, not this turn
+c = tpot("TOUCH_OF_INSANITY", [S, "ANGER"]); c.free_cards = [S]  # free this turn already: not offered
+assert "choice" not in c.use_potion(0) and c.pending_choice is None and not getattr(c.hand[0], "free_combat", False)
+c = tpot("TOUCH_OF_INSANITY", ["ANGER", B, "WOUND"])  # one card costs energy: it's taken, no prompt
+assert "choice" not in c.use_potion(0) and c.hand[1] == B and c.cost(c.hand[1]) == 0 and c.pending_choice is None
+c = tpot("TOUCH_OF_INSANITY", [S, B]); c.pw["FreeAttackPower"] = 1  # free only by a global modifier: still offered
+c.use_potion(0); assert c.pending_choice["slots"] == [0, 1]
+# Droplet of Precognition: any draw-pile card to hand.
+c = tpot("DROPLET_OF_PRECOGNITION", [D]); c.draw_pile = [S, B, "ANGER"]
+c.use_potion(0); ch = c.pending_choice
+assert ch["kind"] == "draw" and ch["source"] == "DROPLET_OF_PRECOGNITION" and ch["options"] == [S, B, "ANGER"]
+assert c.choose_draw(B)["ok"] and c.hand == [D, B] and c.draw_pile == [S, "ANGER"] and c.pending_choice is None
+c = tpot("DROPLET_OF_PRECOGNITION", [D]); c.draw_pile = [B]
+assert "choice" not in c.use_potion(0) and c.hand == [D, B] and not c.draw_pile
+# Liquid Memories: a discard-pile card to hand, free this turn.
+c = tpot("LIQUID_MEMORIES", [D]); c.discard_pile = [S, B]
+c.use_potion(0); ch = c.pending_choice
+assert ch["kind"] == "discard" and ch["source"] == "LIQUID_MEMORIES"
+assert c.choose_discard(B)["ok"] and c.hand == [D, B] and c.discard_pile == [S] and c.cost(B) == 0 and c.pending_choice is None
+# Review focus 1: nothing to pick does nothing and doesn't pause.
+for pid, hand, draw, discard in (("GAMBLERS_BREW", [], [S], [D]), ("ASHWATER", [], [S], [D]),
+                                 ("TOUCH_OF_INSANITY", ["WOUND", "ANGER", "WHIRLWIND"], [S], [D]),
+                                 ("DROPLET_OF_PRECOGNITION", [B], [], [D]), ("LIQUID_MEMORIES", [B], [S], [])):
+    c = tpot(pid, hand); c.draw_pile, c.discard_pile = list(draw), list(discard)
+    r = c.use_potion(0)
+    assert r["ok"] and "choice" not in r and c.pending_choice is None and c.potions[0] is None, pid
+    assert (c.hand, c.draw_pile, c.discard_pile, c.exhaust_pile) == (hand, draw, discard, []), pid
+    assert not getattr(c.hand[1] if pid == "TOUCH_OF_INSANITY" else None, "free_combat", False)
+print("potion prompt checks ok")
 print("sim self-check ok")
