@@ -170,7 +170,7 @@ Run: `.superpowers/queue/boss.sh` (git-ignored), from the frozen worktree `auto-
 - `train.py --backend sim --run-mode --run-model $GR --resume $A --n-envs 6 --net 256 256 --timesteps 20000000 --name ppo_sts2_sim_boss_b`
 - `train.py --backend sim --run-policy --event-practice --combat-model $B --resume $GR --n-envs 6 --net 256 256 --timesteps 6000000 --name ppo_sts2_sim_boss_run_v1`
 - `run.py --model $B --maps generated --run-model $R --runs 500 --n 16`
-- `boss_report.py --model $B --run-model $R --runs 1500 --n 16 --out .superpowers/queue/boss_analysis_v1.jsonl`
+- `boss_report.py --model $B --run-model $R --runs 1500 --n 16 --out ~/projects/sts2-rl-bot/auto-spire/.superpowers/queue/boss_analysis_v1.jsonl`
 
 Training, all stages exit 0 (`status.txt`): combat A 2026-11-14 00:22 to 03:53, combat B to 12:09, run policy to 20:02, then the eval (23:59 to 01:19 on 2026-11-15) and the report (01:21), all exit 0. Mean episode reward (`ep_rew_mean`, first and last table in each log; the step counter continues from the grown model):
 
@@ -213,7 +213,7 @@ Mean HP lost on each turn (turns 1 to 6, fights that lasted past that turn), sta
 | The Insatiable | stage 1 | 0.5 | 10.5 | 20.9 | 0.5 | 14.3 | 9.1 |
 | | part 3 | 0.3 | 9.4 | 19.7 | 0.5 | 14.0 | 12.7 |
 
-The spike shape is unchanged: the same turns cost the most HP, mixed, mostly slightly lower (12 of 18 cells lower; Kaiser Crab T1, T3 and T5 and The Insatiable T6 are higher). Median death turn is still 5 (Kaiser Crab) and 6 (the other two). Arrival HP is 66.9 to 67.5 of about 82.5 (stage 1: 63.9 to 64.8), decks are 23.4 to 23.7 cards (stage 1: 24.3 to 25.0), and 19% of deck cards are upgraded (6 to 7% in part 2a).
+The spike shape is unchanged: the same turns cost the most HP, mixed, mostly slightly lower (12 of 18 cells lower, 5 higher: Kaiser Crab T1, T3, T5, Knowledge Demon T1 and The Insatiable T6; 1 unchanged: The Insatiable T4). Median death turn is still 5 (Kaiser Crab) and 6 (the other two). Arrival HP is 66.9 to 67.5 of about 82.5 (stage 1: 63.9 to 64.8), decks are 23.4 to 23.7 cards (stage 1: 24.3 to 25.0), and 19% of deck cards are upgraded (6 to 7% in part 2a).
 
 Gate (spec stage 4):
 
