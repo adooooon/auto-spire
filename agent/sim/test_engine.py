@@ -414,7 +414,7 @@ assert all(k == ("auto" if p == "FAIRY_IN_A_BOTTLE" else "enemy" if p in _ENEMY 
            for p, k in POTIONS.items())
 assert ANY_TIME == {"BLOOD_POTION", "FRUIT_JUICE", "ENTROPIC_BREW"}
 assert NOT_IN_COMBAT_GEN == {"REGEN_POTION", "FAIRY_IN_A_BOTTLE", "FRUIT_JUICE"}
-assert len(PENDING) == 21 and len(USABLE) == 27 and not PENDING & set(USABLE)
+assert len(PENDING) == 9 and len(USABLE) == 39 and not PENDING & set(USABLE)
 
 
 def potion(pid, hand=("DEFEND_IRONCLAD",), encounter="MAWLER_NORMAL"):
@@ -2294,6 +2294,245 @@ for seed in range(200):
         assert c.end_turn()["ok"] and c.pending_choice is None and c.in_combat and c.is_play_phase, (seed, cid)
 print("colorless prompt checks ok")
 print("lava lamp engine checks ok")
+
+# --- plan 2b task 2: potion powers and Fairy in a Bottle ----------------------------------------------------------
+from .cards import DeckCard  # noqa: E402,F811
+
+
+def tpot(pid, hand=(), enc="MAWLER_NORMAL", seed=10, **kw):
+    c = big(solo(list(hand), enc, seed), 9999)
+    c.potions = [pid, None, None]
+    for k, v in kw.items():
+        setattr(c, k, v)
+    return c
+
+
+# Clarity: draw 1 now, then each of the next 3 hand draws is 1 bigger (the power ticks after the draw).
+c = big(rc(deck=[D] * 40), 9999)
+c.potions = ["CLARITY", None, None]
+n = len(c.hand)
+assert c.use_potion(0)["ok"] and len(c.hand) == n + 1 and c.pw["ClarityPower"] == 3
+sizes = []
+for _ in range(4):
+    c.player_block = 99
+    c.end_turn()
+    sizes.append(len(c.hand))
+assert sizes == [6, 6, 6, 5] and "ClarityPower" not in c.pw, sizes
+# Duplicator: the next card (any type) plays twice, then it's gone; unused it goes at the end of the turn.
+c = tpot("DUPLICATOR", [S, S])
+h = c.enemies[0].hp
+c.use_potion(0)
+c.play_card(0, 1)
+assert h - c.enemies[0].hp == 12 and "DuplicationPower" not in c.pw
+c.play_card(0, 1)
+assert h - c.enemies[0].hp == 18
+c = tpot("DUPLICATOR", [S])
+c.use_potion(0)
+eot(c)
+assert "DuplicationPower" not in c.pw
+c = tpot("DUPLICATOR", ["DEFEND_IRONCLAD"])
+c.use_potion(0)
+c.play_card(0)
+assert c.player_block == 10
+# Review focus 4: Duplicator on prompt and X-cost cards, 200 seeded fights each.
+for seed in range(200):
+    for cid in ("HEADBUTT", "PURITY", "DISCOVERY", "WHIRLWIND"):
+        c = tpot("DUPLICATOR", [cid, S, D, "WOUND"], seed=seed)
+        c.draw_pile, c.discard_pile = [D, S, B, S], [S, D]
+        c.use_potion(0)
+        assert c.play_card(0, 1)["ok"], (seed, cid)
+        for _ in range(6):
+            ch = c.pending_choice
+            if not ch:
+                break
+            r = c.choose_done() if ch["kind"] == "hand_multi" else c.choose_generated(0) if ch["kind"] == "generated" \
+                else c.choose_discard(c.discard_pile[0]) if ch["kind"] == "discard" else c.choose_card(0)
+            assert r.get("ok"), (seed, cid, ch, r)
+        assert c.pending_choice is None and c.in_combat and c.is_play_phase, (seed, cid)
+        assert c.end_turn()["ok"] and c.in_combat, (seed, cid)
+# Powdered Demise: Unblockable, Unpowered at the end of each of the enemy's turns; never decrements; stacks.
+c = tpot("POWDERED_DEMISE", [])
+e, h = c.enemies[0], c.enemies[0].hp
+c.potions = ["POWDERED_DEMISE", "POWDERED_DEMISE", None]
+c.use_potion(0, 1)
+assert e.pw["DemisePower"] == 9
+c.end_turn()
+assert h - e.hp == 9
+c.use_potion(1, 1)
+assert e.pw["DemisePower"] == 18
+c.end_turn()
+assert h - e.hp == 27 and e.pw["DemisePower"] == 18
+e.pw["DemisePower"], e.hp = 5, 3  # a lethal tick ends the fight
+c.end_turn()
+assert c.won and not c.in_combat
+c = tpot("POWDERED_DEMISE", [])
+c.enemies[0].block = 40
+c._damage_enemy(c.enemies[0], 9, unblockable=True)
+assert c.enemies[0].block == 40 and c.enemies[0].hp == 9999 - 9
+# Radiant Tincture: 1 energy now, then +1 after each of the next 3 energy resets.
+c = tpot("RADIANT_TINCTURE", [])
+c.use_potion(0)
+assert c.energy == 4 and c.pw["RadiancePower"] == 3
+en = []
+for _ in range(4):
+    c.player_block = 99
+    c.end_turn()
+    en.append(c.energy)
+assert en == [4, 4, 4, 3] and "RadiancePower" not in c.pw, en
+# Regen Potion: heal at the end of the player's turn, then decrement.
+c = tpot("REGEN_POTION", [], player_hp=50)
+c.use_potion(0)
+assert c.pw["RegenPower"] == 5
+eot(c)
+assert c.player_hp == 55 and c.pw["RegenPower"] == 4
+c.player_hp = c.player_max_hp - 2
+c.is_play_phase = True
+eot(c)
+assert c.player_hp == c.player_max_hp
+# Gigantification: the next Attack's powered damage x3 on every hit, then the power is spent.
+c = tpot("GIGANTIFICATION_POTION", ["TWIN_STRIKE", S, D])
+h = c.enemies[0].hp
+c.use_potion(0)
+c.play_card(0, 1)
+assert h - c.enemies[0].hp == 30 and "GigantificationPower" not in c.pw
+c.play_card(0, 1)
+assert h - c.enemies[0].hp == 36
+c = tpot("GIGANTIFICATION_POTION", [D, S], strength=2)
+h = c.enemies[0].hp
+c.use_potion(0)
+c.play_card(0)  # a Skill leaves it
+assert c.pw["GigantificationPower"] == 1
+c.play_card(0, 1)
+assert h - c.enemies[0].hp == 24
+# Lucky Tonic (Buffer): the next HP loss above 0 becomes 0, after other reductions; a fully blocked hit leaves it.
+c = tpot("LUCKY_TONIC", [])
+c.use_potion(0)
+c.player_block = 20
+hurt(c, 5)
+assert c.pw["BufferPower"] == 1 and c.player_block == 15 and c.player_hp == 80
+c.player_block = 0
+hurt(c, 5)
+assert "BufferPower" not in c.pw and c.player_hp == 80
+hurt(c, 5)
+assert c.player_hp == 75
+c = rc("TUNGSTEN_ROD")
+c.pw["BufferPower"] = 1
+c._lose_hp(1)  # Tungsten takes it to 0 first: Buffer is kept
+assert c.pw["BufferPower"] == 1 and c.player_hp == 80
+c = tpot("LUCKY_TONIC", ["OFFERING"])  # self-inflicted HP loss too
+c.use_potion(0)
+c.play_card(0)
+assert c.player_hp == 80 and "BufferPower" not in c.pw
+# Mazaleth's Gift: Ritual 1 -> +1 Strength at the end of each player turn.
+c = tpot("MAZALETHS_GIFT", [])
+c.use_potion(0)
+assert c.strength == 0
+eot(c)
+assert c.strength == 1
+c.is_play_phase = True
+eot(c)
+assert c.strength == 2
+# Shackling Potion: every hittable enemy loses 7 Strength this turn; Artifact stops it.
+c = tpot("SHACKLING_POTION", [], enc="SLIMES_WEAK")
+c.enemies[1].artifact = 1
+st = [e.strength for e in c.enemies]
+c.use_potion(0)
+assert [e.strength for e in c.enemies] == [st[0] - 7, st[1], st[2] - 7] and c.enemies[1].artifact == 0
+c.end_turn()
+assert [e.strength for e in c.enemies] == st
+# Beetle Juice: the enemy's powered attacks x0.7 for 4 of its turns.
+c = tpot("BEETLE_JUICE", [])
+e = c.enemies[0]
+full = c.monster_hit_damage(e, 20)
+c.use_potion(0, 1)
+assert e.pw["ShrinkPower"] == 4 and c.monster_hit_damage(e, 20) == 14 and full == 20
+assert c.monster_hit_damage(e, 10) == 7 and c.monster_hit_damage(e, 6) == 4
+for left in (3, 2, 1):
+    c.player_block = 99
+    c.end_turn()
+    assert e.pw["ShrinkPower"] == left
+c.player_block = 99
+c.end_turn()
+c.vulnerable = 0  # the Mawler hit us meanwhile
+assert "ShrinkPower" not in e.pw and c.monster_hit_damage(e, 20) == 20
+c = tpot("BEETLE_JUICE", [])
+c.enemies[0].artifact = 1
+c.use_potion(0, 1)
+assert "ShrinkPower" not in c.enemies[0].pw
+# The player's own Shrink is unchanged.
+assert player_attack_damage(20, False, True) == 14
+# Fairy in a Bottle: lethal damage heals 30% of max HP, empties its slot; Lizard Tail stays unused.
+c = rc("LIZARD_TAIL", hp=5)
+c.potions = [None, "FAIRY_IN_A_BOTTLE", None]
+hurt(c, 50)
+assert c.in_combat and c.player_hp == 24 and c.potions == [None, None, None] and not c.relic_state.get("lizard_used")
+c.player_hp = 3
+hurt(c, 50)  # no Fairy left: Lizard Tail now
+assert c.in_combat and c.player_hp == 40 and c.relic_state["lizard_used"] == 1
+c = rc(hp=5)
+c.potions = ["FAIRY_IN_A_BOTTLE", None, None]
+c.player_max_hp = 3
+hurt(c, 50)
+assert c.player_hp == 1  # max(0.9, 1)
+c = rc(hp=5)
+c.potions = ["BLOCK_POTION", "FAIRY_IN_A_BOTTLE", None]
+hurt(c, 50)
+assert c.in_combat and c.potions == ["BLOCK_POTION", None, None]
+c = rc(hp=5)  # no Fairy: dead
+hurt(c, 50)
+assert not c.in_combat and c.won is False
+# Self-inflicted HP loss too (Offering at 6 HP; an end-of-turn loss like Beckon's, which the sim lacks), and the fight goes on.
+c = tpot("FAIRY_IN_A_BOTTLE", ["OFFERING"], player_hp=6)
+c.play_card(0)
+assert c.in_combat and c.player_hp == 24 and c.potions[0] is None
+c = tpot("FAIRY_IN_A_BOTTLE", [], player_hp=6)
+c._lose_hp(6)
+assert c.in_combat and c.player_hp == 24
+assert c.end_turn()["ok"] and c.in_combat and c.is_play_phase
+# AfterPotionUsed runs for Fairy (Belt Buckle: the last potion gone gives Dexterity).
+c = rc("BELT_BUCKLE", hp=5)
+c.potions = ["FAIRY_IN_A_BOTTLE", None, None]
+c._buckle(False)  # the fight started potionless (Dexterity on); with a potion it's off
+assert c.dexterity == 0
+c._lose_hp(9)
+assert c.in_combat and c.dexterity == 2
+# Fairy is never used by hand.
+c = tpot("FAIRY_IN_A_BOTTLE", [])
+assert c.use_potion(0)["error"] == "invalid_potion" and c.potions[0] == "FAIRY_IN_A_BOTTLE"
+from env import MAX_ENEMIES, POTION_ACTION  # noqa: E402
+senv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=0), heal=False, episodes_per_restart=10**9)
+senv.potions = ["FAIRY_IN_A_BOTTLE", "BLOCK_POTION", None]
+senv.reset(seed=0)
+m = senv.action_masks()
+assert not m[POTION_ACTION:POTION_ACTION + MAX_ENEMIES].any() and m[POTION_ACTION + MAX_ENEMIES]  # slot 0 (Fairy) never, slot 1 (Block) yes
+_, _, _, _, info = senv.step(POTION_ACTION)  # even forced, the exec path refuses it
+assert senv.client._combat.potions[0] == "FAIRY_IN_A_BOTTLE"
+# Soldier's Stew: every Strike in hand, draw, discard and exhaust piles gets Replay 1.
+c = tpot("SOLDIERS_STEW", [DeckCard(S), DeckCard(D), DeckCard("TWIN_STRIKE")])
+c.draw_pile, c.discard_pile, c.exhaust_pile = [DeckCard(S), DeckCard(D)], [DeckCard(S)], [DeckCard(S)]
+c.use_potion(0)
+assert sorted(c.replays.values()) == [1] * 5, c.replays  # 4 Strikes + Twin Strike
+h = c.enemies[0].hp
+c.play_card(0, 1)
+assert h - c.enemies[0].hp == 12
+c.play_card(1, 1)  # Twin Strike (a Strike too): 2 hits, twice
+assert h - c.enemies[0].hp == 12 + 20
+c.play_card(0)  # Defend: no replay
+assert c.player_block == 5
+c = tpot("SOLDIERS_STEW", [DeckCard(S)])
+c.draw_pile = [DeckCard(S), DeckCard(D)]
+c.use_potion(0)
+c.hand = [c.draw_pile.pop(0)]  # a Strike that was in the draw pile, drawn later: still replays
+h = c.enemies[0].hp
+c.play_card(0, 1)
+assert h - c.enemies[0].hp == 12
+c = tpot("SOLDIERS_STEW", [S, D])  # a plain (generated) Strike doesn't share its Replay with later ones
+c.use_potion(0)
+c.hand.append(S)
+h = c.enemies[0].hp
+c.play_card(0, 1)
+c.play_card(1, 1)
+assert h - c.enemies[0].hp == 12 + 6
 
 # validate.load rebuilds every card object, so a Bolas played on an earlier step must still come back next turn.
 from collections import defaultdict  # noqa: E402

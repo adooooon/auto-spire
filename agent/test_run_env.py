@@ -3,7 +3,7 @@ from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
 from sim.potions import POTION_IDS
-assert COMBAT_OBS == 3302 and COMBAT_ACTIONS == 392  # 48 potion ids (was 12): +5 slots x 36. + the colorless prompts (3 kinds, 3 generated one-hots, 7 sources; 3 + 1 + 143 + 1 actions), + the upgrade prompt and True Grit / Armaments as its sources, + 53 colorless cards, RetainHandPower and the 14 colorless powers
+assert COMBAT_OBS == 3321 and COMBAT_ACTIONS == 392  # 3302 -> 3321 in plan 2b task 2: +7 player powers, +2 enemy powers x 6 slots. 48 potion ids (was 12): +5 slots x 36. + the colorless prompts (3 kinds, 3 generated one-hots, 7 sources; 3 + 1 + 143 + 1 actions), + the upgrade prompt and True Grit / Armaments as its sources, + 53 colorless cards, RetainHandPower and the 14 colorless powers
 from env import CHOICE_FEATURES, POTION_FEATURES, PROMPT_FEATURES, RELIC_FEATURES, UPGRADE_FEATURES
 POT0 = COMBAT_OBS - PROMPT_FEATURES - UPGRADE_FEATURES - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
 from sim.engine import SimClient, SimLoopError
@@ -171,7 +171,7 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == 392 and COMBAT_OBS == 3302
+assert cenv.action_space.n == COMBAT_ACTIONS == 392 and COMBAT_OBS == 3321
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()
@@ -650,7 +650,10 @@ from run_env import SLOT_FEATURES
 from sim.act import ALL_BOSSES
 S0 = len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(ALL_BOSSES)  # the offer / shop slots
 not_old = np.isin(np.arange(OBS_DIM), obs_map, invert=True)
+from env import PART1_POTIONS
 for s in fx["run_states"]:  # part 1 states, read by the new env: old inputs and mask carry over, new inputs read 0
+    if getattr(s["run"], "shop", None):  # a shop potion a part 1 model didn't know read as zeros; it's modeled now (plan 2b)
+        s["run"].shop.potions = [p if p in PART1_POTIONS else "UNMODELED" for p in s["run"].shop.potions]
     renv.run, renv.decision, renv.offered, renv.back = s["run"], s["decision"], s["offered"], s["back"]
     new_obs, new_mask = renv._obs(), renv.action_masks()
     assert np.array_equal(new_obs[obs_map], s["obs"]), s["decision"]
@@ -934,5 +937,5 @@ assert _power(_e(("PanachePower", 3), ("AutomationPower", 2)), "PanachePower") =
 _c = {"player": {"hp": 50, "maxHp": 80, "block": 0, "energy": 3, "hand": [], "powers": [{"name": n, "amount": a} for n, a in
       [("AutomationPower", 2), ("PanachePower", 3), ("RollingBoulderPower", 5), ("TheBombPower", 3), ("StrengthPower", 2)]]},
       "enemies": [{"isAlive": True, "hp": 40, "maxHp": 40, "block": 0, "powers": [{"name": "VulnerablePower", "amount": 2}], "intents": []}]}
-assert hashlib.md5(np.asarray(_encode(_c)).tobytes()).hexdigest() == "fdb31545ddfce1b0a6f8edcbe35673fd"  # re-recorded when the potion ids went from 12 to 48 (the layout shifts; values unchanged)
+assert hashlib.md5(np.asarray(_encode(_c)).tobytes()).hexdigest() == "72e9129887182b6cd4d67f7b62fbc777"  # re-recorded when the potion ids went from 12 to 48, and again for plan 2b task 2 (+7 player and 2 x 6 enemy powers); both times the values are unchanged (the old md5 fdb31545... is this vector minus those 19 columns)
 print("training deck checks ok")

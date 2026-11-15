@@ -68,7 +68,9 @@ CARD_FEATURES = 6 + len(CARD_IDS)  # cost, can_play, is_attack, is_skill, is_pow
 # ponytail: "exhausted / lost HP this turn" (Evil Eye, Spite, ...) aren't in /combat, so not observed.
 PLAYER_POWERS = sorted(({name for c in CARDS.values() for name, _ in c.powers} - {"StrengthPower", "DexterityPower"})  # Dexterity has its own feature
                        | {"TenderPower", "TaintedPower", "SurroundedPower", "DisintegrationPower"}  # put there by Hive monsters
-                       | {"BlockNextTurnPower", "TheBombPower"})  # applied by special cards (Prolong, The Bomb)
+                       | {"BlockNextTurnPower", "TheBombPower"}  # applied by special cards (Prolong, The Bomb)
+                | {"ClarityPower", "DuplicationPower", "RadiancePower", "RegenPower", "GigantificationPower", "BufferPower",
+                   "RitualPower"})  # applied by potions
 PLAYER_FEATURES = 14 + len(PLAYER_POWERS)
 PILE_FEATURES = 3 * len(CARD_IDS)  # per-card counts in draw, discard and exhaust piles
 # hp frac, hp, block, intent_damage, is_attack_intent, vulnerable, strength, artifact, slippery,
@@ -133,7 +135,8 @@ NEW_CARDS = set(COLORLESS)  # card ids a part 1 model (boss_g1) lacks
 # PLAYER_POWERS entries a model trained before colorless cards lacks
 NEW_POWERS = {"RetainHandPower", "AutomationPower", "CalamityPower", "EntropyPower", "FastenPower", "MayhemPower", "NostalgiaPower",
               "PanachePower", "PrepTimePower", "RollingBoulderPower", "StratagemPower", "TheBombPower", "TheGambitPower", "NoBlockPower",
-              "BlockNextTurnPower"}
+              "BlockNextTurnPower", "ClarityPower", "DuplicationPower", "RadiancePower", "RegenPower", "GigantificationPower",
+              "BufferPower", "RitualPower"}  # the last 7: potion powers (plan 2b)
 
 
 PART1_POTIONS = ("BLOCK_POTION", "DEXTERITY_POTION", "SPEED_POTION", "ENERGY_POTION", "STRENGTH_POTION", "FLEX_POTION",
@@ -147,7 +150,8 @@ def combat_maps() -> tuple[list[int], list[int]]:
     old_powers = [p for p in PLAYER_POWERS if p not in NEW_POWERS]
     pots = (sorted(PART1_POTIONS), POTION_IDS)  # the 12 potions a part 1 model knew, among all 48
     obs = insert_map([6, "cards"] * MAX_HAND + [14, (old_powers, PLAYER_POWERS)] + ["cards"] * 3
-                     + [MAX_ENEMIES * ENEMY_FEATURES] + [pots] * POTION_SLOTS + [2]
+                     + [ENEMY_FEATURES - 2, ("skip", 2)] * MAX_ENEMIES  # each enemy's last 2 (Shrink, Demise) are new
+                     + [pots] * POTION_SLOTS + [2]
                      + [pots] * (MAX_POTION_SLOTS - POTION_SLOTS)
                      + [len(RELIC_IDS), len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES + UPGRADE_FEATURES], old_cards, CARD_IDS)
     act = list(range(CHOOSE_DISCARD)) + [CHOOSE_DISCARD + CARD_IDS.index(c) for c in old_cards]
@@ -414,7 +418,7 @@ class STS2CombatEnv(gym.Env):
                 enemies = _living(prev)
                 if USABLE.get(pid) == "enemy" and slot < len(enemies):
                     result = self.client.exec(f"potion {pslot} {enemies[slot]['combatId']}")
-                elif pid in USABLE and USABLE[pid] != "enemy" and slot == 0:
+                elif pid in USABLE and USABLE[pid] not in ("enemy", "auto") and slot == 0:
                     result = self.client.exec(f"potion {pslot}")
                 else:
                     result = {"error": "invalid_potion"}
@@ -516,7 +520,7 @@ class STS2CombatEnv(gym.Env):
                 slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
                 mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True
         for i, pid in enumerate((self._combat.get("potionSlots") or [])[:MAX_POTION_SLOTS]):
-            if pid in USABLE:  # unmodeled potions and live play (no potionSlots) stay masked
+            if pid in USABLE and USABLE[pid] != "auto":  # unmodeled potions, Fairy in a Bottle and live play (no potionSlots) stay masked
                 slots = n_enemies if USABLE[pid] == "enemy" else 1
                 mask[POTION_ACTION + i * MAX_ENEMIES:POTION_ACTION + i * MAX_ENEMIES + slots] = True
         mask[END_TURN] = True

@@ -619,14 +619,14 @@ INSTANCED = {"AutomationPower": (10,), "PanachePower": (5, 0), "RollingBoulderPo
 # ponytail: the pool also has Beckon, Burn, Debris, Wither and Void, which the sim lacks; add them with those cards.
 STATUS_TRANSFORMS = ("DAZED", "INFECTION", "SLIMED", "TOXIC", "WOUND")
 # Removed at the end of the player's turn (AfterSideTurnEnd on their side).
-TURN_POWERS = ("RagePower", "NoDrawPower", "NoEnergyGainPower", "OneTwoPunchPower")
+TURN_POWERS = ("RagePower", "NoDrawPower", "NoEnergyGainPower", "OneTwoPunchPower", "DuplicationPower")
 # Combat history the live /combat doesn't expose; sim.validate carries these over between steps.
 # What each Hive conditional branch can lead to (engine: _next_move), for sim.validate.
 BRANCHES = {"SUMMON_BRANCH_STATE": ["LAY_EGGS_MOVE", "NUTRITIONAL_PASTE_MOVE"], "CURSE_BRANCH": ["CURSE_OF_KNOWLEDGE_MOVE", "SLAP_MOVE"]}
 # Powers on Hive monsters, kept in _Enemy.pw. sim.validate loads them from the live /combat.
 ENEMY_PW = ("HardToKillPower", "ThornsPower", "ImbalancedPower", "BurrowedPower", "CurlUpPower", "PlatingPower", "SlumberPower",
             "PersonalHivePower", "VitalSparkPower", "ReattachPower", "EscapeArtistPower", "FlutterPower", "SwipePower", "HatchPower",
-            "CrabRagePower", "BackAttackLeftPower", "BackAttackRightPower", "SandpitPower")
+            "CrabRagePower", "BackAttackLeftPower", "BackAttackRightPower", "SandpitPower", "ShrinkPower", "DemisePower")
 HISTORY_FIELDS = ("tender_plays", "facing", "exhausted_this_turn", "hp_lost_this_turn", "attack_plays", "block_plays", "free_cards",
                   "hp_loss_events", "bonus_damage", "crimson_self", "inferno_self", "skill_plays", "inst", "combat_plays")
 
@@ -943,8 +943,8 @@ class SimCombat:
             return {"error": "choice_pending"}
         if not self.in_combat or not self.is_play_phase:
             return {"error": "not_play_phase"}
-        if not 0 <= slot < len(self.potions) or self.potions[slot] not in USABLE:
-            return {"error": "invalid_potion", "slot": slot}
+        if not 0 <= slot < len(self.potions) or self.potions[slot] not in USABLE or USABLE[self.potions[slot]] == "auto":
+            return {"error": "invalid_potion", "slot": slot}  # Fairy in a Bottle is Automatic: only dying uses it
         pid, target = self.potions[slot], None
         if USABLE[pid] == "enemy":
             target = self.enemies[target_id - 1] if target_id and 0 < target_id <= len(self.enemies) else None
@@ -1040,16 +1040,51 @@ class SimCombat:
         elif pid == "ENTROPIC_BREW":  # PotionCmd.TryToProcure until the slots are full
             while None in self.potions:
                 self._procure_potion(random_potion(self.rng, in_combat=False))
+        elif pid == "CLARITY":
+            self._draw(1)
+            self._apply_power("ClarityPower", 3)
+        elif pid == "DUPLICATOR":
+            self._apply_power("DuplicationPower", 1)
+        elif pid == "POWDERED_DEMISE":
+            self._debuff(target, "DemisePower", 9, card=False)
+        elif pid == "RADIANT_TINCTURE":
+            self._gain_energy(1)
+            self._apply_power("RadiancePower", 3)
+        elif pid == "REGEN_POTION":
+            self._apply_power("RegenPower", 5)
+        elif pid == "GIGANTIFICATION_POTION":
+            self._apply_power("GigantificationPower", 1)
+        elif pid == "LUCKY_TONIC":
+            self._apply_power("BufferPower", 1)
+        elif pid == "MAZALETHS_GIFT":
+            self._apply_power("RitualPower", 1)
+        elif pid == "SHACKLING_POTION":  # ShacklingPotionPower: a TemporaryStrengthPower, handled like Dark Shackles
+            for e in self._hittable():
+                self._debuff(e, "DarkShacklesPower", 7, card=False)
+        elif pid == "BEETLE_JUICE":
+            self._debuff(target, "ShrinkPower", 4, card=False)
+        elif pid == "SOLDIERS_STEW":  # AllCards with the Strike tag: BaseReplayCount++
+            for pile in (self.hand, self.draw_pile, self.discard_pile, self.exhaust_pile):
+                for i, c in enumerate(pile):
+                    if CARDS[c].strike:
+                        if type(c) is str:  # a generated copy: its own object, so it doesn't share the id
+                            c = pile[i] = CardCopy(c)
+                        self.replays[id(c)] = self.replays.get(id(c), 0) + 1
+                        self._pinned.append(c)
         self._effect_depth -= 1
-        # AfterPotionUsed. ponytail: relic order assumed Reptile Trinket, then Belt Buckle.
+        self._after_potion_used()
+        return {"ok": True, "used": pid, "slot": slot}
+
+    def _after_potion_used(self) -> None:
+        """AfterPotionUsed (also after Fairy in a Bottle), then CheckForEmptyHand.
+        ponytail: relic order assumed Reptile Trinket, then Belt Buckle."""
         if "REPTILE_TRINKET" in self.relics and self.in_combat:
             self._gain_strength(3)
             self.temp_strength += 3  # ponytail: Ruined Helmet doubles the gain, not this (TemporaryStrengthPower takes back its own amount)
         if "BELT_BUCKLE" in self.relics and not any(self.potions):
             self._buckle(True)
         self._check_win()
-        self._check_empty_hand()  # after AfterPotionUsed
-        return {"ok": True, "used": pid, "slot": slot}
+        self._check_empty_hand()
 
     def _procure_potion(self, pid: str) -> bool:
         """PotionCmd.TryToProcure: pid into the first open slot (Potion Belt's are in len(self.potions)); False if full."""
@@ -1083,6 +1118,9 @@ class SimCombat:
         if attack and self.pw.get("OneTwoPunchPower"):  # ModifyCardPlayCount, then Decrement
             plays += 1
             self._decrement("OneTwoPunchPower")
+        if self.pw.get("DuplicationPower"):  # ModifyCardPlayCount (any card), then AfterModifyingCardPlayCount decrements
+            plays += 1
+            self._decrement("DuplicationPower")
         self._run_plays(card_id, target, x, force_exhaust, energy_value, plays, to_top)
 
     def _run_plays(self, card_id: str, target: _Enemy | None, x: int, force_exhaust: bool, energy_value: int | None,
@@ -1629,6 +1667,8 @@ class SimCombat:
         base += self.pw.get("VigorPower", 0) + (3 if "STRIKE_DUMMY" in self.relics and card.strike else 0)
         base += 3 if "MINIATURE_CANNON" in self.relics and is_upgraded(card.id) else 0  # ModifyDamageAdditive
         mult = 2 if self.rt.get("pen_play") == self._play_id else 1
+        giga = card.type == "Attack" and self.pw.get("GigantificationPower")  # x3 on every hit of this attack's command
+        mult *= 3 if giga else 1
         self._dealt = 0
         cruelty = self.pw.get("CrueltyPower", 0) + (25 if "PAPER_PHROG" in self.relics else 0)
         for _ in range(hits):
@@ -1650,6 +1690,8 @@ class SimCombat:
             if not self.in_combat:
                 return
         self.pw.pop("VigorPower", None)  # AfterAttack: Vigor is spent by the attack
+        if giga:
+            self._decrement("GigantificationPower")
 
     def _apply_power(self, name: str, amount: int) -> None:
         if name == "StrengthPower":
@@ -1692,9 +1734,12 @@ class SimCombat:
             e.mangle += amount
             e.strength -= amount
             return
-        if name == "DarkShacklesPower":  # another TemporaryStrengthPower, shown under its own name
+        if name == "DarkShacklesPower":  # another TemporaryStrengthPower, shown under its own name (Shackling Potion's too)
             e.pw[name] = e.pw.get(name, 0) + amount
             e.strength -= amount
+            return
+        if name in ("ShrinkPower", "DemisePower"):  # potion powers on an enemy (Counter: they stack)
+            e.pw[name] = e.pw.get(name, 0) + amount
             return
         setattr(e, name, getattr(e, name) + amount)
         if name == "vulnerable" and self.pw.get("ViciousPower"):
@@ -1854,13 +1899,13 @@ class SimCombat:
 
     # --- damage ----------------------------------------------------------------------------------
 
-    def _damage_enemy(self, e: _Enemy, dmg: int, attack: bool = False) -> int:
+    def _damage_enemy(self, e: _Enemy, dmg: int, attack: bool = False, unblockable: bool = False) -> int:
         """attack: a card's powered attack, which Flutter, Curl Up and Personal Hive answer. Returns the block
         and HP the hit took, overkill included (DamageResult.TotalDamage + OverkillDamage)."""
         if e.pw.get("HardToKillPower"):  # ModifyDamageCap
             dmg = min(dmg, e.pw["HardToKillPower"])
         had_block = e.block > 0
-        absorbed = min(e.block, dmg)
+        absorbed = 0 if unblockable else min(e.block, dmg)
         e.block -= absorbed
         hp_loss = dmg - absorbed
         if e.slippery and hp_loss >= 1:  # SlipperyPower: cap at 1, spend a stack
@@ -2043,6 +2088,13 @@ class SimCombat:
     def _kill_player(self) -> bool:
         """Kill -> ShouldDieLate: Lizard Tail heals instead (True)."""
         self.player_hp = 0
+        fairy = next((i for i, p in enumerate(self.potions) if p == "FAIRY_IN_A_BOTTLE"), None)
+        if fairy is not None:  # Hook.ShouldDie (Fairy) is asked before ShouldDieLate (Lizard Tail)
+            self.potions[fairy] = None
+            self.player_hp = max(self.player_max_hp * 3 // 10, 1)  # Heal(max(MaxHp * 0.3, 1)), SetCurrentHpInternal truncates
+            self._red_skull()
+            self._after_potion_used()
+            return True
         if "LIZARD_TAIL" in self.relics and not self.relic_state.get("lizard_used"):
             self.relic_state["lizard_used"] = 1
             self.player_hp = max(1, self.player_max_hp * 50 // 100)
@@ -2063,6 +2115,9 @@ class SimCombat:
         if "BEATING_REMNANT" in R:
             amount = min(amount, 20 - self.rt.get("remnant", 0))
         if amount <= 0:
+            return False
+        if self.pw.get("BufferPower"):  # ModifyHpLostAfterOstyLate: after the other reductions, only if there's HP to lose
+            self._decrement("BufferPower")
             return False
         self.player_hp -= amount
         self.hp_loss_events += 1
@@ -2127,7 +2182,7 @@ class SimCombat:
         back = self.pw.get("SurroundedPower") and ("BackAttackLeftPower" if self.facing == "Right" else "BackAttackRightPower") in e.pw
         num = base * (3 if self.vulnerable else 2) * (3 if e.weak else 4) * \
             (1 if self.pw.get("ColossusPower") and e.vulnerable else 2) * (3 if back else 2)
-        return max(0, num // 32)
+        return max(0, num * (7 if e.pw.get("ShrinkPower") else 10) // 320)  # Beetle Juice: x0.7
 
     def _end_combat(self, won: bool) -> None:
         self.in_combat = False
@@ -2193,6 +2248,9 @@ class SimCombat:
         if "VENERABLE_TEA_SET" in R and st.get("tea_set"):
             self._gain_energy(2)
             st["tea_set"] = 0
+        if self.pw.get("RadiancePower"):
+            self._gain_energy(1)
+            self._decrement("RadiancePower")
         # BeforeHandDraw: Bolas and Thrumming Hatchet come back from any pile (a full hand sends them to discard).
         for pile in (self.hand, self.draw_pile, self.discard_pile, self.exhaust_pile):
             for card in [c for c in pile if base_id(c) in ("BOLAS", "THRUMMING_HATCHET")]:
@@ -2203,6 +2261,7 @@ class SimCombat:
                     self._add_to_hand(card)
         draw = HAND_DRAW_COUNT + (2 if "BAG_OF_PREPARATION" in R and self.round == 1 else 0) + \
             (3 if "POCKETWATCH" in R and self.round > 1 and self.cards_last <= 3 else 0)
+        draw += 1 if self.pw.get("ClarityPower") else 0  # ModifyHandDraw
         if self.round == 1:  # Innate cards go on top of the draw pile, and the hand draw is at least that many
             innate = [c for c in self.draw_pile if CARDS[c].innate]
             self.draw_pile = [c for c in self.draw_pile if not CARDS[c].innate] + innate
@@ -2270,6 +2329,7 @@ class SimCombat:
             for e in self._hittable():
                 e.strength += 1
         self._gain_strength(self.pw.get("DemonFormPower", 0))
+        self._decrement("ClarityPower")  # AfterSideTurnStart, after the hand draw
         if self.pw.get("PrepTimePower"):
             self._apply_power("VigorPower", self.pw["PrepTimePower"])
         if self.round > 1:
@@ -2368,6 +2428,11 @@ class SimCombat:
         self.temp_strength = 0
         self.dexterity -= self.temp_dexterity  # SpeedPotionPower (TemporaryDexterityPower)
         self.temp_dexterity = 0
+        if self.pw.get("RitualPower"):  # AfterSideTurnEnd: Strength (Mazaleth's Gift)
+            self._gain_strength(self.pw["RitualPower"])
+        if self.pw.get("RegenPower"):  # AfterSideTurnEnd: heal, then decrement
+            self.heal(self.pw["RegenPower"])
+            self._decrement("RegenPower")
         for name in TURN_POWERS:
             self.pw.pop(name, None)
         self._decrement("RetainHandPower")  # AfterSideTurnEnd
@@ -2472,6 +2537,15 @@ class SimCombat:
             e.weak = max(0, e.weak - 1)
             e.strength += e.mangle + e.pw.pop("DarkShacklesPower", 0)
             e.mangle = 0
+            if e.pw.get("ShrinkPower"):  # AfterSideTurnEnd: Counter ticks down (Beetle Juice)
+                e.pw["ShrinkPower"] -= 1
+                if not e.pw["ShrinkPower"]:
+                    del e.pw["ShrinkPower"]
+            if e.is_alive and e.pw.get("DemisePower"):  # AfterSideTurnEnd: Unblockable, Unpowered; never decrements
+                self._damage_enemy(e, e.pw["DemisePower"], unblockable=True)
+        self._check_win()
+        if not self.in_combat:
+            return
         for e in alive:  # TerritorialPower.AfterSideTurnEnd
             if e.is_alive:
                 e.strength += e.defn.territorial

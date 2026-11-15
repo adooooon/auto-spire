@@ -25,10 +25,8 @@ POTIONS = {
 # Potions whose effect isn't written yet (plan 2b, tasks 2-4 remove their ids). They still drop and stock shops, but
 # the run, env and live bridge skip them (use USABLE, not POTIONS, to ask "can it be held and used?").
 PENDING = frozenset({
-    "ASHWATER", "ATTACK_POTION", "BEETLE_JUICE", "CLARITY", "COLORLESS_POTION", "DROPLET_OF_PRECOGNITION", "DUPLICATOR",
-    "FAIRY_IN_A_BOTTLE", "GAMBLERS_BREW", "GIGANTIFICATION_POTION", "LIQUID_MEMORIES", "LUCKY_TONIC", "MAZALETHS_GIFT",
-    "POWDERED_DEMISE", "POWER_POTION", "RADIANT_TINCTURE", "REGEN_POTION", "SHACKLING_POTION", "SKILL_POTION",
-    "SOLDIERS_STEW", "TOUCH_OF_INSANITY"})
+    "ASHWATER", "ATTACK_POTION", "COLORLESS_POTION", "DROPLET_OF_PRECOGNITION", "GAMBLERS_BREW", "LIQUID_MEMORIES",
+    "POWER_POTION", "SKILL_POTION", "TOUCH_OF_INSANITY"})
 USABLE = {p: k for p, k in POTIONS.items() if p not in PENDING}
 # PotionUsage.AnyTime (the rest are CombatOnly; Fairy in a Bottle is Automatic).
 ANY_TIME = frozenset({"BLOOD_POTION", "FRUIT_JUICE", "ENTROPIC_BREW"})
