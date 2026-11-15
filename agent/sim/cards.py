@@ -40,6 +40,7 @@ class CardDef:
     exhaust_random: bool = False  # Cinder / True Grit: exhaust a random card from hand
     autoplay_top: bool = False  # Havoc: play the top draw-pile card for free, then exhaust it
     copy_to_discard: bool = False  # Anger: add a copy of itself to the discard pile
+    end_turn_hp_loss: int = 0  # Beckon: Unblockable HP loss if in hand at end of turn
     end_turn_damage: int = 0  # Infection: blockable damage to the player if in hand at end of turn
     rarity: str = "Basic"  # "Basic" | "Common" | "Uncommon" | "Rare" | "Status" | "Token"
     weak: int = 0  # Weak applied to the target (Uppercut applies it before its Vulnerable)
@@ -64,6 +65,13 @@ CARDS: dict[str, CardDef] = {c.id: c for c in [
     CardDef("DAZED", "Dazed", "Status", -1, "None", rarity="Status", ethereal=True),
     # Phrog Parasite / Wriggler: Unplayable; 3 damage (Unpowered, so blockable) if held at end of turn.
     CardDef("INFECTION", "Infection", "Status", -1, "None", rarity="Status", end_turn_damage=3),
+    # Entropy's other statuses (StatusCardPool). Beckon's loss is Unblockable (HP loss); Burn and Wither's are blockable.
+    CardDef("BECKON", "Beckon", "Status", 1, "None", rarity="Status", end_turn_hp_loss=6),
+    CardDef("BURN", "Burn", "Status", -1, "None", rarity="Status", end_turn_damage=2),
+    CardDef("DEBRIS", "Debris", "Status", 1, "None", rarity="Status", exhaust=True),
+    # ponytail: Wither's FakeUpgrade (+3 damage) is only called by Aeonglass, an Act 3 monster; add it with that monster.
+    CardDef("WITHER", "Wither", "Status", -1, "None", rarity="Status", end_turn_damage=3),
+    CardDef("VOID", "Void", "Status", -1, "None", rarity="Status", ethereal=True),  # engine._draw_one: drawn, lose 1 energy
     # Vantom's Dismember: Unplayable, does nothing else.
     CardDef("WOUND", "Wound", "Status", -1, "None", rarity="Status"),
     CardDef("TOXIC", "Toxic", "Status", 1, "None", rarity="Status", exhaust=True, end_turn_damage=5, generated=False),

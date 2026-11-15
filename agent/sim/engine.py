@@ -618,8 +618,7 @@ class _Enemy:
 # the state a new one starts with (Automation: cards left to draw; Panache: cards left, counting yet; The Bomb: damage).
 INSTANCED = {"AutomationPower": (10,), "PanachePower": (5, 0), "RollingBoulderPower": (), "TheBombPower": (40,)}
 # Transform options for a status card that the sim models (StatusCardPool order, CanBeGeneratedInCombat).
-# ponytail: the pool also has Beckon, Burn, Debris, Wither and Void, which the sim lacks; add them with those cards.
-STATUS_TRANSFORMS = ("DAZED", "INFECTION", "SLIMED", "TOXIC", "WOUND")
+STATUS_TRANSFORMS = ("BECKON", "BURN", "DAZED", "DEBRIS", "INFECTION", "WITHER", "SLIMED", "TOXIC", "VOID", "WOUND")
 # Removed at the end of the player's turn (AfterSideTurnEnd on their side).
 TURN_POWERS = ("RagePower", "NoDrawPower", "NoEnergyGainPower", "OneTwoPunchPower", "DuplicationPower")
 # Combat history the live /combat doesn't expose; sim.validate carries these over between steps.
@@ -1871,6 +1870,8 @@ class SimCombat:
         if self.pw.get("HellraiserPower") and CARDS[card].strike:  # AfterCardDrawnEarly: autoplay it
             self.hand.pop()
             self._autoplay(card)
+        if card == "VOID":  # Void.AfterCardDrawn
+            self.energy = max(0, self.energy - 1)
         for a in self.inst.get("AutomationPower", ()):  # AfterCardDrawn: [energy, cards left]
             a[1] -= 1
             if a[1] <= 0:
@@ -2453,8 +2454,11 @@ class SimCombat:
         if not self.in_combat:
             return {"ok": True}
         for c in list(self.hand):  # turnEndCards is fixed before any effect runs (a drawn Infection does nothing)
-            if CARDS[c].end_turn_damage:
-                self._damage_player(CARDS[c].end_turn_damage)
+            if CARDS[c].end_turn_damage or CARDS[c].end_turn_hp_loss:
+                if CARDS[c].end_turn_damage:
+                    self._damage_player(CARDS[c].end_turn_damage)
+                else:
+                    self._lose_hp(CARDS[c].end_turn_hp_loss, from_card=True)
                 if not self.in_combat:
                     return {"ok": True}
         if not ("RINGING_TRIANGLE" in R and self.round == 1) and not self.pw.get("RetainHandPower"):  # ShouldFlush

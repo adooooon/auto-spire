@@ -133,7 +133,7 @@ def _asks(card: dict) -> bool:
     return b in CHOICE_CARDS + COLORLESS_PROMPT_CARDS or (b == "ARMAMENTS" and not up) or (b == "TRUE_GRIT" and up)
 
 
-NEW_CARDS = set(COLORLESS)  # card ids a part 1 model (boss_g1) lacks
+NEW_CARDS = set(COLORLESS) | {"BECKON", "BURN", "DEBRIS", "WITHER", "VOID"}  # card ids a part 1 model (boss_g1) lacks (the 5 statuses: plan 2b task 4)
 
 
 # PLAYER_POWERS entries a model trained before colorless cards lacks

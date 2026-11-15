@@ -2121,7 +2121,7 @@ assert c.player_hp == hp and e.strength == 2 and "DarkShacklesPower" not in e.pw
 c = solo(["DARK_SHACKLES"]); c.enemies[0].artifact = 1; c.play_card(0, 1); assert c.enemies[0].strength == 0 and not c.enemies[0].pw
 # Entropy (AfterPlayerTurnStart): after the hand draw, transform Amount hand cards into a random card of the card's own pool
 # (not itself); statuses into another status. The player picks it (a "hand" prompt at the turn start, see the prompt checks).
-STATUSES = {"DAZED", "INFECTION", "SLIMED", "TOXIC", "WOUND"}
+STATUSES = {"BECKON", "BURN", "DAZED", "DEBRIS", "INFECTION", "WITHER", "SLIMED", "TOXIC", "VOID", "WOUND"}
 for seed in range(20):
     for top, pool in ((S, set(GENERATED)), ("FINESSE", set(CG) - {"FINESSE"}), ("WOUND", STATUSES - {"WOUND"})):
         c = solo(["ENTROPY"], seed=seed); c.play_card(0); c.draw_pile = [DeckCard(top) for _ in range(10)]; c.hand = []
@@ -2678,4 +2678,50 @@ for pid, hand, draw, discard in (("GAMBLERS_BREW", [], [S], [D]), ("ASHWATER", [
     assert (c.hand, c.draw_pile, c.discard_pile, c.exhaust_pile) == (hand, draw, discard, []), pid
     assert not getattr(c.hand[1] if pid == "TOUCH_OF_INSANITY" else None, "free_combat", False)
 print("potion prompt checks ok")
+# --- plan 2b task 4: Entropy's missing statuses ----------------------------------------------------------------------
+from sim.engine import STATUS_TRANSFORMS
+assert STATUS_TRANSFORMS == ("BECKON", "BURN", "DAZED", "DEBRIS", "INFECTION", "WITHER", "SLIMED", "TOXIC", "VOID", "WOUND")
+seen = set()
+for seed in range(2000):  # a transform from Wound reaches every other status
+    seen.add(solo([], seed=seed)._transform("WOUND"))
+assert seen == set(STATUS_TRANSFORMS) - {"WOUND"}, seen
+# Beckon: cost 1, playable, does nothing; held at end of turn: 6 HP lost, Unblockable.
+c = solo(["BECKON"]); c.energy = 3; c.player_hp = 50; c.player_block = 0
+assert c.play_card(0).get("error") is None and c.energy == 2 and c.player_hp == 50 and "BECKON" in c.discard_pile
+c = solo(["BECKON"]); c.player_hp = 50; c.player_block = 99
+eot(c)
+assert c.player_hp == 44 and c.player_block == 99, c.player_hp
+# Burn / Wither: Unplayable; 2 / 3 damage at end of turn, blockable.
+for cid, dmg in (("BURN", 2), ("WITHER", 3)):
+    c = solo([cid]); c.energy = 3
+    assert c.play_card(0).get("error") == "card_not_playable"
+    c.player_hp = 50; c.player_block = 0
+    eot(c)
+    assert c.player_hp == 50 - dmg, (cid, c.player_hp)
+    c = solo([cid]); c.player_hp = 50; c.player_block = 99
+    eot(c)
+    assert c.player_hp == 50, cid
+# Debris: cost 1, Exhaust, does nothing; no end-of-turn effect.
+c = solo(["DEBRIS"]); c.energy = 3; c.player_hp = 50
+assert c.play_card(0).get("error") is None and c.energy == 2 and c.exhaust_pile == ["DEBRIS"]
+c = solo(["DEBRIS"]); c.player_hp = 50; c.player_block = 0
+eot(c)
+assert c.player_hp == 50
+# Void: Unplayable, Ethereal; drawing it loses 1 energy (not below 0).
+c = solo([]); c.energy = 3; c.draw_pile = ["VOID", "DEFEND_IRONCLAD"]
+c._draw_one(); assert c.energy == 3 and c.hand == ["DEFEND_IRONCLAD"]
+c = solo([]); c.energy = 3; c.draw_pile = ["DEFEND_IRONCLAD", "VOID"]
+c._draw_one(); assert c.energy == 2 and c.hand == ["VOID"], (c.energy, c.hand)
+c = solo([]); c.energy = 0; c.draw_pile = ["VOID"]; c._draw_one(); assert c.energy == 0
+c = solo(["VOID"]); assert c.play_card(0).get("error") == "card_not_playable"
+c = solo(["VOID"]); eot(c); assert "VOID" in c.exhaust_pile and "VOID" not in c.discard_pile
+# Fairy in a Bottle saves the player from Beckon's end-of-turn HP loss (review focus 2), and the fight goes on.
+c = tpot("FAIRY_IN_A_BOTTLE", ["BECKON"], player_hp=6)
+c.player_block = 0
+eot(c)
+assert c.in_combat and c.potions[0] is None and c.player_hp == 24 and c.hp_loss_events == 1, c.player_hp
+c = tpot("FAIRY_IN_A_BOTTLE", ["BECKON"], player_hp=6)
+c.player_block = 0
+assert c.end_turn()["ok"] and c.in_combat and c.potions[0] is None and c.round == 2 and c.is_play_phase
+print("entropy status checks ok")
 print("sim self-check ok")
