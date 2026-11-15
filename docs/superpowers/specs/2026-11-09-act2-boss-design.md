@@ -182,7 +182,7 @@ Training, all stages exit 0 (`status.txt`): combat A 2026-11-14 00:22 to 03:53, 
 
 The stages have different reward scales, so the rows do not compare with each other.
 
-Same eval as parts 1 and 2a (`boss_eval.log`, exit 0, `stuck=0`, no traceback in the log):
+Same eval as parts 1 and 2a (`boss_eval.log`, exit 0, `stuck=0`, no traceback in the log). The g2 eval ran before b2297b6 (Plow also strips Dark Shackles) and before the `_power` change; both effects are tiny:
 
 | Pair | Act 1 | Act 2 | Avg floor | Gold spent | Potions used | Relics | Died: A1 boss / A2 monster / A2 elite / A2 boss |
 |---|---|---|---|---|---|---|---|
@@ -213,17 +213,17 @@ Mean HP lost on each turn (turns 1 to 6, fights that lasted past that turn), sta
 | The Insatiable | stage 1 | 0.5 | 10.5 | 20.9 | 0.5 | 14.3 | 9.1 |
 | | part 3 | 0.3 | 9.4 | 19.7 | 0.5 | 14.0 | 12.7 |
 
-The spike shape is unchanged: the same turns cost the most HP, mixed, mostly slightly lower (12 of 18 cells lower, 5 higher: Kaiser Crab T1, T3, T5, Knowledge Demon T1 and The Insatiable T6; 1 unchanged: The Insatiable T4). Median death turn is still 5 (Kaiser Crab) and 6 (the other two). Arrival HP is 66.9 to 67.5 of about 82.5 (stage 1: 63.9 to 64.8), decks are 23.4 to 23.7 cards (stage 1: 24.3 to 25.0), and 19% of deck cards are upgraded (6 to 7% in part 2a).
+The spike shape is unchanged: the same turns cost the most HP, mixed, mostly slightly lower (12 of 18 cells lower, 5 higher: Kaiser Crab T1, T3, T5, Knowledge Demon T1 and The Insatiable T6; 1 unchanged: The Insatiable T4). Median death turn is still 5 (Kaiser Crab) and 6 (the other two). Arrival HP is 66.9 to 67.5 of about 82.5 (stage 1: 63.9 to 64.8), decks are 23.4 to 23.7 cards (stage 1: 24.3 to 25.0), and 19% of deck cards are upgraded (6 to 7% in part 2a). Part 2a arrived with about the same HP (65.2 to 68.8, `boss_g2_report.log`), so the gain is better play in the fight, not better arrival HP.
 
 Gate (spec stage 4):
 
-- **Success 1 is not met.** The bot wins 119 of 635 boss fights (19%), above the 300-fight minimum but far below 50%. Per boss: Kaiser Crab 10%, Knowledge Demon 20%, The Insatiable 28%. In the 500-run eval it is 44 of 209 (21%).
+- **Success 1 is not met.** The bot wins 119 of 635 boss fights (19%), above the 300-fight minimum but far below 50%. Per boss: Kaiser Crab 10%, Knowledge Demon 20%, The Insatiable 28%. In the 500-run eval it is 44 of 209 (21%). The 1,500-run report's seeds include the eval's seeds 0 to 499, and each run has at most one Act 2 boss fight, so the first 500 runs reproduce the eval exactly (209 fights, 44 wins; g2: 123 and 6). 44 of 209 is the first-500 subset of 119 of 635; 119 of 635 is the figure to quote.
 - **The guard holds.** Boss reachers are 209 of 500 (41.8%), against 123 (24.6%) for part 2a and 117 (23.4%) for the reference. Act 2 clears are 8.8%, against 1.2% (part 2a) and 2.2% (reference).
 - **Act 1 rule met.** 88.8% is 7.8 points above 81.0%; the rule only fails on a drop of more than 4 points.
 
 Because success 1 is missed, work stops here. Whether to practice the bosses directly (spec stage 4) is the user's decision.
 
-Noise: at 500 runs one standard error on Act 1 at 88.8% is about 1.4 points, so the 7.8-point rise is well beyond it. The Act 2 clear (44 runs, against 6 to 11 before) and the boss win rates (119 vs 25 wins, 19% vs 7%) are also far larger than the earlier seed-to-seed movement of a few wins, though one eval and one 1,500-run report are a single seed set each. The data does not say which part of the retrain (the card upgrades, colorless cards and potions in the sim, or the longer training) caused it. The 500-run eval and the 1,500-run report use different denominators (44 of 209 boss reachers vs 119 of 635 boss fights), as in parts 1 and 2a, and the part 3 report also has more boss fights per run because more runs reach the boss.
+Noise: at 500 runs one standard error on Act 1 at 88.8% is about 1.4 points. The standard error of the difference between 81.0% and 88.8% is about 2.2 points (sqrt(0.81 x 0.19 / 500 + 0.888 x 0.112 / 500)), and the 7.8-point rise is about 3.5 of those. The Act 2 clear (44 runs, against 6 to 11 before) and the boss win rates (119 vs 25 wins, 19% vs 7%) are also far larger than the earlier seed-to-seed movement of a few wins, though one eval and one 1,500-run report are a single seed set each. g2 played the same sim and won 7% of boss fights, so the rise comes from the retrain. The data does not separate its parts: combat training on decks with upgrades and colorless cards, the run policy learning to Smith (19% of deck cards upgraded vs 6 to 7% for g2), or the 46M extra training steps. The 44 of 209 in the 500-run eval is the first-500 subset of the 119 of 635 in the 1,500-run report (see Success 1); quote 119 of 635.
 
 ## Not in scope
 
