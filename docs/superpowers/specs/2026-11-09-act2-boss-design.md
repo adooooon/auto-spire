@@ -164,7 +164,13 @@ Noise: at 500 runs one standard error on Act 1 is about 1.8 points, and the Act 
 
 ## Part 3 results
 
-Run: `.superpowers/queue/boss.sh` (git-ignored), from the frozen worktree `auto-spire-retraint` at commit 2f97332. Stages: combat A 20M steps, combat B 20M, run policy 6M, eval 500 runs, boss report 1500 runs.
+Run: `.superpowers/queue/boss.sh` (git-ignored), from the frozen worktree `auto-spire-retraint` at commit 2f97332. Stages: combat A 20M steps, combat B 20M, run policy 6M, eval 500 runs, boss report 1500 runs. Commands, from `agent/` (`G=models/ppo_sts2_sim_boss_g2.zip`, `GR=models/ppo_sts2_sim_boss_run_g2.zip`, `A`, `B` and `R` the `_final.zip` of `ppo_sts2_sim_boss_a`, `ppo_sts2_sim_boss_b` and `ppo_sts2_sim_boss_run_v1`):
+
+- `train.py --backend sim --encounters hive,act1 --random-decks --prompt-practice --resume $G --n-envs 6 --net 256 256 --timesteps 20000000 --name ppo_sts2_sim_boss_a`
+- `train.py --backend sim --run-mode --run-model $GR --resume $A --n-envs 6 --net 256 256 --timesteps 20000000 --name ppo_sts2_sim_boss_b`
+- `train.py --backend sim --run-policy --event-practice --combat-model $B --resume $GR --n-envs 6 --net 256 256 --timesteps 6000000 --name ppo_sts2_sim_boss_run_v1`
+- `run.py --model $B --maps generated --run-model $R --runs 500 --n 16`
+- `boss_report.py --model $B --run-model $R --runs 1500 --n 16 --out .superpowers/queue/boss_analysis_v1.jsonl`
 
 Training, all stages exit 0 (`status.txt`): combat A 2026-11-14 00:22 to 03:53, combat B to 12:09, run policy to 20:02, then the eval (23:59 to 01:19 on 2026-11-15) and the report (01:21), all exit 0. Mean episode reward (`ep_rew_mean`, first and last table in each log; the step counter continues from the grown model):
 
@@ -207,17 +213,17 @@ Mean HP lost on each turn (turns 1 to 6, fights that lasted past that turn), sta
 | The Insatiable | stage 1 | 0.5 | 10.5 | 20.9 | 0.5 | 14.3 | 9.1 |
 | | part 3 | 0.3 | 9.4 | 19.7 | 0.5 | 14.0 | 12.7 |
 
-The spike shape is unchanged: the same turns cost the most HP, a little less on most. Median death turn is still 5 (Kaiser Crab) and 6 (the other two). Arrival HP is 66.9 to 67.5 of about 82.5 (stage 1: 63.9 to 64.8), decks are 23.4 to 23.7 cards (stage 1: 24.3 to 25.0), and 19% of deck cards are upgraded (6 to 7% in part 2a).
+The spike shape is unchanged: the same turns cost the most HP, mixed, mostly slightly lower (12 of 18 cells lower; Kaiser Crab T1, T3 and T5 and The Insatiable T6 are higher). Median death turn is still 5 (Kaiser Crab) and 6 (the other two). Arrival HP is 66.9 to 67.5 of about 82.5 (stage 1: 63.9 to 64.8), decks are 23.4 to 23.7 cards (stage 1: 24.3 to 25.0), and 19% of deck cards are upgraded (6 to 7% in part 2a).
 
 Gate (spec stage 4):
 
 - **Success 1 is not met.** The bot wins 119 of 635 boss fights (19%), above the 300-fight minimum but far below 50%. Per boss: Kaiser Crab 10%, Knowledge Demon 20%, The Insatiable 28%. In the 500-run eval it is 44 of 209 (21%).
 - **The guard holds.** Boss reachers are 209 of 500 (41.8%), against 123 (24.6%) for part 2a and 117 (23.4%) for the reference. Act 2 clears are 8.8%, against 1.2% (part 2a) and 2.2% (reference).
-- **Act 1 is outside the 4-point band, on the high side.** 88.8% is 7.8 points above 81.0%. The rule was written to catch a drop, and there is none, but it is not within 4 points as written.
+- **Act 1 rule met.** 88.8% is 7.8 points above 81.0%; the rule only fails on a drop of more than 4 points.
 
 Because success 1 is missed, work stops here. Whether to practice the bosses directly (spec stage 4) is the user's decision.
 
-Noise: at 500 runs one standard error on Act 1 is about 1.8 points, so the 7.8-point rise is well beyond it. The Act 2 clear (44 runs, against 6 to 11 before) and the boss win rates (119 vs 25 wins, 19% vs 7%) are also far larger than the earlier seed-to-seed movement of a few wins, though one eval and one 1,500-run report are a single seed set each. The data does not say which part of the retrain (the card upgrades, colorless cards and potions in the sim, or the longer training) caused it. The 500-run eval and the 1,500-run report use different denominators (44 of 209 boss reachers vs 119 of 635 boss fights), as in parts 1 and 2a, and the part 3 report also has more boss fights per run because more runs reach the boss.
+Noise: at 500 runs one standard error on Act 1 at 88.8% is about 1.4 points, so the 7.8-point rise is well beyond it. The Act 2 clear (44 runs, against 6 to 11 before) and the boss win rates (119 vs 25 wins, 19% vs 7%) are also far larger than the earlier seed-to-seed movement of a few wins, though one eval and one 1,500-run report are a single seed set each. The data does not say which part of the retrain (the card upgrades, colorless cards and potions in the sim, or the longer training) caused it. The 500-run eval and the 1,500-run report use different denominators (44 of 209 boss reachers vs 119 of 635 boss fights), as in parts 1 and 2a, and the part 3 report also has more boss fights per run because more runs reach the boss.
 
 ## Not in scope
 
