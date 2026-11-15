@@ -12,8 +12,8 @@ Automating Slay the Spire 2. Read game state, send commands, play intelligently.
 
 Current results (sim, 500 generated maps):
 
-- **Act 1:** cleared in 81% of runs.
-- **Act 2:** cleared in about 1–2% of runs. The Act 2 boss wins about 7% of its fights and is the current focus.
+- **Act 1:** cleared in 89% of runs.
+- **Act 2:** cleared in 9% of runs. After an analysis of how the agent loses to the three Act 2 bosses and a retrain on the expanded simulator, it wins 19% of its Act 2 boss fights, up from 7% before the retrain (same simulator).
 
 The design notes, analyses and results for each stage are in `docs/superpowers/specs/`.
 
