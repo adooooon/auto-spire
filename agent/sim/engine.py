@@ -18,7 +18,7 @@ integer math, so 0.7 * 1.5 products don't hit float error). Damage from powers
 Strength/Vulnerable/Weak.
 
 Known simplifications:
-  - Relics are modeled in sim/relics.py (Burning Blood is applied by run.py between fights); 12 of the potions (sim/potions.py).
+  - Relics are modeled in sim/relics.py (Burning Blood is applied by run.py between fights); the potions with an effect so far (sim/potions.py).
   - An upgraded card is the id "X+" (cards.UPGRADES); id checks go through cards.base_id. In-combat upgrades
     (Armaments, Aggression, Stoke+, Primal Force+) replace the id in its pile for this fight only.
   - Enemy-targeted cards hit the enemy with the given combatId, or the first
@@ -32,7 +32,7 @@ import random
 from dataclasses import dataclass, field
 
 from .cards import CARDS, COLORLESS_GENERATED, GENERATED, UPGRADABLE, DeckCard, base_id, card_to_dict, is_upgraded, starter_deck, upgrade
-from .potions import MAX_POTION_SLOTS, POTION_SLOTS, POTIONS
+from .potions import MAX_POTION_SLOTS, POTION_SLOTS, USABLE, random_potion
 
 PLAYER_MAX_HP = 80
 PLAYER_MAX_ENERGY = 3
@@ -42,8 +42,10 @@ MAX_SHUFFLES = 1000  # per fight; real fights reshuffle a handful of times
 
 
 class CardCopy(str):
-    """A card id whose copy costs more: Frantic Escape adds 1 to the copy that was played (AddThisCombat)."""
+    """A card id with per-copy cost state: Frantic Escape adds 1 to the copy that was played (AddThisCombat), and
+    Snecko Oil sets a cost on the copies in hand (cost_override: CardEnergyCost.SetThisTurnOrUntilPlayed)."""
     extra = 0
+    cost_override = None
 
 
 def frantic_escape(extra: int) -> str:
@@ -797,16 +799,23 @@ class SimCombat:
         c = CARDS[card_id]
         if c.x_cost or card_id in self.free_cards:
             return 0
+        ov = getattr(card_id, "cost_override", None)  # a local modifier: before the global ones below
         if card_id == "FRANTIC_ESCAPE":
-            return c.cost + getattr(card_id, "extra", 0)
+            return c.cost + getattr(card_id, "extra", 0) if ov is None else ov
         if c.type != "Attack":
-            return c.cost
+            return c.cost if ov is None else ov
         if self.pw.get("FreeAttackPower"):  # TryModifyEnergyCostInCombatLate: after Tangled
             return 0
         # EnergyCost.AddThisTurn. ponytail: one count for every Stomp copy (Stomp.BeforeCardPlayed + AfterCardEnteredCombat);
         # a copy entering combat while an Attack is still resolving would miss it, and no modeled card makes one.
-        base = max(0, c.cost - self.attack_plays) if base_id(card_id) == "STOMP" else c.cost
+        base = ov if ov is not None else max(0, c.cost - self.attack_plays) if base_id(card_id) == "STOMP" else c.cost
         return base + self.tangled  # TangledPower
+
+    @staticmethod
+    def _spend_cost_override(card_id: str) -> None:
+        """CardEnergyCost.AfterCardPlayedCleanup: a cost set "until played" ends with the play."""
+        if getattr(card_id, "cost_override", None) is not None:
+            card_id.cost_override = None
 
     def can_play(self, card_id: str) -> bool:
         c = CARDS[card_id]
@@ -841,6 +850,7 @@ class SimCombat:
         self._pausable = True
         self._play(card_id, target, x, energy_value=spent)
         self._pausable = False
+        self._spend_cost_override(card_id)
         self._check_win()
         if self.pending_choice:
             return {"ok": True, "choice": self.pending_choice}
@@ -933,10 +943,10 @@ class SimCombat:
             return {"error": "choice_pending"}
         if not self.in_combat or not self.is_play_phase:
             return {"error": "not_play_phase"}
-        if not 0 <= slot < len(self.potions) or self.potions[slot] not in POTIONS:
+        if not 0 <= slot < len(self.potions) or self.potions[slot] not in USABLE:
             return {"error": "invalid_potion", "slot": slot}
         pid, target = self.potions[slot], None
-        if POTIONS[pid] == "enemy":
+        if USABLE[pid] == "enemy":
             target = self.enemies[target_id - 1] if target_id and 0 < target_id <= len(self.enemies) else None
             if target is None or not target.is_alive:
                 return {"error": "invalid_target", "targetId": target_id}
@@ -969,9 +979,69 @@ class SimCombat:
             self._debuff(target, "weak", 3, card=False)
         elif pid == "BLOOD_POTION":
             self.heal(self.player_max_hp * 20 // 100)  # 20% of max HP, truncated
+        elif pid == "CURE_ALL":
+            self._gain_energy(1)
+            self._draw(2)
+        elif pid == "FORTIFIER":  # GainBlock(Block * 2, Unpowered): triples the block held
+            self._gain_block(self.player_block * 2)
+        elif pid == "FYSH_OIL":
+            self._gain_strength(1)
+            self.dexterity += 1
+        elif pid == "HEART_OF_IRON":
+            self._apply_power("PlatingPower", 7)
+        elif pid == "LIQUID_BRONZE":
+            self._apply_power("ThornsPower", 3)
+        elif pid == "POTION_OF_BINDING":  # Weak, then Vulnerable, 1 each on HittableEnemies
+            hittable = self._hittable()
+            for name in ("weak", "vulnerable"):
+                for e in hittable:
+                    self._debuff(e, name, 1, card=False)
+        elif pid == "STABLE_SERUM":
+            self._apply_power("RetainHandPower", 2)
+        elif pid == "SHIP_IN_A_BOTTLE":
+            self._gain_block(10)
+            self._apply_power("BlockNextTurnPower", 10)
+        elif pid == "BLESSING_OF_THE_FORGE":
+            self.hand = [upgrade(c) for c in self.hand]
+        elif pid == "BOTTLED_POTENTIAL":  # the hand to the draw pile, CardPileCmd.Shuffle (discard pile too), draw 5
+            self.draw_pile += self.hand
+            self.hand = []
+            if not self._ending():
+                self._shuffle()
+            self._draw(5)
+        elif pid == "FRUIT_JUICE":  # CreatureCmd.GainMaxHp: max HP, then Heal by that much
+            self.player_max_hp += 5
+            self.heal(5)
+        elif pid == "SNECKO_OIL":
+            self._draw(7)
+            for i, c in enumerate(self.hand):
+                if not CARDS[c].x_cost and CARDS[c].cost >= 0:  # not X-cost, not Unplayable
+                    if type(c) is str:
+                        c = self.hand[i] = CardCopy(c)
+                    c.cost_override = self.rng.randrange(4)
+                    self.rt["snecko"] = 1
+        elif pid == "DISTILLED_CHAOS":  # AutoPlayFromDrawPile(3, Top): all three leave the pile before any is played
+            if not self._ending():
+                taken = []
+                for _ in range(3):
+                    top = self._take_top()
+                    if not top:
+                        break
+                    taken.append(top)
+                for top in taken:
+                    if not self.in_combat:
+                        break
+                    self._autoplay(top)
+        elif pid == "OROBIC_ACID":  # one random Ironclad Attack, Skill and Power (GetDistinctForCombat), free this turn
+            for kind in ("Attack", "Skill", "Power"):
+                card = self.rng.choice([c for c in GENERATED if CARDS[c].type == kind])
+                self.free_cards.append(card)
+                self._add_to_hand(card)
+        elif pid == "ENTROPIC_BREW":  # PotionCmd.TryToProcure until the slots are full
+            while None in self.potions:
+                self._procure_potion(random_potion(self.rng, in_combat=False))
         self._effect_depth -= 1
         # AfterPotionUsed. ponytail: relic order assumed Reptile Trinket, then Belt Buckle.
-        # ponytail: no mid-fight potion gain yet, so "applied" is implied by holding one at the start.
         if "REPTILE_TRINKET" in self.relics and self.in_combat:
             self._gain_strength(3)
             self.temp_strength += 3  # ponytail: Ruined Helmet doubles the gain, not this (TemporaryStrengthPower takes back its own amount)
@@ -980,6 +1050,13 @@ class SimCombat:
         self._check_win()
         self._check_empty_hand()  # after AfterPotionUsed
         return {"ok": True, "used": pid, "slot": slot}
+
+    def _procure_potion(self, pid: str) -> bool:
+        """PotionCmd.TryToProcure: pid into the first open slot (Potion Belt's are in len(self.potions)); False if full."""
+        if None not in self.potions:
+            return False
+        self.potions[self.potions.index(None)] = pid
+        return True
 
     def _check_win(self) -> None:
         # CombatManager.IsEnding: won once no *primary* enemy (non-minion) is alive.
@@ -1171,6 +1248,7 @@ class SimCombat:
         outer, pausable = self._play_id, self._pausable
         self._pausable = False
         self._play(card_id, target, self.energy, force_exhaust)
+        self._spend_cost_override(card_id)
         self._play_id = outer  # Pen Nib / Vambrace / Lamp keep the outer card
         self._pausable = pausable
 
@@ -1312,6 +1390,8 @@ class SimCombat:
             atk = self.rng.choice([c for c in GENERATED if CARDS[c].type == "Attack"])
             self.free_cards.append(atk)
             self._add_to_hand(atk)
+        elif b == "ALCHEMIZE":  # the potion is rolled even if the slots are full (then TryToProcure fails)
+            self._procure_potion(random_potion(self.rng, in_combat=True))
         elif b == "SECOND_WIND":  # Block 5, +2
             for c in [c for c in self.hand if CARDS[c].type != "Attack"]:
                 self.hand.remove(c)
@@ -1654,15 +1734,19 @@ class SimCombat:
 
     def _shuffle_if_necessary(self) -> None:
         if not self.draw_pile and self.discard_pile:
-            self.draw_pile, self.discard_pile = self.discard_pile, []
-            self.rng.shuffle(self.draw_pile)
-            self.shuffles += 1
-            if self.shuffles > MAX_SHUFFLES:
-                raise SimLoopError(f"{self.shuffles} reshuffles in one fight")
-            if self.pw.get("StratagemPower") and not self._ending():  # AfterShuffle (skipped once ending): powers, then relics
-                self._stratagem()
-            if "THE_ABACUS" in self.relics:
-                self._gain_block(6)
+            self._shuffle()
+
+    def _shuffle(self) -> None:
+        """CardPileCmd.Shuffle: the discard pile and the draw pile shuffled together into the draw pile."""
+        self.draw_pile, self.discard_pile = self.discard_pile + self.draw_pile, []
+        self.rng.shuffle(self.draw_pile)
+        self.shuffles += 1
+        if self.shuffles > MAX_SHUFFLES:
+            raise SimLoopError(f"{self.shuffles} reshuffles in one fight")
+        if self.pw.get("StratagemPower") and not self._ending():  # AfterShuffle (skipped once ending): powers, then relics
+            self._stratagem()
+        if "THE_ABACUS" in self.relics:
+            self._gain_block(6)
 
     def _take_top(self) -> str | None:
         self._shuffle_if_necessary()
@@ -2254,6 +2338,11 @@ class SimCombat:
             keep = [c for c in self.hand if CARDS[c].retain]  # ShouldRetainThisTurn; otherwise the whole hand is kept
             self.discard_pile += [c for c in self.hand if not CARDS[c].retain]  # hand flush
             self.hand = keep
+        if self.rt.pop("snecko", None):  # CardEnergyCost.EndOfTurnCleanup, for every card in combat
+            for pile in (self.hand, self.draw_pile, self.discard_pile, self.exhaust_pile):
+                for c in pile:
+                    if getattr(c, "cost_override", None) is not None:
+                        c.cost_override = None
         self.ringing = False
         self.attacks_last = self.attacks_done  # AfterSideTurnEnd (Art of War)
         self.cards_played = 0  # SlowPower resets at the start of the enemy turn

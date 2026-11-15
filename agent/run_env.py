@@ -13,7 +13,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from env import CARD_IDS, NEW_CARDS, STS2CombatEnv
+from env import CARD_IDS, NEW_CARDS, PART1_POTIONS, STS2CombatEnv
 from grow import insert_map
 from picker import play_fight
 from sim.act import ALL_BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_COLORLESS, SHOP_SLOTS, Run
@@ -21,7 +21,7 @@ from sim.cards import CARDS, CHOICE_CARDS, NOT_BUYABLE, UPGRADABLE, base_id, is_
 from sim.engine import SimClient
 from sim.events import EVENT_OPTIONS, MODELED_EVENTS
 from sim.map import BOSS_ROW, COLS, ROOM_TYPES
-from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
+from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, USABLE
 from sim.relics import RELIC_IDS, RELICS
 
 DECISIONS = ("path", "pick", "shop", "remove", "potion", "rest")
@@ -295,7 +295,7 @@ class RunPolicyEnv(gym.Env):
                 m[a] = c in CARDS and base_id(c) not in NOT_BUYABLE and run.gold >= run.price(p)
             m[SHOP_REMOVE] = not s.removal_used and run.gold >= run.price(s.removal_price)
             for k, (p, price) in enumerate(zip(s.potions, s.potion_prices)):
-                m[SHOP_POTION + k] = p in POTIONS and run.gold >= run.price(price) and None in run.potions
+                m[SHOP_POTION + k] = p in USABLE and run.gold >= run.price(price) and None in run.potions
             for k, (r, price) in enumerate(zip(s.relics, s.relic_prices)):
                 m[SHOP_RELIC + k] = r in RELICS and run.gold >= run.price(price)
             m[SHOP_LEAVE] = True
@@ -361,7 +361,7 @@ class RunPolicyEnv(gym.Env):
         shop_p = np.zeros((SHOP_POTIONS, SHOP_POTION_FEATURES))
         if self.decision in ("shop", "remove"):
             for k, (p, price) in enumerate(zip(run.shop.potions, run.shop.potion_prices)):
-                if p in POTION_INDEX:
+                if p in USABLE:  # pending potions read as zeros, as unmodeled ones did
                     shop_p[k, POTION_INDEX[p]], shop_p[k, -2] = 1, run.price(price) / 100
                     shop_p[k, -1] = run.gold >= run.price(price) and None in run.potions
         potion_obs = [float(self.decision == "potion")] + own + drop + list(shop_p.ravel())
@@ -400,9 +400,12 @@ def run_maps() -> tuple[list[int], list[int]]:
     The shop's colorless slots and their actions are new, appended after everything old; nothing maps to them.
     ponytail: only that layout (see env.combat_maps)."""
     old_ids = [c for c in CARD_IDS if c not in NEW_CARDS]
-    lead = 2 + LOOKAHEAD * COLS * CELL_FEATURES + POTION_OBS + (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS)  # up to the relics held
+    pots = (sorted(PART1_POTIONS), POTION_IDS)  # the 12 potions a part 1 policy knew, among all 48
+    # up to the relics held: map, potion flag, own slots, the offered potion, the shop's potions, Potion Belt slots
+    lead = [2 + LOOKAHEAD * COLS * CELL_FEATURES, 1] + [pots] * (POTION_SLOTS + 1) + [pots, 2] * SHOP_POTIONS \
+        + [pots] * (MAX_POTION_SLOTS - POTION_SLOTS)
     tail = 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3  # after the shop's relics
     obs = [len(HEAD_DECISIONS) + 5, "cards", len(ALL_BOSSES)] + ["cards", 2] * len(SHOP_SLOTS)
-    obs += [lead, len(RELIC_IDS)] + [len(RELIC_IDS), 2] * SHOP_RELICS + [tail, "cards", 1 + 5, "cards", len(SHOP_SLOTS)]  # 1: the act; 5: rest flags
+    obs += lead + [len(RELIC_IDS)] + [len(RELIC_IDS), 2] * SHOP_RELICS + [tail, "cards", 1 + 5, "cards", len(SHOP_SLOTS)]  # 1: the act; 5: rest flags
     act = [REMOVE, "cards", REST - REMOVE - len(CARD_IDS) + len(REST_OPTIONS), "cards"]
     return insert_map(obs, old_ids, CARD_IDS), insert_map(act, old_ids, CARD_IDS)

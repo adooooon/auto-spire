@@ -725,7 +725,7 @@ for seed in range(2000):
         assert round((86 if rarity == "Uncommon" else 172) * 0.95) <= price <= round((86 if rarity == "Uncommon" else 172) * 1.05) + 1
         seen.add(card)
     assert s.cards[5] != s.cards[6]
-assert seen >= set(COLORLESS) - {"SPLASH", "ALCHEMIZE"} and seen & NOT_BUYABLE  # unbuyable ones still stock
+assert seen >= set(COLORLESS) - {"SPLASH"} and seen & NOT_BUYABLE  # unbuyable ones still stock
 
 # Buying: into the deck; The Courier restocks the same rarity; the unbuyable can't be bought.
 r = fresh(); r.gold = 500
@@ -743,5 +743,5 @@ try:
 except AssertionError:
     pass
 r = fresh("MOLTEN_EGG"); r.shop = make_shop(random.Random(5), RarityOdds(), 0, RelicBags(random.Random(5)), r.relics)
-assert all(is_upgraded(c) or c in ("SPLASH", "ALCHEMIZE") or CARDS[c].type != "Attack" for c in r.shop.cards[5:])
+assert all(is_upgraded(c) or c == "SPLASH" or CARDS[c].type != "Attack" for c in r.shop.cards[5:])
 print("colorless shop checks ok")

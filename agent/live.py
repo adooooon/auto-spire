@@ -24,7 +24,7 @@ from run_env import (CARD_INDEX, DRINK, EVENT, PATH, PICK, POTION_SKIP, REMOVE, 
 from sim.act import SHOP_COLORLESS, SHOP_POTIONS, SHOP_RELICS, SHOP_SLOTS, Shop
 from sim.events import MODELED_EVENTS
 from sim.map import Node
-from sim.potions import POTIONS
+from sim.potions import USABLE
 from sim.relics import RELICS
 
 SAFE_WORDS = ("LEAVE", "SKIP", "IGNORE", "REFUSE", "DECLINE", "WALK", "PASS")
@@ -207,7 +207,7 @@ class LiveGame:
             time.sleep(0.5)
 
     def do_potion(self, i: int, potion: str) -> None:
-        if potion not in POTIONS:
+        if potion not in USABLE:
             print(f"  potion {potion}: not modeled, skipped")
             return
         self.run.potion_drop = potion

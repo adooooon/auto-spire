@@ -11,7 +11,7 @@ from .cards import CARDS, COLORLESS, COMMONS, NOT_BUYABLE, RARES, UNCOMMONS, UPG
 from .engine import ENCOUNTERS, HIVE_BOSSES, HIVE_ELITES, HIVE_NORMALS, HIVE_WEAK, PLAYER_MAX_HP
 from .events import EVENT_ALLOWED, HIVE_EVENT_ALLOWED, MODELED_EVENTS
 from .map import ActMap, Node, generate_map
-from .potions import POTION_POOL, POTION_SLOTS, POTIONS
+from .potions import POTION_POOL, POTION_SLOTS, USABLE
 from .relics import IRONCLAD_RELICS, NOT_IN_SHOPS, RELIC_POOL, RELICS, relic_rarity
 
 STARTING_GOLD = 99  # Ironclad.StartingGold
@@ -384,7 +384,7 @@ class Run:
             kind, what = self.pending.pop(0)
             if kind == "cards":
                 return kind, what
-            if what in POTIONS:
+            if what in USABLE:
                 self.potion_drop = what
                 return kind, what
             self.potion_drop = None
@@ -609,13 +609,13 @@ class Run:
 
     def take_potion(self, slot: int) -> None:
         """Put potion_drop in `slot`, discarding whatever was there."""
-        assert self.potion_drop in POTIONS, self.potion_drop
+        assert self.potion_drop in USABLE, self.potion_drop
         self.potions[slot], self.potion_drop = self.potion_drop, None
 
     def buy_potion(self, k: int) -> None:
         s = self.shop
         pid, price = s.potions[k], self.price(s.potion_prices[k])
-        assert pid in POTIONS and self.gold >= price and None in self.potions, (pid, price, self.gold, self.potions)
+        assert pid in USABLE and self.gold >= price and None in self.potions, (pid, price, self.gold, self.potions)
         self.gold -= price
         self.spent += price
         self.potions[self.potions.index(None)] = pid

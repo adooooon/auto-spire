@@ -34,7 +34,7 @@ from client import AutoSpireClient
 from grow import insert_map
 from sim.cards import CARDS, CHOICE_CARDS, COLORLESS, COLORLESS_RARES, COLORLESS_UNCOMMONS, COMMONS, NOT_BUYABLE, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck, upgrade
 from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, MONSTERS, SimLoopError
-from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, POTIONS
+from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, USABLE
 from sim.relics import RELIC_IDS
 
 MAX_HAND = 10
@@ -136,14 +136,20 @@ NEW_POWERS = {"RetainHandPower", "AutomationPower", "CalamityPower", "EntropyPow
               "BlockNextTurnPower"}
 
 
+PART1_POTIONS = ("BLOCK_POTION", "DEXTERITY_POTION", "SPEED_POTION", "ENERGY_POTION", "STRENGTH_POTION", "FLEX_POTION",
+                 "SWIFT_POTION", "BLOOD_POTION", "FIRE_POTION", "VULNERABLE_POTION", "WEAK_POTION", "EXPLOSIVE_AMPOULE")
+
+
 def combat_maps() -> tuple[list[int], list[int]]:
     """(obs_map, act_map) for grow.py: where a part 1 model (boss_g1; 326edb2) keeps its inputs and actions. The prompt block is new.
     ponytail: only that layout; an older model first grows into it with grow.py at its own commit."""
     old_cards = [c for c in CARD_IDS if c not in NEW_CARDS]
     old_powers = [p for p in PLAYER_POWERS if p not in NEW_POWERS]
+    pots = (sorted(PART1_POTIONS), POTION_IDS)  # the 12 potions a part 1 model knew, among all 48
     obs = insert_map([6, "cards"] * MAX_HAND + [14, (old_powers, PLAYER_POWERS)] + ["cards"] * 3
-                     + [MAX_ENEMIES * ENEMY_FEATURES + POTION_FEATURES + (MAX_POTION_SLOTS - POTION_SLOTS) * len(POTION_IDS),
-                        len(RELIC_IDS), len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES + UPGRADE_FEATURES], old_cards, CARD_IDS)
+                     + [MAX_ENEMIES * ENEMY_FEATURES] + [pots] * POTION_SLOTS + [2]
+                     + [pots] * (MAX_POTION_SLOTS - POTION_SLOTS)
+                     + [len(RELIC_IDS), len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES + UPGRADE_FEATURES], old_cards, CARD_IDS)
     act = list(range(CHOOSE_DISCARD)) + [CHOOSE_DISCARD + CARD_IDS.index(c) for c in old_cards]
     return obs, act
 
@@ -174,7 +180,7 @@ def random_deck(rng: np.random.Generator, prompt_practice: bool = False, extras:
 
 def random_potions(rng: np.random.Generator, slots: int = POTION_SLOTS) -> list[str]:
     """0-slots random modeled potions, for random-deck training (so every potion gets practice)."""
-    return [str(rng.choice(POTION_IDS)) for _ in range(rng.integers(0, slots + 1))]
+    return [str(rng.choice(sorted(USABLE))) for _ in range(rng.integers(0, slots + 1))]
 
 
 def random_relics(rng: np.random.Generator) -> tuple[set[str], dict[str, int]]:
@@ -406,9 +412,9 @@ class STS2CombatEnv(gym.Env):
                 potions = prev.get("potionSlots") or []
                 pid = potions[pslot] if pslot < len(potions) else None
                 enemies = _living(prev)
-                if POTIONS.get(pid) == "enemy" and slot < len(enemies):
+                if USABLE.get(pid) == "enemy" and slot < len(enemies):
                     result = self.client.exec(f"potion {pslot} {enemies[slot]['combatId']}")
-                elif pid in POTIONS and POTIONS[pid] != "enemy" and slot == 0:
+                elif pid in USABLE and USABLE[pid] != "enemy" and slot == 0:
                     result = self.client.exec(f"potion {pslot}")
                 else:
                     result = {"error": "invalid_potion"}
@@ -510,8 +516,8 @@ class STS2CombatEnv(gym.Env):
                 slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
                 mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True
         for i, pid in enumerate((self._combat.get("potionSlots") or [])[:MAX_POTION_SLOTS]):
-            if pid in POTIONS:  # unmodeled potions and live play (no potionSlots) stay masked
-                slots = n_enemies if POTIONS[pid] == "enemy" else 1
+            if pid in USABLE:  # unmodeled potions and live play (no potionSlots) stay masked
+                slots = n_enemies if USABLE[pid] == "enemy" else 1
                 mask[POTION_ACTION + i * MAX_ENEMIES:POTION_ACTION + i * MAX_ENEMIES + slots] = True
         mask[END_TURN] = True
         return mask

@@ -3,7 +3,7 @@ from env import END_TURN, STS2CombatEnv
 from env import N_ACTIONS as COMBAT_ACTIONS, OBS_DIM as COMBAT_OBS, POTION_ACTION, MAX_ENEMIES, _encode, random_relics
 from sim.relics import RELIC_IDS
 from sim.potions import POTION_IDS
-assert COMBAT_OBS == 3122 and COMBAT_ACTIONS == 392  # + the colorless prompts (3 kinds, 3 generated one-hots, 7 sources; 3 + 1 + 143 + 1 actions), + the upgrade prompt and True Grit / Armaments as its sources, + 53 colorless cards, RetainHandPower and the 14 colorless powers
+assert COMBAT_OBS == 3302 and COMBAT_ACTIONS == 392  # 48 potion ids (was 12): +5 slots x 36. + the colorless prompts (3 kinds, 3 generated one-hots, 7 sources; 3 + 1 + 143 + 1 actions), + the upgrade prompt and True Grit / Armaments as its sources, + 53 colorless cards, RetainHandPower and the 14 colorless powers
 from env import CHOICE_FEATURES, POTION_FEATURES, PROMPT_FEATURES, RELIC_FEATURES, UPGRADE_FEATURES
 POT0 = COMBAT_OBS - PROMPT_FEATURES - UPGRADE_FEATURES - CHOICE_FEATURES - RELIC_FEATURES  # where the relic block starts
 from sim.engine import SimClient, SimLoopError
@@ -59,7 +59,7 @@ from sim.act import Shop
 
 from run_env import SHOP_RELIC, potion_take_action, drink_action, POTION_TAKE_2, DRINK_2
 
-assert N_ACTIONS == 329 and OBS_DIM == 2027 + COLORLESS_OBS == 2027 + 2 * (len(CARD_INDEX) + 3)  # colorless shop slots: +2 actions, 2 x (card one-hot + price, affordable, upgraded) obs. +53 colorless card ids (was 221 / 1603). Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs;  11 relics modeled in Task 4: +11 relic obs in the combat env, +44 in the run env; rest: 3 + 90 actions, 5 + 90 + 5 obs
+assert N_ACTIONS == 329 and OBS_DIM == 2027 + 324 + COLORLESS_OBS == 2027 + 324 + 2 * (len(CARD_INDEX) + 3)  # 48 potion ids (was 12): +36 per one-hot, 9 of them in the run obs (3 slots, drop, 3 shop, 2 belt slots), 5 in the combat. colorless shop slots: +2 actions, 2 x (card one-hot + price, affordable, upgraded) obs. +53 colorless card ids (was 221 / 1603). Act 2: 3 more bosses, an act flag, 2 more card ids; Armaments adds 1 action, 7 obs;  11 relics modeled in Task 4: +11 relic obs in the combat env, +44 in the run env; rest: 3 + 90 actions, 5 + 90 + 5 obs
 
 # Smoke: random run decisions + random combat. Masks never empty, obs in bounds, every run ends.
 renv, rng, floors = RunPolicyEnv(), np.random.default_rng(0), []
@@ -171,7 +171,7 @@ from sim.potions import POTION_IDS
 
 cenv = STS2CombatEnv(encounter="NIBBITS_WEAK", client=SimClient(seed=1), heal=False, episodes_per_restart=10**9)
 cenv._episode_count = 1
-assert cenv.action_space.n == COMBAT_ACTIONS == 392 and COMBAT_OBS == 3122
+assert cenv.action_space.n == COMBAT_ACTIONS == 392 and COMBAT_OBS == 3302
 # Review focus 1: live play (no potionSlots in /combat) never offers a potion.
 cenv._combat = {"player": {"hand": []}, "enemies": [{"isAlive": True, "combatId": 1}, {"isAlive": True, "combatId": 2}]}
 assert not cenv.action_masks()[POTION_ACTION:].any()
@@ -934,5 +934,5 @@ assert _power(_e(("PanachePower", 3), ("AutomationPower", 2)), "PanachePower") =
 _c = {"player": {"hp": 50, "maxHp": 80, "block": 0, "energy": 3, "hand": [], "powers": [{"name": n, "amount": a} for n, a in
       [("AutomationPower", 2), ("PanachePower", 3), ("RollingBoulderPower", 5), ("TheBombPower", 3), ("StrengthPower", 2)]]},
       "enemies": [{"isAlive": True, "hp": 40, "maxHp": 40, "block": 0, "powers": [{"name": "VulnerablePower", "amount": 2}], "intents": []}]}
-assert hashlib.md5(np.asarray(_encode(_c)).tobytes()).hexdigest() == "cede48cad40a299516850c07d4e50ca3"  # recorded before the change
+assert hashlib.md5(np.asarray(_encode(_c)).tobytes()).hexdigest() == "fdb31545ddfce1b0a6f8edcbe35673fd"  # re-recorded when the potion ids went from 12 to 48 (the layout shifts; values unchanged)
 print("training deck checks ok")

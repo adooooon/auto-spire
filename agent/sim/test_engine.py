@@ -402,10 +402,19 @@ c.fight("NIBBITS_WEAK")
 assert c.shuffles == 0  # the cap is per fight
 # Potions (sim/potions.py; effects from Models/Potions/*.OnUse). Potion damage and Block Potion's
 # block are Unpowered: block absorbs the damage, but Strength/Vulnerable/Weak/Dexterity/Frail don't apply.
-from .potions import POTION_POOL, POTIONS
+from .potions import ANY_TIME, NOT_IN_COMBAT_GEN, PENDING, POTION_POOL, POTIONS, USABLE, random_potion
 
-assert len(POTIONS) == 12 and all(p in POTION_POOL["COMMON"] for p in POTIONS)
+# Every pool id is in POTIONS, with the source's TargetType (Self/AnyPlayer -> self, AnyEnemy -> enemy, AllEnemies -> all);
+# Fairy in a Bottle is Automatic.
+assert set(POTIONS) == {p for v in POTION_POOL.values() for p in v} and len(POTIONS) == 48
 assert all(len(v) == 16 for v in POTION_POOL.values())
+_ENEMY = {"BEETLE_JUICE", "FIRE_POTION", "POWDERED_DEMISE", "VULNERABLE_POTION", "WEAK_POTION"}
+_ALL = {"EXPLOSIVE_AMPOULE", "POTION_OF_BINDING", "SHACKLING_POTION"}
+assert all(k == ("auto" if p == "FAIRY_IN_A_BOTTLE" else "enemy" if p in _ENEMY else "all" if p in _ALL else "self")
+           for p, k in POTIONS.items())
+assert ANY_TIME == {"BLOOD_POTION", "FRUIT_JUICE", "ENTROPIC_BREW"}
+assert NOT_IN_COMBAT_GEN == {"REGEN_POTION", "FAIRY_IN_A_BOTTLE", "FRUIT_JUICE"}
+assert len(PENDING) == 21 and len(USABLE) == 27 and not PENDING & set(USABLE)
 
 
 def potion(pid, hand=("DEFEND_IRONCLAD",), encounter="MAWLER_NORMAL"):
@@ -483,12 +492,185 @@ s.exec("fight NIBBITS_WEAK")
 assert s.combat()["potionSlots"] == ["FIRE_POTION", None, None]
 nib = s.combat()["enemies"][0]["combatId"]
 assert s.exec(f"potion 0 {nib}")["ok"] and s.combat()["potionSlots"] == [None, None, None]
+# --- plan 2b task 1: plain potions, potions gained mid-fight, Alchemize -----------------------------------------
+import copy  # noqa: E402
+
+from .cards import CARDS as _CARDS, GENERATED  # noqa: E402
+
+
+def use(pid, hand=(), **kw):
+    c = potion(pid, hand=hand, **kw)
+    assert c.use_potion(0)["ok"] and c.potions[0] is None
+    return c
+
+
+c = potion("CURE_ALL", hand=())
+c.energy = 0
+c.use_potion(0)
+assert c.energy == 1 and len(c.hand) == 2  # EnergyVar 1, CardsVar 2
+c = potion("FORTIFIER")
+c.player_block = 7
+c.use_potion(0)
+assert c.player_block == 21  # GainBlock(Block * 2, Unpowered) on top of the block held
+c = potion("FORTIFIER")
+c.dexterity, c.frail = 5, 2
+c.use_potion(0)
+assert c.player_block == 0  # nothing to multiply
+c = use("FYSH_OIL")
+assert c.strength == 1 and c.dexterity == 1
+c = use("HEART_OF_IRON")
+assert c.pw["PlatingPower"] == 7
+c = use("LIQUID_BRONZE")
+assert c.pw["ThornsPower"] == 3
+c = use("POTION_OF_BINDING", encounter="SLIMES_NORMAL")
+assert len(c.enemies) > 1 and all(e.weak == 1 and e.vulnerable == 1 for e in c.enemies if e.is_alive)
+c = potion("POTION_OF_BINDING", encounter="SLIMES_NORMAL")
+c.enemies[0].hp = 0  # a dead enemy isn't hittable
+c.use_potion(0)
+assert c.enemies[0].weak == 0 and c.enemies[1].weak == 1
+c = use("STABLE_SERUM", hand=("STRIKE_IRONCLAD", "ANOINTED"))
+assert c.pw["RetainHandPower"] == 2
+c.end_turn()
+assert len(c.hand) >= 2 and c.pw["RetainHandPower"] == 1  # the whole hand is kept; one of its turns used
+c = use("SHIP_IN_A_BOTTLE")
+assert c.player_block == 10 and c.pw["BlockNextTurnPower"] == 10
+c = potion("SHIP_IN_A_BOTTLE")
+c.dexterity, c.frail = 5, 2
+c.use_potion(0)
+assert c.player_block == 10  # Unpowered: neither Dexterity nor Frail
+# Blessing of the Forge: every upgradable hand card, for this combat.
+c = use("BLESSING_OF_THE_FORGE", hand=("STRIKE_IRONCLAD", "BASH", "WOUND", "STRIKE_IRONCLAD+"))
+assert list(c.hand) == ["STRIKE_IRONCLAD+", "BASH+", "WOUND", "STRIKE_IRONCLAD+"]
+# Bottled Potential: hand into the draw pile, shuffle (the discard pile too), draw 5.
+c = potion("BOTTLED_POTENTIAL", hand=("STRIKE_IRONCLAD", "BASH", "ANOINTED"))
+c.draw_pile, c.discard_pile = ["DEFEND_IRONCLAD"] * 4, ["INFLAME"] * 3
+c.use_potion(0)
+assert len(c.hand) == 5 and len(c.draw_pile) == 5 and c.discard_pile == [] and c.shuffles == 1
+assert sorted(c.hand + c.draw_pile) == sorted(["STRIKE_IRONCLAD", "BASH", "ANOINTED"] + ["DEFEND_IRONCLAD"] * 4 + ["INFLAME"] * 3)
+c = potion("BOTTLED_POTENTIAL", hand=())
+c.draw_pile = ["DEFEND_IRONCLAD"] * 2
+c.use_potion(0)
+assert len(c.hand) == 2 and c.draw_pile == []  # fewer than 5 to draw
+# Fruit Juice: CreatureCmd.GainMaxHp raises max HP by 5 and heals that much.
+c = potion("FRUIT_JUICE")
+c.player_hp = 50
+mx = c.player_max_hp
+c.use_potion(0)
+assert c.player_max_hp == mx + 5 and c.player_hp == 55
+# Distilled Chaos: the top 3 draw-pile cards, autoplayed (free).
+c = potion("DISTILLED_CHAOS", hand=())
+c.draw_pile = ["BASH", "DEFEND_IRONCLAD", "INFLAME", "STRIKE_IRONCLAD", "DEFEND_IRONCLAD"]  # the top is the last
+c.energy, hp = 0, c.enemies[0].hp
+c.use_potion(0)
+assert c.energy == 0 and c.draw_pile == ["BASH", "DEFEND_IRONCLAD"] and c.player_block == 5  # a free Defend
+assert c.strength == 2 and c.enemies[0].hp < hp  # Inflame, then Strike
+assert c.discard_pile == ["DEFEND_IRONCLAD", "STRIKE_IRONCLAD"] and c.powers_done == 1, c.discard_pile
+c = potion("DISTILLED_CHAOS", hand=())  # an empty draw pile shuffles the discard pile in
+c.draw_pile, c.discard_pile = [], ["DEFEND_IRONCLAD"] * 4
+c.use_potion(0)
+assert len(c.discard_pile) == 3 and c.draw_pile == ["DEFEND_IRONCLAD"] * 1 and c.shuffles == 1 and c.player_block == 15, \
+    (c.discard_pile, c.draw_pile, c.player_block)
+# Orobic Acid: one random Attack, Skill and Power, each free this turn, into the hand.
+c = potion("OROBIC_ACID", hand=())
+c.use_potion(0)
+assert [_CARDS[x].type for x in c.hand] == ["Attack", "Skill", "Power"] and all(c.cost(x) == 0 for x in c.hand)
+assert all(x in GENERATED for x in c.hand)
+c = potion("OROBIC_ACID", hand=("STRIKE_IRONCLAD",) * 9)  # a full hand: the rest go to the discard pile
+c.use_potion(0)
+assert len(c.hand) == 10 and len(c.discard_pile) == 2
+
+# Snecko Oil: draw 7, then every non-X hand card with cost >= 0 costs randrange(4) (the combat's rng).
+c = potion("SNECKO_OIL", hand=("WHIRLWIND", "WOUND", "STRIKE_IRONCLAD", "PURITY"))
+c.draw_pile = ["DEFEND_IRONCLAD"] * 3 + ["BASH"] * 4
+r = copy.deepcopy(c.rng)
+c.use_potion(0)
+assert len(c.hand) == 10  # 4 + 7 drawn, capped at the hand limit
+want = [r.randrange(4) for x in c.hand if x not in ("WHIRLWIND", "WOUND")]
+got = [c.cost(x) for x in c.hand if x not in ("WHIRLWIND", "WOUND")]
+assert got == want, (got, want)
+assert c.cost(c.hand[0]) == 0 and getattr(c.hand[0], "cost_override", None) is None  # X-cost: untouched
+assert c.cost(c.hand[1]) == -1 and not c.can_play(c.hand[1])  # Unplayable: untouched
+assert c.rng.getstate() == r.getstate()  # exactly one randrange(4) per changed card
+# It lasts until the card is played or the turn ends, whichever is first (CardEnergyCost.SetThisTurnOrUntilPlayed).
+c = potion("SNECKO_OIL", hand=("PURITY", "STRIKE_IRONCLAD"))
+c.draw_pile = []
+for seed in range(50):
+    c.rng.seed(seed)
+    c.potions[0] = "SNECKO_OIL"
+    c.use_potion(0)
+    if c.cost(c.hand[0]) != 0:
+        break
+assert c.cost(c.hand[0]) != 0 and c.cost(c.hand[1]) in range(4)
+c.end_turn()  # Purity retains: its cost is back to base, since the modifier ended with the turn
+assert "PURITY" in c.hand and c.cost("PURITY") == 0 and getattr(c.hand[0], "cost_override", None) is None
+c = potion("SNECKO_OIL", hand=("STRIKE_IRONCLAD",))
+c.draw_pile = []
+c.rng.seed(5)
+c.use_potion(0)
+card = c.hand[0]
+assert card.cost_override == c.cost(card)
+c.energy = 9
+c.play_card(0, 1)
+assert card.cost_override is None and c.cost(card) == 1  # played: back to its base cost
+
+# random_potion: one float picks the rarity (<= 0.1 Rare, <= 0.35 Uncommon, else Common); in combat the three
+# can't-be-generated potions are left out.
+rr = random.Random(0)
+counts = {"COMMON": 0, "UNCOMMON": 0, "RARE": 0}
+for _ in range(10000):
+    p = random_potion(rr, True)
+    assert p not in NOT_IN_COMBAT_GEN
+    counts[next(k for k, v in POTION_POOL.items() if p in v)] += 1
+assert abs(counts["RARE"] - 1000) <= 100 and abs(counts["UNCOMMON"] - 2500) <= 100 and abs(counts["COMMON"] - 6500) <= 100, counts
+assert any(random_potion(rr, False) in NOT_IN_COMBAT_GEN for _ in range(2000))
+
+# Gaining potions with full slots (PotionCmd.TryToProcure): no exception, nothing changes.
+c = potion("BLOCK_POTION")
+c.potions = ["FIRE_POTION", "FIRE_POTION", "FIRE_POTION"]
+assert c._procure_potion("BLOCK_POTION") is False and c.potions == ["FIRE_POTION"] * 3
+c.potions[1] = None
+assert c._procure_potion("BLOCK_POTION") is True and c.potions == ["FIRE_POTION", "BLOCK_POTION", "FIRE_POTION"]
+# Entropic Brew keeps gaining until the slots are full: 1 open slot of 3 fills that slot and stops.
+c = potion("ENTROPIC_BREW")
+c.potions = ["ENTROPIC_BREW", "FIRE_POTION", "FIRE_POTION"]
+r = copy.deepcopy(c.rng)
+c.use_potion(0)
+assert c.potions == [random_potion(r, False), "FIRE_POTION", "FIRE_POTION"] and c.rng.getstate() == r.getstate()
+c = potion("ENTROPIC_BREW")
+c.potions = ["ENTROPIC_BREW", None, None]
+r = copy.deepcopy(c.rng)
+c.use_potion(0)
+assert c.potions == [random_potion(r, False) for _ in range(3)]
+c = potion("ENTROPIC_BREW")
+c.potions = ["ENTROPIC_BREW"] + [None] * 4  # Potion Belt: five slots
+r = copy.deepcopy(c.rng)
+c.use_potion(0)
+assert c.potions == [random_potion(r, False) for _ in range(5)]
+# Alchemize: a random in-combat potion; with full slots it does nothing and the card is still spent.
+c = solo(["ALCHEMIZE"])
+c.potions = [None, "FIRE_POTION", None]
+r = copy.deepcopy(c.rng)
+c.play_card(0)
+assert c.potions == [random_potion(r, True), "FIRE_POTION", None] and c.energy == 2 and c.exhaust_pile == ["ALCHEMIZE"]
+c = solo(["ALCHEMIZE+"])
+c.potions = ["FIRE_POTION"] * 3
+assert c.cost("ALCHEMIZE+") == 0 and c.play_card(0)["ok"] and c.potions == ["FIRE_POTION"] * 3 and c.exhaust_pile == ["ALCHEMIZE+"]
+# A potion gained mid-fight is still there in the next fight.
+c = potion("ENTROPIC_BREW")
+c.use_potion(0)
+held = list(c.potions)
+c.fight("NIBBITS_WEAK")
+assert c.potions == held and all(held)
+print("plain potion checks ok")
+
 # Golden pin: relic-less fights must never change (relic code must not leak into them).
 import hashlib  # noqa: E402
 
 from . import engine  # noqa: E402
 from .cards import CHOICE_CARDS, COMMONS, RARES, UNCOMMONS, starter_deck, upgrade  # noqa: E402
-from .potions import POTION_IDS  # noqa: E402
+# The golden trace predates the new potions: it holds the 12 the sim modeled first.
+POTION_IDS = sorted(["BLOCK_POTION", "DEXTERITY_POTION", "SPEED_POTION", "ENERGY_POTION", "STRENGTH_POTION", "FLEX_POTION",
+                     "SWIFT_POTION", "BLOOD_POTION", "FIRE_POTION", "VULNERABLE_POTION", "WEAK_POTION", "EXPLOSIVE_AMPOULE"])
 
 
 def _no_relic_trace() -> str:
@@ -1689,7 +1871,7 @@ from sim.cards import COLORLESS, COLORLESS_GENERATED, COLORLESS_RARES, COLORLESS
 assert len(COLORLESS) == 53 and COLORLESS == COLORLESS_UNCOMMONS + COLORLESS_RARES and len(set(COLORLESS)) == 53
 assert COLORLESS[:3] == ("AUTOMATION", "CATASTROPHE", "DARK_SHACKLES") and COLORLESS_RARES[:2] == ("ALCHEMIZE", "ANOINTED")
 assert all(CARDS[c].colorless and c in UPGRADES and c + "+" in CARDS for c in COLORLESS)
-assert NOT_BUYABLE == {"SPLASH", "ALCHEMIZE"} and "SPLASH" not in COLORLESS_GENERATED and "HAND_OF_GREED" not in COLORLESS_GENERATED
+assert NOT_BUYABLE == {"SPLASH"} and "SPLASH" not in COLORLESS_GENERATED and "HAND_OF_GREED" not in COLORLESS_GENERATED
 from sim.cards import COMMONS, RARES, UNCOMMONS  # noqa: E402
 assert not any(CARDS[c].colorless for c in GENERATED + COMMONS + UNCOMMONS + RARES)  # Ironclad pools only
 for cid, spec in {"ULTIMATE_STRIKE": (1, "Attack", "Uncommon", "AnyEnemy"), "THE_BOMB": (2, "Skill", "Uncommon", "Self"),
