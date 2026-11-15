@@ -987,3 +987,65 @@ _c = {"player": {"hp": 50, "maxHp": 80, "block": 0, "energy": 3, "hand": [], "po
       "enemies": [{"isAlive": True, "hp": 40, "maxHp": 40, "block": 0, "powers": [{"name": "VulnerablePower", "amount": 2}], "intents": []}]}
 assert hashlib.md5(np.asarray(_encode(_c)).tobytes()).hexdigest() == "fbdc3d10cbd7cf531d1c476704f873db"  # re-recorded for plan 2b task 4 (+5 status card ids; the md5 before was 7b0eb826bb10abb6e432e99d50fc48f9). Earlier: re-recorded when the potion ids went from 12 to 48, for plan 2b task 2 (+7 player and 2 x 6 enemy powers) and task 3 (+153 potion prompt columns, the last); each time the values are unchanged (the old md5s fdb31545... and 72e91298... are this vector minus the new columns)
 print("training deck checks ok")
+
+# Potions in the run (plan 2b task 5).
+from sim.potions import ANY_TIME, POTIONS, POTION_IDS as _PIDS
+from env import random_potions as _rp, STS2CombatEnv as _CE
+from run_env import take_fight_results
+
+# The DRINK mask: exactly the ANY_TIME potions (Blood only when hurt); CombatOnly never, Fairy never, at any HP.
+renv.reset(seed=3)
+renv.decision = "path"
+for pid in _PIDS:
+    renv.run.potions, renv.run.max_hp, renv.run.hp = [pid, None, None], 80, 40
+    assert bool(renv.action_masks()[DRINK]) == (pid in ANY_TIME), pid
+    renv.run.hp = 80
+    assert bool(renv.action_masks()[DRINK]) == (pid in ANY_TIME and pid != "BLOOD_POTION"), pid
+assert POTIONS["FAIRY_IN_A_BOTTLE"] == "auto"
+renv.run.potions, renv.run.hp, renv.run.max_hp = ["FRUIT_JUICE", None, None], 40, 80
+renv.step(DRINK)
+assert (renv.run.hp, renv.run.max_hp) == (45, 85) and renv.used["FRUIT_JUICE"] == 1
+renv.run.potions = [None, "ENTROPIC_BREW", None]
+renv.step(DRINK + 1)
+assert None not in renv.run.potions and renv.used["ENTROPIC_BREW"] == 1
+
+# Every pool potion can be taken from a reward and bought in a shop.
+for pid in _PIDS:
+    renv.reset(seed=4)
+    renv.decision, renv.run.potion_drop = "potion", pid
+    assert renv.action_masks()[POTION_TAKE]
+    renv.decision, renv.run.gold = "shop", 1000
+    renv.run.shop = Shop([None] * 5, [50] * 5, 75, potions=[pid, None, None], potion_prices=[50, 0, 0])
+    assert renv.action_masks()[SHOP_POTION], pid
+
+# A potion gained mid-fight (Alchemize, Entropic Brew) is in run.potions after the fight.
+from sim.act import Run
+import random as _random
+for pid in ("ENTROPIC_BREW",):
+    ce = _CE(encounter="NIBBITS_WEAK", client=SimClient(seed=0), heal=False, episodes_per_restart=10**9)
+    ce._episode_count = 1
+    ce.potions = [pid, None, None]
+    ce.reset(seed=0)
+    ce.step(POTION_ACTION)
+    combat = ce.client._combat
+    assert None not in combat.potions
+    run = Run(_random.Random(0))
+    take_fight_results(run, combat)
+    assert run.potions == list(combat.potions) and None not in run.potions
+
+# random-deck potions never include Fairy in a Bottle, and cover the rest.
+_prng, _got = np.random.default_rng(0), set()
+for _ in range(3000):
+    _got |= set(_rp(_prng, 5))
+assert _got == set(_PIDS) - {"FAIRY_IN_A_BOTTLE"}, set(_PIDS) - _got
+
+# 300 runs with a random legal policy, starting with 3 random potions, finish without an exception.
+renv, rng = RunPolicyEnv(), np.random.default_rng(11)
+for seed in range(300):
+    renv.reset(seed=seed)
+    renv.run.potions = [str(p) for p in rng.choice(_PIDS, 3)]
+    done, trunc = False, False
+    while not (done or trunc):
+        _, _, done, trunc, _ = renv.step(int(rng.choice(np.flatnonzero(renv.action_masks()))))
+    assert done and not trunc, seed
+print("potions in the run ok")

@@ -11,7 +11,7 @@ from .cards import CARDS, COLORLESS, COMMONS, NOT_BUYABLE, RARES, UNCOMMONS, UPG
 from .engine import ENCOUNTERS, HIVE_BOSSES, HIVE_ELITES, HIVE_NORMALS, HIVE_WEAK, PLAYER_MAX_HP
 from .events import EVENT_ALLOWED, HIVE_EVENT_ALLOWED, MODELED_EVENTS
 from .map import ActMap, Node, generate_map
-from .potions import POTION_POOL, POTION_SLOTS, USABLE
+from .potions import ANY_TIME, POTION_POOL, POTION_SLOTS, USABLE, random_potion
 from .relics import IRONCLAD_RELICS, NOT_IN_SHOPS, RELIC_POOL, RELICS, relic_rarity
 
 STARTING_GOLD = 99  # Ironclad.StartingGold
@@ -662,7 +662,16 @@ class Run:
         self.obtain(relic, "shop")
 
     def drink(self, slot: int) -> None:
-        """Blood Potion between fights (PotionUsage.AnyTime): 20% of max HP, truncated."""
-        assert self.potions[slot] == "BLOOD_POTION", self.potions
-        self.hp = min(self.max_hp, self.hp + int(self.max_hp * BLOOD_POTION_HEAL))
+        """An AnyTime potion between fights. Blood Potion: 20% of max HP, truncated. Fruit Juice: GainMaxHp(5), which
+        raises HP by the same. Entropic Brew: the slot empties, then TryToProcure fills every open slot (Potion Belt's
+        too) with a random out-of-combat potion from the run rng."""
+        pid = self.potions[slot]
+        assert pid in ANY_TIME, self.potions
         self.potions[slot] = None
+        if pid == "BLOOD_POTION":
+            self.hp = min(self.max_hp, self.hp + int(self.max_hp * BLOOD_POTION_HEAL))
+        elif pid == "FRUIT_JUICE":
+            self.gain_max_hp(5)
+        else:
+            while None in self.potions:
+                self.potions[self.potions.index(None)] = random_potion(self.rng, in_combat=False)

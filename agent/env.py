@@ -187,8 +187,9 @@ def random_deck(rng: np.random.Generator, prompt_practice: bool = False, extras:
 
 
 def random_potions(rng: np.random.Generator, slots: int = POTION_SLOTS) -> list[str]:
-    """0-slots random modeled potions, for random-deck training (so every potion gets practice)."""
-    return [str(rng.choice(sorted(USABLE))) for _ in range(rng.integers(0, slots + 1))]
+    """0-slots random potions, for random-deck training (so every potion gets practice). Never Fairy in a Bottle: it
+    can't be used by hand, so a random slot of it only blocks a slot; it comes through rewards and shops."""
+    return [str(rng.choice(sorted(set(USABLE) - {"FAIRY_IN_A_BOTTLE"}))) for _ in range(rng.integers(0, slots + 1))]
 
 
 def random_relics(rng: np.random.Generator) -> tuple[set[str], dict[str, int]]:

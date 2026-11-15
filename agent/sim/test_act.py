@@ -155,6 +155,30 @@ assert 0.4 < drops / 400 < 0.6, drops  # converges on PotionRewardOdds.targetOdd
 run.potions, run.hp, run.max_hp = ["BLOOD_POTION", None, None], 40, 83
 run.drink(0)
 assert run.hp == 56 and run.potions == [None, None, None]
+# Outside combat (ANY_TIME): Fruit Juice is GainMaxHp (+5 max, +5 HP); Entropic Brew fills open slots from the run rng.
+from .potions import ANY_TIME, random_potion
+run.potions, run.hp, run.max_hp = ["FRUIT_JUICE", None, None], 40, 80
+run.drink(0)
+assert (run.hp, run.max_hp, run.potions) == (45, 85, [None] * 3)
+run.potions, run.hp, run.max_hp = ["FRUIT_JUICE", None, None], 80, 80
+run.drink(0)
+assert (run.hp, run.max_hp) == (85, 85)  # full HP still gains the 5
+run.potions = [None, "ENTROPIC_BREW", "FIRE_POTION"]
+r1, r2 = random.Random(9), random.Random(9)
+run.rng = r1
+run.drink(1)
+assert run.potions == [random_potion(r2, in_combat=False), random_potion(r2, in_combat=False), "FIRE_POTION"]  # first open slot first
+run.potions = ["ENTROPIC_BREW"] + [None] * 4  # Potion Belt's slots count; stops when full, never over
+run.drink(0)
+assert len(run.potions) == 5 and None not in run.potions
+run.potions = ["ENTROPIC_BREW", "BLOCK_POTION", "BLOCK_POTION"]
+run.drink(0)
+assert None not in run.potions and run.potions[1:] == ["BLOCK_POTION"] * 2  # the drunk slot is freed, then refilled
+assert ANY_TIME == {"BLOOD_POTION", "FRUIT_JUICE", "ENTROPIC_BREW"}
+for _s in range(200):  # the out-of-combat pool (Fairy, Regen, Fruit Juice included) never breaks a drink
+    run.rng, run.potions = random.Random(_s), ["ENTROPIC_BREW", None, None]
+    run.drink(0)
+    assert all(run.potions)
 run.shop = Shop([None] * 5, [0] * 5, 75, potions=["FIRE_POTION", "ATTACK_POTION", None], potion_prices=[50, 50, 0])
 run.gold, run.spent, run.potions = 60, 0, ["WEAK_POTION", None, None]
 run.buy_potion(0)
@@ -599,7 +623,7 @@ assert [(n.col, n.row, n.type) for n in Run(random.Random(3)).map.nodes()] == [(
 print("act 2 checks ok")
 
 # Upgrades in the run. BASELINE: Act 1 map hash, first encounters, boss and first 3 offers per seed, captured from HEAD 24cf704
-# (before upgrades existed). The upgrade roll must not move any of it at act 0.
+# (before upgrades existed); re-captured from 698b7ae for plan 2b task 5 (Review Focus 5: potions never move these streams), identical. The upgrade roll must not move any of it at act 0.
 import hashlib
 BASELINE = {
     0: ('9c08dffe', ['FUZZY_WURM_CRAWLER_WEAK', 'SHRINKER_BEETLE_WEAK', 'SLIMES_WEAK', 'FOGMOG_NORMAL'], ['BYGONE_EFFIGY_ELITE', 'PHROG_PARASITE_ELITE'], 'VANTOM_BOSS', [['BREAKTHROUGH', 'POMMEL_STRIKE', 'IRON_WAVE'], ['MOLTEN_FIST', 'BLUDGEON', 'ANGER'], ['BURNING_PACT', 'JUGGLING', 'BREAKTHROUGH']]),

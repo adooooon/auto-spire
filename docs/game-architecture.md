@@ -505,7 +505,7 @@ Ported to the sim in `agent/sim/map.py` and `agent/sim/act.py`.
 
 Ported to the sim in `agent/sim/potions.py` and `SimCombat.use_potion`; drops and shops in `agent/sim/act.py`.
 
-- **Pools:** `SharedPotionPool` plus the character's pool. Ironclad's is `Ironclad4Epoch.Potions` (Blood Potion, Ashwater, Soldier's Stew) once that epoch is revealed. Each rarity has 16 potions across the two pools.
+- **Pools:** `SharedPotionPool` plus the character's pool. Ironclad's is `Ironclad4Epoch.Potions` (Blood Potion, Ashwater, Soldier's Stew) once that epoch is revealed. Each rarity has 16 potions across the two pools, 48 in all (`POTION_POOL`, `POTIONS`).
 - **Damage and block types:** potion damage and Block Potion's block are `ValueProp.Unpowered` ("damage from relics, potions, and powers").
   - Strength, Vulnerable, Weak, Shrink and Slow only modify `IsPoweredAttack` damage (Move and not Unpowered).
   - Dexterity and Frail only modify `IsPoweredCardOrMonsterMoveBlock` block.
@@ -522,10 +522,24 @@ Ported to the sim in `agent/sim/potions.py` and `SimCombat.use_potion`; drops an
   - Explosive Ampoule: 10 to each `HittableEnemies`
   - Vulnerable 3
   - Weak 3
-  - Blood (Ironclad): heal 20% of max HP, `PotionUsage.AnyTime`, so it also works between fights. The rest are `CombatOnly`.
+  - Blood (Ironclad): heal 20% of max HP.
 - **Card-choice Commons:** Attack, Skill, Power and Colorless Potion pick 1 of 3 generated cards.
 - **Healing truncates:** `Creature.SetCurrentHpInternal` casts to int, so 20% of 83 heals 16.
 - **Dexterity** (`DexterityPower.ModifyBlockAdditive`) adds before Frail's ×0.75 (`ModifyBlockMultiplicative`).
+- **Target kinds** (`POTIONS`, from `PotionModel.TargetType`): `self` (Self, AnyPlayer), `enemy` (AnyEnemy: Fire, Vulnerable, Weak, Beetle Juice, Powdered Demise), `all` (AllEnemies: Explosive Ampoule, Potion of Binding, Shackling), and `auto` for Fairy in a Bottle.
+- **Usage:** Blood Potion, Fruit Juice and Entropic Brew are `AnyTime`, Fairy in a Bottle is `Automatic` (never drunk by hand, in or out of combat), the rest `CombatOnly`.
+  - **Between fights** (`Run.drink`; the run env's `DRINK` actions at the path decision): Blood heals 20%; Fruit Juice is `GainMaxHp(5)`, max HP and HP both +5; Entropic Brew empties its slot, then fills every open slot (Potion Belt's too) with an out-of-combat random potion from the run rng. The env masks Blood at full HP and Entropic Brew with no other open slot.
+  - **Rewards and shops** take every pool potion. A potion made mid-fight (Alchemize, Entropic Brew) is still held after the fight.
+- **Rarity roll, in combat** (`PotionFactory`): the same roll, but potions with `CanBeGeneratedInCombat` false (Regen, Fairy in a Bottle, Fruit Juice) are dropped from the pool first. Out of combat (rewards, shops, Entropic Brew between fights) they stay.
+- **Powers and hooks:**
+  - Self powers: Heart of Iron Plating 7; Liquid Bronze Thorns 3; Stable Serum `RetainHandPower` 2; Ship in a Bottle 10 block now + `BlockNextTurnPower` 10; Clarity draw 1 + `ClarityPower` 3; Duplicator `DuplicationPower` 1; Radiant Tincture 1 energy + `RadiancePower` 3; Regen `RegenPower` 5; Gigantification `GigantificationPower` 1; Lucky Tonic Buffer 1; Mazaleth's Gift Ritual 1.
+  - Enemy powers: Powdered Demise `DemisePower` 9; Beetle Juice Shrink 4; Shackling `DarkShacklesPower` 7 on each hittable enemy (a `TemporaryStrengthPower`); Binding Weak then Vulnerable 1.
+  - Plain effects: Cure All 1 energy + draw 2; Fortifier block x3 (adds the block held, Unpowered); Fysh Oil +1 Strength and Dexterity; Snecko Oil draw 7 and each costed card gets a random 0-3 cost; Soldier's Stew +1 replay on every Strike in every pile; Orobic Acid one random Attack, Skill and Power, free this turn; Distilled Chaos plays the top 3 draw cards; Bottled Potential shuffles the hand into the draw pile (and the discard pile) and draws 5; Blessing of the Forge upgrades the hand.
+  - Potion use runs `AfterPotionUsed` (Reptile Trinket, Belt Buckle), and a procure runs `AfterPotionProcured` (Belt Buckle).
+- **Prompts** (`SimCombat.pending_choice`): Attack, Skill, Power and Colorless Potion `generated` (1 of 3, skippable); Gambler's Brew and Ashwater `hand_multi` (discard any number); Touch of Insanity `hand` (a card that costs energy; it is free for the rest of the combat); Liquid Memories `discard`; Droplet of Precognition `draw`. A prompt with nothing to pick doesn't pause. Attack Potion with 10 cards in hand sends its card to the discard pile.
+- **Fairy in a Bottle and Lizard Tail:** `Hook.ShouldDie` (Fairy: heal 30% of max HP, at least 1, slot emptied) is asked before `ShouldDieLate` (Lizard Tail), so Fairy saves the player first and Lizard Tail stays unused. Fairy also catches self-inflicted HP loss.
+- **Random-deck training** (`random_potions`): every potion but Fairy, which can't be used by hand and would only block a slot.
+- **Left out** (`ponytail:`): Wither's `FakeUpgrade`, which only the Act 3 monster Aeonglass calls.
 - **Drops** (`PotionRewardOdds`):
   - The chance starts at 0.4. A roll succeeds when a random number is below the chance (plus 0.25 × 0.5 in elite rooms).
   - Success lowers the chance by 0.1; failure raises it by 0.1.

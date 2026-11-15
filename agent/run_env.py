@@ -28,7 +28,7 @@ DECISIONS = ("path", "pick", "shop", "remove", "potion", "rest")
 HEAD_DECISIONS = DECISIONS[:4]  # the original observation head; the others are flagged in their appended blocks
 # Actions: [path: one per column][pick: 3 cards, skip][shop: one per slot, remove, leave]
 # [remove: one per card id, then an unused cancel slot] -- then, appended for grow.py:
-# [potion: put in slot 0-2, skip][shop: buy potion 0-2][path: drink Blood Potion in slot 0-2]
+# [potion: put in slot 0-2, skip][shop: buy potion 0-2][path: drink an AnyTime potion in slot 0-2]
 PATH = 0
 PICK = PATH + COLS
 SHOP = PICK + 4
@@ -39,7 +39,7 @@ POTION_SKIP = POTION_TAKE + POTION_SLOTS
 SHOP_POTION = POTION_SKIP + 1
 DRINK = SHOP_POTION + SHOP_POTIONS
 # then relics and the Potion Belt slots 3-4 (the numbering is split; use potion_take_action / drink_action):
-# [shop: buy relic 0-2][potion: put in slot 3-4][path: drink Blood Potion in slot 3-4]
+# [shop: buy relic 0-2][potion: put in slot 3-4][path: drink an AnyTime potion in slot 3-4]
 SHOP_RELIC = DRINK + POTION_SLOTS
 POTION_TAKE_2 = SHOP_RELIC + SHOP_RELICS
 DRINK_2 = POTION_TAKE_2 + MAX_POTION_SLOTS - POTION_SLOTS
@@ -216,8 +216,9 @@ class RunPolicyEnv(gym.Env):
         self.steps += 1
         reward = 0.0
         if self.decision == "path" and a >= DRINK:
-            self.run.drink(drink_slot(a))
-            self.used["BLOOD_POTION"] += 1
+            slot = drink_slot(a)
+            self.used[self.run.potions[slot]] += 1
+            self.run.drink(slot)
         elif self.decision == "path":
             encounter = self.enter(a - PATH)
             if encounter is None:
@@ -283,7 +284,9 @@ class RunPolicyEnv(gym.Env):
             for n in run.choices():
                 m[PATH + n.col] = True
             for i, p in enumerate(run.potions):
-                m[drink_action(i)] = p == "BLOOD_POTION" and run.hp < run.max_hp
+                # Blood Potion only when hurt; Entropic Brew only with another open slot (else it just rerolls itself)
+                m[drink_action(i)] = (p == "BLOOD_POTION" and run.hp < run.max_hp) or p == "FRUIT_JUICE" or (
+                    p == "ENTROPIC_BREW" and None in run.potions[:i] + run.potions[i + 1:])
         elif self.decision == "pick":
             for i, c in enumerate(self.offered):
                 m[PICK + i] = c in CARDS
@@ -361,7 +364,7 @@ class RunPolicyEnv(gym.Env):
         shop_p = np.zeros((SHOP_POTIONS, SHOP_POTION_FEATURES))
         if self.decision in ("shop", "remove"):
             for k, (p, price) in enumerate(zip(run.shop.potions, run.shop.potion_prices)):
-                if p in USABLE:  # pending potions read as zeros, as unmodeled ones did
+                if p in USABLE:  # an id the sim doesn't know (live) reads as zeros
                     shop_p[k, POTION_INDEX[p]], shop_p[k, -2] = 1, run.price(price) / 100
                     shop_p[k, -1] = run.gold >= run.price(price) and None in run.potions
         potion_obs = [float(self.decision == "potion")] + own + drop + list(shop_p.ravel())
