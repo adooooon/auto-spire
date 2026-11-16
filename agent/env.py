@@ -6,7 +6,7 @@ Action space: Discrete(N_ACTIONS)
                   only AnyEnemy cards use the slot — others are masked to slot 0)
   END_TURN     -> end turn
   a > END_TURN -> use potion slot (a - POTION_ACTION) // MAX_ENEMIES at enemy slot % MAX_ENEMIES
-                  (sim only: masked off when /combat has no potionSlots, i.e. live)
+                  (live too: /combat sends potionSlots; a prompt potion's prompt names it as source)
   CHOOSE_HAND + i      -> answer a hand card prompt with hand card i (sim only)
   CHOOSE_DISCARD + k   -> answer a discard prompt with CARD_IDS[k] (sim only)
   CHOOSE_GENERATED + i -> take generated option i (Discovery); CHOOSE_SKIP -> take none (sim only)
@@ -530,7 +530,7 @@ class STS2CombatEnv(gym.Env):
                 slots = n_enemies if c["targetType"] == "AnyEnemy" else 1
                 mask[i * MAX_ENEMIES:i * MAX_ENEMIES + max(slots, 1)] = True
         for i, pid in enumerate((self._combat.get("potionSlots") or [])[:MAX_POTION_SLOTS]):
-            if pid in USABLE and USABLE[pid] != "auto":  # unmodeled potions, Fairy in a Bottle and live play (no potionSlots) stay masked
+            if pid in USABLE and USABLE[pid] != "auto":  # unmodeled potions and Fairy in a Bottle stay masked
                 slots = n_enemies if USABLE[pid] == "enemy" else 1
                 mask[POTION_ACTION + i * MAX_ENEMIES:POTION_ACTION + i * MAX_ENEMIES + slots] = True
         mask[END_TURN] = True

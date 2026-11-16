@@ -802,3 +802,39 @@ The mod now answers the colorless prompt kinds the sim has (`combat_dict()["choi
 Review fixes:
 - **Entropy after Armaments:** an Entropy prompt at the start of a turn showed as `upgrade` (source ARMAMENTS) when the last card played on the previous turn was Armaments. The mod now treats the last play as a prompt's source only while that play is still running (`CardPlaysStarted` count > `CardPlaysFinished` count). A live_check covers it.
 - **No resent `exec`:** `AutoSpireClient` no longer resends an `/exec` POST after a read timeout or HTTP error, since the command may already have run (a second `fight`, `buy card` or multi-pick `choose`). It retries only a failed connection. GETs retry as before.
+
+### 2026-11-15: Live play with every potion
+
+All 48 potions now work in live play, in and out of combat. The combat env never masked potions live: `/combat` has sent `potionSlots` since 900f7cd, and only a stale comment said otherwise. `live.py` drinks between fights through `potion <slot>` and reads `run.potions` back from `/state`. Live checks cover this for Fruit Juice and Entropic Brew.
+
+Mod changes (`AutoSpireRun.cs`):
+- **A potion's prompt names the potion as its source.** `potion <slot>` records the potion it drinks (`RunBridge.PotionInUse`) until its `ExecutionFinished`. While its `HasBeenRemovedFromState` is set (`OnUseWrapper` has started), any prompt it opens reports `source` = the potion id. A queued or cancelled use never counts, and the record is cleared on `newrun` and `drop_potion`. `CardSelectorPrefs` carries no source, and `ICardSelector` gets no context.
+- **The choice dict sends `left` and `slots`, as the sim's does.** `left` is the picks left on a `hand_multi`. Gambler's Brew and Ashwater allow 999999999 picks, which counts as the hand they were asked with. `slots` lists the hand indices on offer for `hand` and `hand_multi` prompts, and Touch of Insanity offers only cards that cost energy. The env mask opens only those slots.
+
+`live_check.py` adds 14 checks. Each one stages potions with `potion <ID>`, then plays the live game and the sim from the same `load()`ed state through the same `env.step` actions. Before each action both must show the same prompt (kind, source, picks left) and the same action mask:
+- Attack Potion (a pick and a skip), Gambler's Brew and Ashwater (2 picks, then done), Touch of Insanity (Anger and a Wound in hand aren't offered), Droplet of Precognition and Liquid Memories. Hand ids and costs, all piles and energy must match.
+- Clarity's hand sizes over the next 4 turns (6, 6, 6, then 5).
+- Gigantification on Twin Strike: both hits tripled (30), then the power is gone.
+- Fairy in a Bottle after a lethal hit, after Fruit Juice: the heal truncates (25 at a fresh run's 85 max HP, not 26). The slot empties and the fight goes on.
+- Snecko Oil: 10 cards, every cost 0 to 3.
+- Entropic Brew in a fight beside a held potion: both open slots fill.
+- Fruit Juice and Entropic Brew on the map, through `LiveGame.do_map` with the run policy's drink action.
+Before the mod change, the 7 prompt checks failed (no `source`), and so did Purity (no `left`). The other 7 passed on the old mod: those mechanics needed no bridge change, and the sim already matched the game. A failed check now answers any prompt it left open, so one failure no longer wedges the checks after it.
+
+Harness fixes found by the full run:
+- **A staged fight's rewards screen stays on the overlay stack, under the map too.** The debug `event` opens beneath it, so the screen reads `rewards`, and all 10 event checks timed out. The HEAD mod fails the same way, so this was not a regression. 2a's 31/31 didn't hit it, and why isn't known. Entering a room with `room` clears the stack, so `open_event` and `open_shop` now pass through a shop first.
+- `open_shop` waits for the +999 gold to land. Before, the colorless purchase check could read the gold first and count the +999 as the purchase.
+- Gigantification, Fairy and Snecko read the run's Strength, max HP and Unplayable cards from earlier checks (Girya, events) instead of assuming a fresh run.
+- A draw prompt holding an unmodeled card (Spoils Map, from The Legends Were True) is compared with that card as the sim's Wound. Shovel's Dig compares base ids, since the dug relic can upgrade cards on pickup.
+
+**A sim rule the live game corrected:** Liquid Memories made every Defend in hand free, while live only the picked copy was. `SetToFreeThisTurn` is `SetThisTurnOrUntilPlayed(0)` on that card, so free this turn is now per copy (`CardCopy.cost_override`, as Snecko Oil's costs) everywhere the sim used it. The rule is in `game-architecture.md`, "Potions".
+
+**Live validation** (`python -m sim.validate --potions 3 --encounters act1,hive --fights 1`): each fight holds 3 potions, staged in turn so that every potion but Fairy in a Bottle comes up. The random policy drinks one 15% of the time (at a random enemy for targeted potions). `diff` now also compares potion slots. Snecko Oil, Orobic Acid, Bottled Potential and Distilled Chaos skip the pile comparison, and Entropic Brew skips the slots. After Snecko Oil, the rest of that turn loads the game's hand costs.
+- First pass: 927 steps, 4 with mismatches. All 4 were holes in `validate`, now fixed:
+  - Two came from a Touch of Insanity card in the draw or discard pile. It costs 0 for the combat, and `load()` read costs only in the hand. Now a 0-cost card outside the hand loads as free for the combat.
+  - Flex Potion's and Speed Potion's temporary Strength and Dexterity weren't loaded (`FlexPotionPower`, `SpeedPotionPower`).
+  - Havoc playing from a fresh reshuffle is random, as Cascade's is (now skipped).
+- Second pass: **1090 steps, 2 with mismatches**. All 47 drinkable potions were drunk. Neither mismatch involved a potion:
+  - Thrash's eaten card, a known random pick.
+  - Pillage against Entomancer, where live drew one more card than the sim. Its PersonalHive Dazed is the likely cause. Not investigated.
+  - The game also hung once on an end turn against Fogmog, holding Bash and Dazed. Validate restarted it, and the log doesn't say why.

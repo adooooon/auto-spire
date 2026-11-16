@@ -15,12 +15,13 @@ from types import SimpleNamespace
 import numpy as np
 
 from env import (CARD_IDS, CHOOSE_DISCARD, CHOOSE_DONE, CHOOSE_DRAW, CHOOSE_GENERATED, CHOOSE_HAND, CHOOSE_SKIP, END_TURN, MAX_ENEMIES,
-                 MAX_HAND, STS2CombatEnv, _ready)
+                 MAX_HAND, POTION_ACTION, STS2CombatEnv, _ready)
 from live import LiveGame, _cid, _event_opts
-from run_env import CARD_INDEX, OBS_DIM as RUN_OBS_DIM, PICK, REST, REST_OPTIONS, SHOP_COLORLESS_ACTION, SMITH
+from run_env import CARD_INDEX, OBS_DIM as RUN_OBS_DIM, PICK, REST, REST_OPTIONS, SHOP_COLORLESS_ACTION, SMITH, drink_action
 from sim.act import COLORLESS_PRICE, SHOP_COLORLESS, SHOP_SLOTS, Run
-from sim.cards import COLORLESS_RARES, COLORLESS_UNCOMMONS, UPGRADABLE
+from sim.cards import CARDS, COLORLESS_RARES, COLORLESS_UNCOMMONS, UPGRADABLE
 from sim.engine import SimClient
+from sim.potions import USABLE
 from sim.validate import ids, load
 
 
@@ -55,7 +56,7 @@ class Check:
     def __init__(self, game: LiveGame, only: str = ""):
         self.game, self.client = game, game.client
         self.results: list[tuple[str, bool, str]] = []
-        self.only = only  # run just the checks whose name holds this
+        self.only = only  # run just the checks whose name holds this, or any of "a|b"
 
     def do(self, cmd: str, settle: float = 0.3) -> dict:
         r = self.client.exec(cmd, settle=settle)
@@ -72,7 +73,7 @@ class Check:
         raise AssertionError(f"timed out waiting for {what}; screen {s.get('screen')}")
 
     def run(self, name: str, fn) -> None:
-        if self.only not in name:
+        if not any(o in name for o in self.only.split("|")):
             return
         try:
             fn()
@@ -82,6 +83,15 @@ class Check:
             self.results.append((name, False, repr(exc)))
             print(f"FAIL {name}: {exc!r}", flush=True)
             traceback.print_exc()
+            self.close_prompt()
+
+    def close_prompt(self) -> None:
+        """Answer a prompt a failed check left open: an unanswered one wedges every fight after it."""
+        for _ in range(12):
+            choice = self.client.state().get("choice")
+            if not choice:
+                return
+            self.client.exec({"hand_multi": "choose_done", "generated": "choose_skip"}.get(choice["kind"], "choose_option 0"), settle=0.5)
 
     # --- prompt cards, through the same env.step the combat model uses ----------------------------------
 
@@ -152,7 +162,20 @@ class Check:
 
     # --- the five modeled events: each option's numbers must match Run.start_event ------------------------
 
+    def leave_rewards(self) -> None:
+        """A staged fight's rewards screen stays on the overlay stack, under the map too, and the debug `event` opens
+        beneath it (the screen reads "rewards"). Entering a room with `room` clears it, so pass through a shop."""
+        if self.client.state()["screen"] == "rewards":
+            self.do("proceed")
+            self.wait(lambda s: s["screen"] == "map", "the map")
+            self.do("close_map")
+            self.do("room Shop", settle=0.5)
+            self.wait(lambda s: s["screen"] == "shop", "the shop")
+            self.do("proceed")
+            self.wait(lambda s: s["screen"] == "map", "the map")
+
     def open_event(self, event: str) -> dict:
+        self.leave_rewards()
         self.do("close_map")
         self.do(f"event {event}", settle=0.5)
         s = self.wait(lambda s: s["screen"] == "event" and s.get("details") and s["details"]["id"] == event
@@ -225,26 +248,46 @@ class Check:
         open prompt to the next action. Both must ask the same prompt, allow the action, and end with the same hand
         (ids and costs), piles and energy."""
         env, combat, a = self.fight_with(card, draw=draw)
+        self.same_piles(*self.mirror(combat, [a, *answers]))
+        self.finish_fight()
+
+    def mirror(self, combat: dict, actions) -> tuple:
+        """Load `combat` (the live state) into the sim and take the same env.step actions on both. An action is an int,
+        or a function of the open live prompt that names its answer. Before each action both must show the same prompt
+        (kind, source, picks left) and the same mask, which must allow it. (live env, sim env) after."""
+        env = self.game.fight
+        env._combat, env._steps = combat, 0
         sim = SimClient()
         sim._combat = load(combat, defaultdict(list))
         senv = STS2CombatEnv(client=sim)
         senv._combat = sim.combat()
-        senv.step(a)
-        env.step(a)
-        for answer in answers:
+        for act in actions:
             live, mine = env._combat.get("choice"), senv._combat.get("choice")
-            assert live and mine and (live["kind"], live["source"]) == (mine["kind"], mine["source"]), (live, mine)
-            if live["kind"] == "generated":  # new random cards: the sim offers what the game offered
-                offered = ids({"id": i, "upgraded": u, "cost": 0} for i, u in zip(live["options"], live["upgraded"]))
-                sim._combat._options = mine["options"] = offered
-            elif live["kind"] == "draw":
-                assert sorted(map(_cid, ({"id": i, "upgraded": u} for i, u in zip(live["options"], live["upgraded"])))) \
-                    == sorted(mine["options"]), (live, mine)
-            act = answer(live)
-            assert env.action_masks()[act] and senv.action_masks()[act], (act, live)
+            assert bool(live) == bool(mine), (live, mine)
+            if live:
+                key = lambda c: (c["kind"], c["source"], c.get("left") if c["kind"] == "hand_multi" else None)  # noqa: E731
+                assert key(live) == key(mine), (live, mine)
+                if live["kind"] == "generated":  # new random cards: the sim offers what the game offered
+                    offered = ids({"id": i, "upgraded": u, "cost": 0} for i, u in zip(live["options"], live["upgraded"]))
+                    sim._combat._options = mine["options"] = offered
+                elif live["kind"] == "draw":  # an unmodeled card (Spoils Map) is a Wound in the sim
+                    assert sorted(ids({"id": i, "upgraded": u, "cost": 1} for i, u in zip(live["options"], live["upgraded"]))) \
+                        == sorted(mine["options"]), (live, mine)
+            act = act if isinstance(act, int) else act(live)
+            lm, sm = env.action_masks(), senv.action_masks()
+            assert lm[act] and sm[act], (act, live)
+            # ...which the sim's draw mask offers and the live one can't.
+            if live and live["kind"] == "draw" and any(i not in CARDS for i in live["options"]):
+                sm[CHOOSE_DRAW + CARD_IDS.index("WOUND")] = lm[CHOOSE_DRAW + CARD_IDS.index("WOUND")]
+            assert (lm == sm).all(), ("masks differ", np.flatnonzero(lm != sm), live, mine)
             info = env.step(act)[-1]
             assert not info.get("aborted"), info
             senv.step(act)
+        return env, senv
+
+    @staticmethod
+    def same_piles(env, senv) -> None:
+        """No prompt left open, and the same hand (ids and costs), piles and energy."""
         assert not env._combat.get("choice") and not senv._combat.get("choice"), (env._combat.get("choice"), senv._combat.get("choice"))
         p, s = env._combat["player"], senv._combat["player"]
         # Discovery's pick is free. Unmodeled cards (Spoils Map) are Wounds in the sim: their cost isn't compared.
@@ -254,7 +297,128 @@ class Check:
         for k in ("discardPile", "exhaustPile"):
             assert ids(p[k]) == ids(s[k]), (k, ids(p[k]), ids(s[k]))
         assert p["energy"] == s["energy"], (p["energy"], s["energy"])
+
+    # --- potions in a fight: each from the same live state in the sim, through the potion action -----------------
+
+    def potion_fight(self, potions: tuple[str, ...], hand: tuple[str, ...] = (), draw: tuple[str, ...] = (),
+                     discard: tuple[str, ...] = ()) -> dict:
+        """A fresh fight holding exactly `potions` (slots 0 on), with these cards added, at 5 energy."""
+        self.clear_potions()
+        self.do("fight NIBBITS_WEAK", settle=0.5)
+        self.client.wait_for(_ready, timeout=30.0)
+        for c in discard:
+            self.do(f"card {c} Discard")
+        for c in draw:
+            self.do(f"card {c} Draw")
+        for c in hand:
+            self.do(f"card {c} Hand")
+        for pid in potions:
+            self.do(f"potion {pid}", settle=0.5)
+        self.do("energy 5")
+        return self.client.wait_for(lambda c: _ready(c) and c["potionSlots"][:len(potions)] == list(potions), timeout=15.0)
+
+    def potion_prompt(self, potion: str, answers, **cards) -> None:
+        """Drink `potion` (slot 0) live and in the sim and answer its prompt the same way; then as colorless_prompt."""
+        combat = self.potion_fight((potion,), **cards)
+        self.same_piles(*self.mirror(combat, [POTION_ACTION, *answers]))
         self.finish_fight()
+
+    def clarity(self) -> None:
+        """Clarity draws 1 now and 1 more on each of the next 3 turns (ClarityPower 3, -1 after each turn's draw)."""
+        env, senv = self.mirror(self.potion_fight(("CLARITY",)), [POTION_ACTION])
+        sizes = [len(env._combat["player"]["hand"])]
+        for _ in range(4):
+            assert len(env._combat["player"]["hand"]) == len(senv._combat["player"]["hand"]), (sizes, senv._combat["player"]["hand"])
+            env.step(END_TURN)
+            senv.step(END_TURN)
+            sizes.append(len(env._combat["player"]["hand"]))
+        assert sizes == [6, 6, 6, 6, 5] and len(senv._combat["player"]["hand"]) == 5, sizes
+        self.finish_fight()
+
+    def gigantification(self) -> None:
+        """Gigantification triples both hits of Twin Strike, then is gone."""
+        combat = self.potion_fight(("GIGANTIFICATION_POTION",), hand=("TWIN_STRIKE",))
+        hit = 3 * (5 + power(combat["player"], "StrengthPower"))  # Girya's Lift, if taken earlier, adds Strength
+        hp = combat["enemies"][0]["hp"]
+        twin = pile(combat["player"], "hand").index("TWIN_STRIKE") * MAX_ENEMIES
+        env, senv = self.mirror(combat, [POTION_ACTION, twin])
+        live, mine = env._combat["enemies"][0]["hp"], senv._combat["enemies"][0]["hp"]
+        assert hp - live == hp - mine == 2 * hit, (hp, live, mine, hit)
+        assert not power(env._combat["player"], "GigantificationPower") and not power(senv._combat["player"], "GigantificationPower")
+        self.finish_fight()
+
+    def fairy(self) -> None:
+        """After Fruit Juice a lethal hit leaves Fairy in a Bottle's heal, Heal(max(MaxHp * 0.3, 1)) truncated: 25, not 26,
+        at a fresh run's 85 max HP (the events before can raise it). Its slot empties and the fight goes on."""
+        env, senv = self.mirror(self.potion_fight(("FRUIT_JUICE", "FAIRY_IN_A_BOTTLE")), [POTION_ACTION])
+        assert not env.action_masks()[POTION_ACTION + MAX_ENEMIES], "Fairy in a Bottle is never drunk"
+        p = env._combat["player"]
+        heal = p["maxHp"] * 3 // 10
+        hit = env._combat["enemies"][0]["intent"]["intents"][0]
+        assert hit["type"] == "Attack" and not p["block"], (hit, p["block"])
+        self.do(f"damage {p['hp'] - 1} 0")  # creature 0 is the player
+        combat = self.client.wait_for(lambda c: _ready(c) and c["player"]["hp"] == 1, timeout=15.0)
+        env, senv = self.mirror(combat, [END_TURN])
+        live, mine = env._combat, senv._combat
+        assert live.get("inCombat") and mine.get("inCombat"), "the fight goes on"
+        assert live["player"]["hp"] == mine["player"]["hp"] == heal, (live["player"]["hp"], mine["player"]["hp"], p["maxHp"])
+        assert live["potionSlots"] == mine["potionSlots"] == [None, None, None], (live["potionSlots"], mine["potionSlots"])
+        self.finish_fight()
+
+    def snecko_oil(self) -> None:
+        """Snecko Oil draws 7 and gives each card in hand a random cost from 0 to 3."""
+        env, senv = self.mirror(self.potion_fight(("SNECKO_OIL",), draw=("STRIKE_IRONCLAD",) * 3), [POTION_ACTION])
+        hand = env._combat["player"]["hand"]
+        assert len(hand) == len(senv._combat["player"]["hand"]) == 10, (pile(env._combat["player"], "hand"), senv._combat["player"]["hand"])
+        costs = [c["cost"] for c in hand if c["id"] in CARDS and CARDS[c["id"]].cost >= 0]  # not Unplayable (Spoils Map)
+        assert all(0 <= x <= 3 for x in costs), (costs, pile(env._combat["player"], "hand"))
+        self.finish_fight()
+
+    def entropic_brew_fight(self) -> None:
+        """Entropic Brew in slot 0 beside a held potion: the two open slots fill, the held one stays."""
+        env, _ = self.mirror(self.potion_fight(("ENTROPIC_BREW", "BLOCK_POTION")), [POTION_ACTION])
+        slots = env._combat["potionSlots"]
+        assert slots[1] == "BLOCK_POTION" and all(x in USABLE for x in slots), slots
+        self.finish_fight()
+
+    # --- potions between fights, through LiveGame.do_map --------------------------------------------------------
+
+    def drink_on_map(self, potion: str) -> tuple[dict, dict]:
+        """Hold just `potion`, open the map, and drink it through LiveGame.do_map with the run policy's drink action
+        (its mask must allow it). (state before, state after); run.potions must follow the game's slots."""
+        self.clear_potions()
+        self.do(f"potion {potion}", settle=0.5)
+        if self.client.state()["screen"] != "map":
+            self.do("fight NIBBITS_WEAK", settle=0.5)
+            self.client.wait_for(_ready, timeout=30.0)
+            self.finish_fight()
+            self.wait(lambda s: s["screen"] == "rewards", "the rewards")
+            self.do("proceed")
+        before = self.wait(lambda s: s["screen"] == "map" and s["potionSlots"][0] == potion, "the map")
+        g = self.game
+        g.run.sync(before)
+        model, g.run_model = g.run_model, Fixed(lambda m: drink_action(0))
+        try:
+            g.do_map()
+        finally:
+            g.run_model = model
+        after = self.wait(lambda s: s["potionSlots"][0] != potion or s["potionSlots"][1], "the drink")
+        time.sleep(1.0)
+        after = self.client.state()
+        g.run.sync(after)
+        assert g.run.potions == after["potionSlots"], (g.run.potions, after["potionSlots"])
+        return before, after
+
+    def fruit_juice_map(self) -> None:
+        before, after = self.drink_on_map("FRUIT_JUICE")
+        b, a = before["player"], after["player"]
+        assert (a["maxHp"] - b["maxHp"], a["hp"] - b["hp"]) == (5, 5), (b["hp"], b["maxHp"], a["hp"], a["maxHp"])
+        assert after["potionSlots"] == [None, None, None], after["potionSlots"]
+
+    def entropic_brew_map(self) -> None:
+        _, after = self.drink_on_map("ENTROPIC_BREW")
+        assert all(x in USABLE for x in after["potionSlots"]), after["potionSlots"]
+        self.clear_potions()
 
     def entropy_after_armaments(self) -> None:
         """Entropy's turn-start prompt is a hand prompt from ENTROPY, even when the last card played was Armaments (whose
@@ -324,10 +488,13 @@ class Check:
     # --- shop and potions ---------------------------------------------------------------------------------
 
     def open_shop(self) -> dict:
+        self.leave_rewards()
+        gold = self.client.state()["player"]["gold"]
         self.do("gold 999")
         self.do("close_map")
         self.do("room Shop", settle=0.5)
-        return self.wait(lambda s: s["screen"] == "shop" and s.get("details"), "the shop")
+        # The gold must have landed: a purchase check that reads it first sees the +999 as the purchase.
+        return self.wait(lambda s: s["screen"] == "shop" and s.get("details") and s["player"]["gold"] == gold + 999, "the shop")
 
     def shop_relic(self) -> None:
         s = self.open_shop()
@@ -485,7 +652,8 @@ class Check:
         before, after, sim = self.rest_site(lambda sim: REST + REST_OPTIONS.index("DIG"), relics=("SHOVEL",))
         n = len(before["player"]["relics"])
         assert len(after["player"]["relics"]) == n + 1 == len(sim.relics), (n, after["player"]["relics"], sim.relics)
-        assert Counter(map(_cid, after["player"]["deck"])) == Counter(map(_cid, before["player"]["deck"]))
+        # Base ids: the dug relic can be one that upgrades cards on pickup (Whetstone, War Paint).
+        assert Counter(pile(after["player"], "deck")) == Counter(pile(before["player"], "deck")), after["player"]["relics"][-1:]
 
     def upgraded_reward(self) -> None:
         """With all three Eggs every offer is upgraded (TryModifyCardRewardOptionsLate). Last: they also upgrade
@@ -554,6 +722,27 @@ class Check:
         self.run("Hand of Greed: gold from a fatal hit", self.hand_of_greed)
         self.run("shop: colorless slots", self.shop_colorless)
         self.run("upgraded card reward", self.upgraded_reward)
+        self.run("Attack Potion: pick", lambda: self.potion_prompt("ATTACK_POTION", [lambda c: CHOOSE_GENERATED + 1]))
+        self.run("Attack Potion: skip", lambda: self.potion_prompt("ATTACK_POTION", [lambda c: CHOOSE_SKIP]))
+        self.run("Gambler's Brew: 2 picks, then done", lambda: self.potion_prompt(
+            "GAMBLERS_BREW", [lambda c: CHOOSE_HAND + 0, lambda c: CHOOSE_HAND + 1, lambda c: CHOOSE_DONE]))
+        self.run("Ashwater: 2 picks, then done", lambda: self.potion_prompt(
+            "ASHWATER", [lambda c: CHOOSE_HAND + 0, lambda c: CHOOSE_HAND + 1, lambda c: CHOOSE_DONE]))
+        self.run("Touch of Insanity", lambda: self.potion_prompt(  # Anger (0) and the Wound aren't offered
+            "TOUCH_OF_INSANITY", [lambda c: CHOOSE_HAND + c["slots"][-1]], hand=("ANGER", "WOUND")))
+        self.run("Droplet of Precognition", lambda: self.potion_prompt(
+            "DROPLET_OF_PRECOGNITION", [lambda c: CHOOSE_DRAW + CARD_IDS.index([i for i in c["options"] if i in CARD_IDS][-1])],
+            draw=("BASH",)))
+        self.run("Liquid Memories", lambda: self.potion_prompt(
+            "LIQUID_MEMORIES", [lambda c: CHOOSE_DISCARD + CARD_IDS.index("DEFEND_IRONCLAD")],
+            discard=("STRIKE_IRONCLAD", "DEFEND_IRONCLAD")))
+        self.run("Clarity: hand sizes", self.clarity)
+        self.run("Gigantification on Twin Strike", self.gigantification)
+        self.run("Fairy in a Bottle after a lethal hit", self.fairy)
+        self.run("Snecko Oil: costs 0 to 3", self.snecko_oil)
+        self.run("Entropic Brew in a fight: 2 open slots", self.entropic_brew_fight)
+        self.run("Fruit Juice on the map", self.fruit_juice_map)
+        self.run("Entropic Brew on the map", self.entropic_brew_map)
         failed = [r for r in self.results if not r[1]]
         print(f"{len(self.results) - len(failed)}/{len(self.results)} passed")
         for name, _, why in failed:
@@ -565,6 +754,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
     ap.add_argument("--run-model", required=True)
-    ap.add_argument("--only", default="", help="run just the checks whose name holds this")
+    ap.add_argument("--only", default="", help="run just the checks whose name holds this (or any of a|b|c)")
     args = ap.parse_args()
     raise SystemExit(min(Check(LiveGame(args.model, args.run_model), args.only).all(), 1))

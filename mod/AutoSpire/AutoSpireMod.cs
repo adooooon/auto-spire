@@ -523,7 +523,7 @@ public static class AutoSpireMod
             target = combatState.Enemies.FirstOrDefault(e => e.CombatId == targetId.Value);
         }
 
-        Godot.Callable.From(() => potion.EnqueueManualUse(target)).CallDeferred();
+        Godot.Callable.From(() => { RunBridge.Drinking(potion); potion.EnqueueManualUse(target); }).CallDeferred();
         return new { ok = true, used = potion.Id.Entry };
     }
 
@@ -729,7 +729,7 @@ public static class AutoSpireMod
                 .FirstOrDefault(e => e.CombatId == action.TargetId.Value);
         }
 
-        Godot.Callable.From(() => potion.EnqueueManualUse(target)).CallDeferred();
+        Godot.Callable.From(() => { RunBridge.Drinking(potion); potion.EnqueueManualUse(target); }).CallDeferred();
         return new { ok = true, used = potion.Id.Entry };
     }
 

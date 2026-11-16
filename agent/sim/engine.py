@@ -43,8 +43,9 @@ MAX_SHUFFLES = 1000  # per fight; real fights reshuffle a handful of times
 
 class CardCopy(str):
     """A card id with per-copy cost state: Frantic Escape adds 1 to the copy that was played (AddThisCombat), and
-    Snecko Oil sets a cost on the copies in hand (cost_override: CardEnergyCost.SetThisTurnOrUntilPlayed), and Touch of
-    Insanity makes one free (free_combat: SetToFreeThisCombat)."""
+    Snecko Oil sets a cost on the copies in hand (cost_override: CardEnergyCost.SetThisTurnOrUntilPlayed), as does
+    SetToFreeThisTurn (cost 0: Infernal Blade's card, Discovery's, Liquid Memories'), and Touch of Insanity makes one
+    free (free_combat: SetToFreeThisCombat)."""
     extra = 0
     cost_override = None
     free_combat = False
@@ -628,7 +629,7 @@ BRANCHES = {"SUMMON_BRANCH_STATE": ["LAY_EGGS_MOVE", "NUTRITIONAL_PASTE_MOVE"], 
 ENEMY_PW = ("HardToKillPower", "ThornsPower", "ImbalancedPower", "BurrowedPower", "CurlUpPower", "PlatingPower", "SlumberPower",
             "PersonalHivePower", "VitalSparkPower", "ReattachPower", "EscapeArtistPower", "FlutterPower", "SwipePower", "HatchPower",
             "CrabRagePower", "BackAttackLeftPower", "BackAttackRightPower", "SandpitPower", "ShrinkPower", "DemisePower")
-HISTORY_FIELDS = ("tender_plays", "facing", "exhausted_this_turn", "hp_lost_this_turn", "attack_plays", "block_plays", "free_cards",
+HISTORY_FIELDS = ("tender_plays", "facing", "exhausted_this_turn", "hp_lost_this_turn", "attack_plays", "block_plays",
                   "hp_loss_events", "bonus_damage", "crimson_self", "inferno_self", "skill_plays", "inst", "combat_plays")
 
 
@@ -685,7 +686,6 @@ class SimCombat:
     attack_plays: int = 0  # this turn, per play (One-Two Punch counts twice): Stomp, Juggling
     skill_plays: int = 0  # the same for Skills (Nostalgia counts both)
     block_plays: list[int] = field(default_factory=list)  # card plays that gained block this turn (Unmovable)
-    free_cards: list[str] = field(default_factory=list)  # free this turn (Infernal Blade's card)
     hp_loss_events: int = 0  # unblocked hits/losses this combat (Tear Asunder)
     lamp_hit: bool = False  # a blockable hit got through this combat (Lava Lamp's TookDamageThisCombat)
     # ponytail: per card id, not per copy (Rampage/Thrash grow per instance; two copies share here).
@@ -798,7 +798,7 @@ class SimCombat:
     def cost(self, card_id: str) -> int:
         """Energy cost with this turn's modifiers (X-cost cards show 0)."""
         c = CARDS[card_id]
-        if c.x_cost or card_id in self.free_cards or getattr(card_id, "free_combat", False):
+        if c.x_cost or getattr(card_id, "free_combat", False):
             return 0
         ov = getattr(card_id, "cost_override", None)  # a local modifier: before the global ones below
         if card_id == "FRANTIC_ESCAPE":
@@ -818,8 +818,16 @@ class SimCombat:
         if c.x_cost or c.cost < 0:
             return False
         ov = getattr(card_id, "cost_override", None)
-        own = 0 if card_id in self.free_cards or getattr(card_id, "free_combat", False) else c.cost if ov is None else ov
+        own = 0 if getattr(card_id, "free_combat", False) else c.cost if ov is None else ov
         return own > 0 or self.cost(card_id) > 0
+
+    def _free_this_turn(self, card: str) -> str:
+        """CardModel.SetToFreeThisTurn: SetThisTurnOrUntilPlayed(0) on this copy only. Returns the copy to put back."""
+        if type(card) is str:  # a plain str can't hold the cost: its own object (a DeckCard keeps its deck link)
+            card = CardCopy(card)
+        card.cost_override = 0
+        self.rt["snecko"] = 1  # CardEnergyCost.EndOfTurnCleanup clears it
+        return card
 
     @staticmethod
     def _spend_cost_override(card_id: str) -> None:
@@ -854,8 +862,6 @@ class SimCombat:
         x = self.energy if card.x_cost else 0
         spent = x if card.x_cost else self.cost(card_id)
         self.energy -= spent
-        if card_id in self.free_cards:
-            self.free_cards.remove(card_id)
         self.hand.pop(hand_index)
         self._pausable = True
         self._play(card_id, target, x, energy_value=spent)
@@ -1053,9 +1059,7 @@ class SimCombat:
                     self._autoplay(top)
         elif pid == "OROBIC_ACID":  # one random Ironclad Attack, Skill and Power (GetDistinctForCombat), free this turn
             for kind in ("Attack", "Skill", "Power"):
-                card = self.rng.choice([c for c in GENERATED if CARDS[c].type == kind])
-                self.free_cards.append(card)
-                self._add_to_hand(card)
+                self._add_to_hand(self._free_this_turn(self.rng.choice([c for c in GENERATED if CARDS[c].type == kind])))
         elif pid == "ENTROPIC_BREW":  # PotionCmd.TryToProcure until the slots are full
             while None in self.potions:
                 self._procure_potion(random_potion(self.rng, in_combat=False))
@@ -1299,8 +1303,9 @@ class SimCombat:
                 tiers = [[c for c in self.hand if CARDS[c].cost > 0 and self.cost(c) > 0],
                          [c for c in self.hand if self.cost(c) > 0],
                          [c for c in self.hand if CARDS[c].cost > 0], self.hand]
-                pick = next(t for t in tiers if t)
-                self.free_cards.append(self.rng.choice(pick))  # ponytail: free per card id, not per copy
+                pick = self.rng.choice(next(t for t in tiers if t))
+                i = next(i for i, c in enumerate(self.hand) if c is pick)
+                self.hand[i] = self._free_this_turn(pick)
         if not self.in_combat:
             return
         if "RAINBOW_RING" in R and rt.get("rainbow") != self.round and \
@@ -1467,9 +1472,7 @@ class SimCombat:
             if self.exhausted_this_turn:
                 self._gain_energy(3 + up)
         elif b == "INFERNAL_BLADE":  # a random Ironclad Attack, free this turn
-            atk = self.rng.choice([c for c in GENERATED if CARDS[c].type == "Attack"])
-            self.free_cards.append(atk)
-            self._add_to_hand(atk)
+            self._add_to_hand(self._free_this_turn(self.rng.choice([c for c in GENERATED if CARDS[c].type == "Attack"])))
         elif b == "ALCHEMIZE":  # the potion is rolled even if the slots are full (then TryToProcure fails)
             self._procure_potion(random_potion(self.rng, in_combat=True))
         elif b == "SECOND_WIND":  # Block 5, +2
@@ -1694,8 +1697,7 @@ class SimCombat:
         # SetToFreeThisTurn, then AddGeneratedCardToCombat(Hand) (Liquid Memories: CardPileCmd.Add(Hand))
         if b in ("DISCOVERY", "ATTACK_POTION", "SKILL_POTION", "POWER_POTION", "COLORLESS_POTION", "LIQUID_MEMORIES"):
             if picked:
-                self.free_cards.append(picked)
-                self._add_to_hand(picked)
+                self._add_to_hand(self._free_this_turn(picked))
             return
         if b in ("PURITY", "ASHWATER"):
             for c in picked or ():
@@ -2257,7 +2259,7 @@ class SimCombat:
         self.rt.pop("remnant", None)  # Beating Remnant, Demon Tongue: BeforeSideTurnStart
         self.rt.pop("tongue", None)
         self.exhausted_this_turn = self.hp_lost_this_turn = False
-        self.attack_plays, self.skill_plays, self.block_plays, self.free_cards = 0, 0, [], []
+        self.attack_plays, self.skill_plays, self.block_plays = 0, 0, []
         self.attacks_done = self.skills_done = self.powers_done = 0
         R, st = self.relics, self.relic_state
         # BeforeSideTurnStart. ponytail: per enemy, Bag of Marbles then Red Mask (Artifact: Marbles spends the charge).
@@ -2355,9 +2357,7 @@ class SimCombat:
             self._damage_all(3)
         if self.in_combat and "VEXING_PUZZLEBOX" in R and self.round == 1:
             # ponytail: the card comes from every Ironclad card that can be generated, not the unlocked pool.
-            card = self.rng.choice(GENERATED)
-            self.free_cards.append(card)
-            self._add_to_hand(card)
+            self._add_to_hand(self._free_this_turn(self.rng.choice(GENERATED)))
         if self.in_combat and "BLOOD_VIAL" in R and self.round <= 1:
             self.heal(2)
         if self.in_combat and "BELLOWS" in R and self.round <= 1:  # hook order after Blood Vial assumed
@@ -2677,7 +2677,7 @@ class SimCombat:
             "currentSide": "Player" if self.is_play_phase else "Enemy",
             "simRelics": sorted(self.relics),  # sim only; player.relics is filled by the live game
             "relicCounters": {**self.relic_state, "attacks": self.attacks_done, "skills": self.skills_done},
-            "potionSlots": list(self.potions),  # sim only: the live /combat has no slots, so env masks potions off
+            "potionSlots": list(self.potions),  # as the live /combat's
               "player": {
                 "hp": self.player_hp,
                 "maxHp": self.player_max_hp,

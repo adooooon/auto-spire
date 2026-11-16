@@ -28,7 +28,8 @@ from client import AutoSpireClient
 from env import PLAYER_POWERS, RELIC_POWERS, STS2CombatEnv, _power, _ready, parse_encounters
 
 from .cards import CARDS, CHOICE_CARDS, COLORLESS, COMMONS, NOT_BUYABLE, RARES, UNCOMMONS, UPGRADABLE, DeckCard, upgrade
-from .engine import (frantic_escape, BRANCHES, ENEMY_PW, HISTORY_FIELDS, INSTANCED, MONSTERS, WRIGGLER_SLOT_OPENERS, SimClient, SimCombat,
+from .potions import USABLE
+from .engine import (frantic_escape, BRANCHES, CardCopy, ENEMY_PW, HISTORY_FIELDS, INSTANCED, MONSTERS, WRIGGLER_SLOT_OPENERS, SimClient, SimCombat,
                      _Enemy, legal_moves)
 
 # Random enemy picks (compared only with one hittable enemy): the cards, and powers that hit or
@@ -40,8 +41,12 @@ RANDOM_EXHAUST = {"CINDER", "TRUE_GRIT", "HAVOC", "THRASH", "INFERNAL_BLADE", "S
                   "ANOINTED", "JACKPOT", "JACK_OF_ALL_TRADES"}
 # Cards that autoplay random cards: which ones, and at what, is random (nothing compared).
 RANDOM_PLAYS = {"BEAT_DOWN", "CATASTROPHE"}
+# Potions with random results: Snecko Oil's costs and Orobic Acid's cards (piles), Bottled Potential's shuffle, Entropic
+# Brew's potions. Distilled Chaos autoplays the top 3 at random targets, and the sim can't pause their prompts.
+RANDOM_PILE_POTIONS = {"SNECKO_OIL", "OROBIC_ACID", "BOTTLED_POTENTIAL", "DISTILLED_CHAOS"}
 # Calamity adds a random Attack, Entropy transforms at random, Stratagem's pick is random in the sim.
 RANDOM_PILE_POWERS = {"AggressionPower", "StampedePower", "CalamityPower", "EntropyPower", "StratagemPower"}
+DRINKABLE = sorted(p for p in USABLE if USABLE[p] != "auto")  # --potions: all but Fairy in a Bottle
 SPECIAL = sorted(c for c in UPGRADABLE if CARDS[c].special and c not in CHOICE_CARDS)  # --upgraded decks
 
 
@@ -52,20 +57,24 @@ def ids(cards) -> list[str]:
             if x["id"] in CARDS and x["id"] not in CHOICE_CARDS else "WOUND" for x in cards]
 
 
-def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> SimCombat:
-    """prev: the sim from the previous step, for history /combat doesn't show (HISTORY_FIELDS)."""
+def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None, live_costs: bool = False) -> SimCombat:
+    """prev: the sim from the previous step, for history /combat doesn't show (HISTORY_FIELDS). live_costs: take every
+    hand card's cost from /combat (Snecko Oil's random costs this turn)."""
     p = c["player"]
     sim = SimCombat(
         player_hp=p["hp"], player_max_hp=p["maxHp"], player_block=p["block"], energy=p["energy"],
         shrunk=_power(p, "ShrinkPower") != 0, vulnerable=_power(p, "VulnerablePower"), frail=_power(p, "FrailPower"),
         tangled=_power(p, "TangledPower"), constrict=_power(p, "ConstrictPower"),
-        strength=_power(p, "StrengthPower"), temp_strength=_power(p, "SetupStrikePower"), dexterity=_power(p, "DexterityPower"),
+        strength=_power(p, "StrengthPower"), dexterity=_power(p, "DexterityPower"),
+        # TemporaryStrengthPower / TemporaryDexterityPower subclasses: taken back at the end of the turn.
+        temp_strength=sum(_power(p, n) for n in ("SetupStrikePower", "FlexPotionPower", "ReptileTrinketPower")),
+        temp_dexterity=_power(p, "SpeedPotionPower"),
         weak=_power(p, "WeakPower"), ringing=_power(p, "RingingPower") != 0, cards_played=c.get("cardsPlayedThisTurn", 0),
         round=c["round"], in_combat=True, is_play_phase=True,
         # /combat lists the draw pile top-first; the sim draws from the end.
         hand=ids(p["hand"]), draw_pile=ids(reversed(p["drawPile"])),
         discard_pile=ids(p["discardPile"]), exhaust_pile=ids(p["exhaustPile"]),
-        rng=random.Random(0),
+        rng=random.Random(0), potions=list(c.get("potionSlots") or [None] * 3),
         # INSTANCED powers come from prev (sim.inst, in HISTORY_FIELDS): /combat lacks their counters.
         # RELIC_POWERS too: Prep Time's Vigor, Thorns.
         pw={x["name"]: x["amount"] for x in p["powers"]
@@ -104,9 +113,17 @@ def load(c: dict, logs: dict[int, list[str]], prev: SimCombat | None = None) -> 
             if x.get("replay"):
                 sim.replays[id(card)] = x["replay"]
                 sim._pinned.append(card)
-    # Free-this-turn cards (Infernal Blade's) are visible live: cost 0 where the sim would charge.
-    sim.free_cards = []
-    sim.free_cards = [c for x, c in zip(p["hand"], ids(p["hand"])) if x["cost"] == 0 and sim.cost(c) > 0]
+            # Free outside the hand lasts the combat (Touch of Insanity's SetToFreeThisCombat). ponytail: a pick free this turn that
+            # went to a full hand's discard pile, or a Stomp at 0, reads so too; wrong only if reshuffled and redrawn the same step.
+            if pile is not sim.hand and x["cost"] == 0 and isinstance(card, DeckCard) and CARDS[card].cost > 0 and not CARDS[card].x_cost:
+                card.free_combat = True
+    # A cost set this turn is visible live: a free card (Infernal Blade's, Liquid Memories') costs 0 where the sim would
+    # charge, and after Snecko Oil (live_costs) every hand card has the game's cost. Both are that copy's cost_override.
+    for i, (x, card) in enumerate(zip(p["hand"], sim.hand)):
+        if (x["cost"] == 0 or live_costs) and not CARDS[card].x_cost and CARDS[card].cost >= 0 and x["cost"] != sim.cost(card):
+            sim.hand[i] = card = card if type(card) is not str else CardCopy(card)
+            card.cost_override = x["cost"]
+            sim.rt["snecko"] = 1
     # /combat lists exactly the enemies still in combat (dead illusions included), in order,
     # so sim index + 1 lines up with list position.
     for e in c["enemies"]:
@@ -141,6 +158,8 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs, skip: set
     s, p = sim.combat_dict(), after["player"]
     if "player" in skip:
         return out
+    if "potions" not in skip and s["potionSlots"] != after["potionSlots"]:
+        out.append(f"potionSlots: sim={s['potionSlots']} live={after['potionSlots']}")
     for k in ("hp", "maxHp", "block", "energy", "maxEnergy"):
         if s["player"][k] != p[k]:
             out.append(f"player.{k}: sim={s['player'][k]} live={p[k]}")
@@ -219,9 +238,10 @@ def diff(before: dict, action: str, after: dict, sim: SimCombat, logs, skip: set
     return out
 
 
-def _answer(kind: str, hand: int, options: list[str]) -> str:
+def _answer(kind: str, hand: int, options: list[str], slots: list[int] | None = None) -> str:
     """A random answer to a prompt of this kind: the command, as env.step sends it. hand: the hand's size;
-    options: the offered ids ("X+" upgraded) for "generated", "draw" and "discard"."""
+    options: the offered ids ("X+" upgraded) for "generated", "draw" and "discard"; slots: the hand slots a "hand"
+    prompt offers (Touch of Insanity), else all."""
     if kind == "hand_multi":
         return "choose_done" if not hand or random.random() < 0.3 else f"choose {random.randrange(hand)}"
     if kind == "generated":
@@ -229,7 +249,7 @@ def _answer(kind: str, hand: int, options: list[str]) -> str:
         return "choose_skip" if i == len(options) else f"choose_generated {i}"
     if kind in ("draw", "discard"):
         return f"choose_{kind} {random.choice(options).removesuffix('+')}"
-    return f"choose {random.randrange(max(hand, 1))}"
+    return f"choose {random.choice(slots) if slots else random.randrange(max(hand, 1))}"
 
 
 def answer_prompts(sim: SimCombat, client, after: dict, played: str, powers: set[str]) -> tuple[dict, str, list[str], bool]:
@@ -258,20 +278,21 @@ def answer_prompts(sim: SimCombat, client, after: dict, played: str, powers: set
             if mine["kind"] == "upgrade":
                 cmd = f"choose {random.choice([i for i, x in enumerate(sim.hand) if x in UPGRADABLE] or [0])}"
             else:
-                cmd = _answer(mine["kind"], len(sim.hand), options)
+                cmd = _answer(mine["kind"], len(sim.hand), options, mine.get("slots"))
             sc.exec(cmd)
             client.exec(cmd)
             said += f" {cmd}"
         else:
             one_sided = True
-            if mine or not ("StratagemPower" in powers or live.get("source") != played):
+            if mine or not ("StratagemPower" in powers or live.get("source") != played or played == "DISTILLED_CHAOS"):
                 problems.append(f"prompt: sim={mine or None} live={live or None}")
             if mine:
-                cmd = _answer(mine["kind"], len(sim.hand), mine.get("options") or list(dict.fromkeys(sim.discard_pile)))
+                cmd = _answer(mine["kind"], len(sim.hand), mine.get("options") or list(dict.fromkeys(sim.discard_pile)), mine.get("slots"))
                 sc.exec(cmd)
                 said += f" sim:{cmd}"
             if live:
-                cmd = "choose_option 0" if live["kind"] == "deck" else _answer(live["kind"], len(after["player"]["hand"]), live_ids)
+                cmd = "choose_option 0" if live["kind"] == "deck" else _answer(live["kind"], len(after["player"]["hand"]), live_ids,
+                                                                                live.get("slots"))
                 client.exec(cmd)
                 said += f" live:{cmd}"
         after = wait_ready(client)
@@ -300,6 +321,8 @@ def main():
     ap.add_argument("--new-cards", action="store_true", help="decks of 4 starter cards + 10 Uncommons/Rares")
     ap.add_argument("--colorless", action="store_true",
                     help="decks of 4 starter cards + 3 others + 4-8 colorless cards, each upgraded with p=0.5")
+    ap.add_argument("--potions", type=int, default=0, help="random potions held at the start of each fight (no Fairy in a "
+                    "Bottle: it is never drunk), each drunk by the random policy")
     ap.add_argument("--upgraded", action="store_true",
                     help="decks of 4 starter cards + 6 special cards + 4 others, each upgraded with p=0.5")
     args = ap.parse_args()
@@ -326,15 +349,29 @@ def main():
     client = env.client
     steps = mismatched = 0
     played_ids: set[str] = set()
+    drunk_ids: set[str] = set()  # staged; potions_used: drunk
+    to_stage: list[str] = []
+    potions_used: set[str] = set()
     for enc in encounters:
         env.encounters = [enc]
         for fight in range(args.fights):
             env.reset()
+            if args.potions:  # live slots carry over between fights: drop them, then stage this fight's
+                for i, pid in enumerate(client.combat().get("potionSlots") or []):
+                    if pid:
+                        client.exec(f"drop_potion {i}", settle=0.3)
+                while len(to_stage) < args.potions:  # every potion in turn, in a random order: each one gets staged
+                    to_stage += random.sample(DRINKABLE, len(DRINKABLE))
+                for pid in [to_stage.pop() for _ in range(args.potions)]:
+                    client.exec(f"potion {pid}", settle=0.3)
+                    drunk_ids.add(pid)
+                client.wait_for(lambda c: _ready(c) and sum(map(bool, c.get("potionSlots") or [])) == args.potions, timeout=15.0)
             action = played = ""
             hand = []
             try:
                 c = client.combat()
                 logs = defaultdict(list)  # combatId -> performed moves (summons join mid-fight)
+                snecko = None  # the round Snecko Oil was drunk: hand costs are random for the rest of it
                 sim = prev = None
                 print(f"[{enc} #{fight}] " + ", ".join(f"{e['modelId']}({e['hp']})" for e in c["enemies"]))
                 while c.get("inCombat"):
@@ -342,24 +379,41 @@ def main():
                     playable = [i for i, x in enumerate(hand) if x["canPlay"] and x["id"] in CARDS and x["id"] not in CHOICE_CARDS]  # (no prompts)
                     idx = random.choice(playable) if playable and random.random() < 0.85 else None
                     living = [e for e in c["enemies"] if e["isAlive"]]
-                    played = hand[idx]["id"] if idx is not None else ""
-                    played_ids |= {played} | ({played + "+"} if idx is not None and hand[idx]["upgraded"] else set())
+                    slots = [i for i, pid in enumerate(c.get("potionSlots") or []) if pid in USABLE and USABLE[pid] != "auto"]
+                    pslot = random.choice(slots) if slots and random.random() < 0.15 else None  # drink one instead
+                    if pslot is not None:
+                        idx = None
+                    played = c["potionSlots"][pslot] if pslot is not None else hand[idx]["id"] if idx is not None else ""
+                    end = idx is None and pslot is None
+                    if idx is not None:
+                        played_ids |= {played} | ({played + "+"} if hand[idx]["upgraded"] else set())
                     powers = {x["name"] for x in c["player"]["powers"]}
                     skip = {"enemies"} if (played in RANDOM_TARGETS or powers & RANDOM_TARGET_POWERS) and \
                         len(living) > 1 else set()
                     skip |= {"piles"} if played in RANDOM_EXHAUST or powers & RANDOM_PILE_POWERS else set()
-                    if idx is None and "MayhemPower" in powers and len(living) > 1:  # its turn-start autoplay hits at random
+                    if pslot is not None:
+                        skip |= {"piles"} if played in RANDOM_PILE_POTIONS else set()
+                        skip |= {"potions"} if played == "ENTROPIC_BREW" else set()
+                        skip |= {"enemies"} if played == "DISTILLED_CHAOS" and len(living) > 1 else set()
+                    if end and "MayhemPower" in powers and len(living) > 1:  # its turn-start autoplay hits at random
                         skip |= {"enemies"}
-                    if idx is None and "StampedePower" in powers:  # autoplays a random Attack from hand
+                    if end and "StampedePower" in powers:  # autoplays a random Attack from hand
                         skip |= {"enemies", "piles"}
                         if len({c for x, c in zip(hand, ids(hand)) if x["type"] == "Attack"}) > 1:  # which one: random
                             skip |= {"player"}
                     # Random target exercises targeting.
-                    tgt = random.choice(living) if idx is not None and hand[idx]["targetType"] == "AnyEnemy" else None
-                    action = "end" if idx is None else f"play {idx}" + ("" if tgt is None else f" @{tgt['modelId']}")
+                    tgt = random.choice(living) if (idx is not None and hand[idx]["targetType"] == "AnyEnemy") or (
+                        pslot is not None and USABLE[played] == "enemy") else None
+                    action = "end" if end else f"play {idx}" if pslot is None else f"potion {pslot} {played}"
+                    action += "" if tgt is None else f" @{tgt['modelId']}"
                     prev = sim
-                    sim = load(c, logs, prev)
-                    if idx is None:
+                    sim = load(c, logs, prev, live_costs=snecko == c["round"])
+                    if pslot is not None:
+                        potions_used.add(played)
+                        snecko = c["round"] if played == "SNECKO_OIL" else snecko
+                        sim.use_potion(pslot, None if tgt is None else c["enemies"].index(tgt) + 1)
+                        client.exec(f"potion {pslot}" + ("" if tgt is None else f" {tgt['combatId']}"))
+                    elif idx is None:
                         sim.end_turn()
                         client.end_turn()
                         for e in c["enemies"]:  # everything in combat acts, dead illusions included
@@ -374,7 +428,7 @@ def main():
                         skip |= {"piles"}
                     if sim.shuffles and "HellraiserPower" in powers:  # drew random cards, and Strikes autoplay
                         skip |= {"enemies", "piles"}
-                    if sim.shuffles and played == "CASCADE":  # autoplayed cards from a fresh shuffle: random
+                    if sim.shuffles and played in ("CASCADE", "HAVOC", "DISTILLED_CHAOS"):  # autoplayed cards from a fresh shuffle: random
                         skip |= {"enemies", "piles", "player"}
                     if sim.shuffles and "MayhemPower" in powers:  # autoplays the top card after the turn's draw: random
                         skip |= {"enemies", "piles", "player"}
@@ -404,6 +458,9 @@ def main():
           f"{sorted(set(UNCOMMONS + RARES) - played_ids)}")
     if args.upgraded:
         print(f"upgraded special cards never played: {sorted({c + '+' for c in SPECIAL} - played_ids)}")
+    if args.potions:
+        print(f"potions drunk: {len(potions_used)}; staged but never drunk: {sorted(drunk_ids - potions_used)}; "
+              f"never staged: {sorted(set(DRINKABLE) - drunk_ids)}")
     if args.colorless:
         print(f"colorless cards never played: {sorted(set(COLORLESS) - NOT_BUYABLE - played_ids)}")
 

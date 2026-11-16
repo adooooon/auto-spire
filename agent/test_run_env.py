@@ -669,7 +669,7 @@ assert np.flatnonzero(obs[Q0 + NP + 1:]).tolist() == sorted(CARD_IDS.index(x) fo
 env.step(CHOOSE_DRAW + CARD_IDS.index("ANGER")); assert c.hand == ["ANGER"] and c.draw_pile == ["BASH", "BASH"]
 env, c, obs = potion_env("LIQUID_MEMORIES", [], discard=["BASH", "WOUND"])
 assert env.action_masks().nonzero()[0].tolist() == sorted(CHOOSE_DISCARD + CARD_IDS.index(x) for x in ("BASH", "WOUND"))
-env.step(CHOOSE_DISCARD + CARD_IDS.index("BASH")); assert c.hand == ["BASH"] and c.cost("BASH") == 0
+env.step(CHOOSE_DISCARD + CARD_IDS.index("BASH")); assert c.hand == ["BASH"] and c.cost(c.hand[0]) == 0
 
 # Review focus 5: live has no simRelics, so the three cards stay masked and a live pick can't take them.
 live = {k: v for k, v in env.client.combat().items() if k != "simRelics"}

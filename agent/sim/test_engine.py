@@ -1108,12 +1108,12 @@ assert len(c.hand) == 1
 c.play_card(0)
 assert len(c.hand) == 1
 # MUMMIFIED_HAND: a Power makes a costed hand card free; falls back to a free one.
-c = hand(rc("MUMMIFIED_HAND"), "INFLAME", B)
+c = hand(rc("MUMMIFIED_HAND"), "INFLAME", B, B)
 c.play_card(0)
-assert c.cost(B) == 0
+assert sorted(c.cost(x) for x in c.hand) == [0, 2]  # one copy (SetToFreeThisTurn), not every Bash
 c = hand(rc("MUMMIFIED_HAND"), "INFLAME", D)
 c.play_card(0)
-assert c.cost(D) == 0
+assert c.cost(c.hand[0]) == 0
 # VAMBRACE: the first card to gain block doubles all of it, after Frail; the second doesn't.
 c = hand(rc("VAMBRACE"), S, D, D)
 c.play_card(0, 1)
@@ -2610,10 +2610,10 @@ for pid, kind in (("ATTACK_POTION", "Attack"), ("SKILL_POTION", "Skill"), ("POWE
     assert ch["kind"] == "generated" and ch["source"] == pid and len(set(ch["options"])) == 3 and set(ch["options"]) <= set(pool), ch
     assert c.play_card(0)["error"] == "choice_pending" and c.end_turn()["error"] == "choice_pending"
     pick = ch["options"][1]
-    assert c.choose_generated(1)["ok"] and c.pending_choice is None and c.hand == [D, pick] and pick in c.free_cards
+    assert c.choose_generated(1)["ok"] and c.pending_choice is None and c.hand == [D, pick] and c.cost(c.hand[1]) == 0
     assert c.choice_log[-1] == (pid, pick, tuple(ch["options"]))
     c = tpot(pid, [D]); c.use_potion(0)
-    assert c.choose_skip()["ok"] and c.hand == [D] and c.pending_choice is None and not c.free_cards
+    assert c.choose_skip()["ok"] and c.hand == [D] and c.pending_choice is None
 assert len({tuple(tpot("ATTACK_POTION", seed=s).use_potion(0)["choice"]["options"]) for s in range(10)}) > 1
 # Review focus 1: with 10 cards in hand the pick goes to the discard pile (AddGeneratedCardToCombat).
 c = tpot("ATTACK_POTION", [D] * 10); c.use_potion(0); pick = c.pending_choice["options"][0]
@@ -2647,10 +2647,10 @@ c.use_potion(0); ch = c.pending_choice
 assert ch["kind"] == "hand" and ch["source"] == "TOUCH_OF_INSANITY" and ch["slots"] == [3, 4], ch
 assert c.choose_card(2)["error"] == "invalid_choice" and c.pending_choice
 assert c.choose_card(4)["ok"] and c.pending_choice is None and c.hand == ["WOUND", "WHIRLWIND", "ANGER", S, B]
-assert c.cost(c.hand[4]) == 0 and c.cost(c.hand[3]) == 1 and not c.exhaust_pile and not c.free_cards
+assert c.cost(c.hand[4]) == 0 and c.cost(c.hand[3]) == 1 and not c.exhaust_pile and c.hand[4].cost_override is None
 card = c.hand[4]; c.player_block = 999; c.end_turn(); c.player_block = 999; c.end_turn()
 assert c.cost(card) == 0 and c.round == 3  # this combat, not this turn
-c = tpot("TOUCH_OF_INSANITY", [S, "ANGER"]); c.free_cards = [S]  # free this turn already: not offered
+c = tpot("TOUCH_OF_INSANITY", [S, "ANGER"]); c.hand[0] = c._free_this_turn(S)  # free this turn already: not offered
 assert "choice" not in c.use_potion(0) and c.pending_choice is None and not getattr(c.hand[0], "free_combat", False)
 c = tpot("TOUCH_OF_INSANITY", ["ANGER", B, "WOUND"])  # one card costs energy: it's taken, no prompt
 assert "choice" not in c.use_potion(0) and c.hand[1] == B and c.cost(c.hand[1]) == 0 and c.pending_choice is None
@@ -2667,7 +2667,17 @@ assert "choice" not in c.use_potion(0) and c.hand == [D, B] and not c.draw_pile
 c = tpot("LIQUID_MEMORIES", [D]); c.discard_pile = [S, B]
 c.use_potion(0); ch = c.pending_choice
 assert ch["kind"] == "discard" and ch["source"] == "LIQUID_MEMORIES"
-assert c.choose_discard(B)["ok"] and c.hand == [D, B] and c.discard_pile == [S] and c.cost(B) == 0 and c.pending_choice is None
+assert c.choose_discard(B)["ok"] and c.hand == [D, B] and c.discard_pile == [S] and c.cost(c.hand[1]) == 0 and c.pending_choice is None
+# Free this turn is that copy's (SetToFreeThisTurn = SetThisTurnOrUntilPlayed(0)): the other Defends still cost 1, as
+# live (live_check "Liquid Memories" caught the sim making every copy free), and it ends with the turn or the play.
+c = tpot("LIQUID_MEMORIES", [D, D]); c.discard_pile = [S, D]; c.use_potion(0); c.choose_discard(D)
+assert [c.cost(x) for x in c.hand] == [1, 1, 0], [c.cost(x) for x in c.hand]
+free = c.hand[2]; c.energy = 0; assert c.play_card(2)["ok"] and c.cost(free) == 1 and c.energy == 0
+c = tpot("LIQUID_MEMORIES", [D]); c.discard_pile = [D, S]; c.use_potion(0); c.choose_discard(D)
+free = c.hand[1]; c.player_block = 999; c.end_turn(); assert c.cost(free) == 1  # EndOfTurnCleanup
+c = tpot("ATTACK_POTION", ["TWIN_STRIKE"]); c.use_potion(0)
+c._options = c.pending_choice["options"] = ["TWIN_STRIKE", "ANGER", "CLASH"]; c.choose_generated(0)
+assert [c.cost(x) for x in c.hand] == [1, 0]  # a generated copy beside one of the same id
 # Review focus 1: nothing to pick does nothing and doesn't pause.
 for pid, hand, draw, discard in (("GAMBLERS_BREW", [], [S], [D]), ("ASHWATER", [], [S], [D]),
                                  ("TOUCH_OF_INSANITY", ["WOUND", "ANGER", "WHIRLWIND"], [S], [D]),

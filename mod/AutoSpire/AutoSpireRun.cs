@@ -53,6 +53,7 @@ internal sealed class AgentSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelect
     {
         Current = null;
         Next = null;
+        RunBridge.PotionInUse = null;  // a use the old run never finished
         if (CardSelectCmd.Selector == null) CardSelectCmd.PushSelector(new AgentSelector());
     }
 
@@ -211,17 +212,35 @@ internal static class RunBridge
             : In(pcs?.DiscardPile) ? "discard" : In(pcs?.DrawPile) ? "draw" : pcs != null && generated ? "generated" : "deck";
         // The last card play started is this fight's, so it's the prompt's source only while it's still running.
         bool playing = history.CardPlaysStarted.Count() > history.CardPlaysFinished.Count();
+        // A potion drunk through `potion <slot>` that hasn't finished is the source (no card plays while one runs).
+        if (PotionInUse is { HasBeenRemovedFromState: true } potion) source = potion.Id.Entry;
         // No card play in progress: a turn-start prompt, and Entropy is the only modeled one.
-        if (kind == "hand" && !playing && player.Creature.Powers.Any(p => p is EntropyPower)) source = "ENTROPY";
+        else if (kind == "hand" && !playing && player.Creature.Powers.Any(p => p is EntropyPower)) source = "ENTROPY";
         // ponytail: Armaments is the only modeled card asking FromHandForUpgrade; a Harmony tag on it if more do.
         else if (kind == "hand" && playing && source == "ARMAMENTS") kind = "upgrade";
+        var hand = kind.StartsWith("hand") ? CombatHand(player) : null;
         return new
         {
             kind,
             source,
             options = pending.Options.Select(c => c.Id.Entry).ToList(),
             upgraded = pending.Options.Select(c => c.IsUpgraded).ToList(),  // per option: ids stay base ids for choose_discard
+            // hand_multi: picks left, as the sim's. Gambler's Brew and Ashwater allow 999999999, which the sim reads as the
+            // hand they were asked with (a hand never holds more than 10).
+            left = pending.Multi ? (pending.Max > 10 ? pending.Options.Count : pending.Max) - pending.Picked.Count : (int?)null,
+            // The hand slots on offer (Touch of Insanity offers only cards that cost energy), indices into /combat's hand.
+            slots = hand?.Select((c, i) => (c, i)).Where(x => pending.Options.Contains(x.c)).Select(x => x.i).ToList(),
         };
+    }
+
+    // The potion `potion <slot>` drank, until its OnUse finishes (ExecutionFinished); HasBeenRemovedFromState is set
+    // once its use starts, so a queued or cancelled one is never a source.
+    internal static PotionModel? PotionInUse;
+
+    internal static void Drinking(PotionModel potion)
+    {
+        PotionInUse = potion;
+        potion.ExecutionFinished += _ => { if (PotionInUse == potion) PotionInUse = null; };
     }
 
     /// The reward buttons still on screen; `reward <index>` clicks one.
@@ -300,6 +319,7 @@ internal static class RunBridge
             case "drop_potion":
             {
                 var potion = me.PotionSlots[Arg(1)] ?? throw new InvalidOperationException("empty_slot");
+                if (PotionInUse == potion) PotionInUse = null;  // a use that was cancelled: Discard also sets HasBeenRemovedFromState
                 TaskHelper.RunSafely(PotionCmd.Discard(potion));
                 break;
             }
@@ -309,7 +329,7 @@ internal static class RunBridge
                 var hand = CombatHand(me);
                 var left = pending.Options.Except(pending.Picked).ToList();
                 int i = Arg(1);
-                // ponytail: a hand slot the prompt doesn't allow takes its first option; the env's mask opens the whole hand.
+                // A hand slot the prompt doesn't offer takes its first option; the env's mask opens only `slots`.
                 var card = i < hand.Count && left.Contains(hand[i]) ? hand[i] : left[0];
                 if (!pending.Multi)
                 {
