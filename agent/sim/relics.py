@@ -33,7 +33,7 @@ NOT_MODELED = frozenset({
     "MYSTIC_LIGHTER",
 })
 UPGRADE_RELICS = frozenset({"WAR_PAINT", "WHETSTONE", "MINIATURE_CANNON", "STONE_CRACKER", "BELLOWS", "FROZEN_EGG", "MOLTEN_EGG", "TOXIC_EGG", "GIRYA", "SHOVEL", "LAVA_LAMP"})
-# ^ the relics Task 4 modeled; env.combat_maps and run_env.run_maps skip them for models trained before
+# ^ the relics the card-upgrades plan modeled (upgrades, Lift, Dig)
 RELICS = frozenset(r for ids in RELIC_POOL.values() for r in ids) - NOT_MODELED
 RELIC_IDS = sorted(RELICS)
 NOT_IN_SHOPS = frozenset({"AMETHYST_AUBERGINE", "BOWLER_HAT", "LUCKY_FYSH", "OLD_COIN", "THE_COURIER"})  # IsAllowedInShops => false

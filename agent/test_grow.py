@@ -42,14 +42,16 @@ with torch.no_grad():
     big.policy.mlp_extractor.policy_net[0].weight[0, 3] += 1.0  # a position that should hold old input 2
 assert not check(small, big, obs_map, act_map)
 
-# The real run policy, grown into the colorless layout, acts as before on 200 observations its own play recorded
-# at part 1 (326edb2) (test_data/record_grow_fixture.py), whatever the order of the new card ids.
+# The real part 3 pair (698b7ae), grown into the potion layout, acts as before on states its own layout recorded
+# (test_data/record_grow_fixture.py): the run policy on 200 decisions of its play, the combat model on random fights.
 import gzip
 import pickle
+from env import N_ACTIONS as COMBAT_ACTIONS, STS2CombatEnv, _encode, combat_maps
 from run_env import N_ACTIONS, RunPolicyEnv, run_maps
+from sim.engine import SimClient
 
 fx = pickle.load(gzip.open("test_data/grow_fixture.pkl.gz"))
-run_old = MaskablePPO.load("models/ppo_sts2_sim_boss_run_g1.zip", device="cpu")
+run_old = MaskablePPO.load("models/ppo_sts2_sim_boss_run_v1_final.zip", device="cpu")
 obs_map, act_map = run_maps()
 run_new = grow(run_old, RunPolicyEnv(), obs_map, act_map)
 assert check(run_old, run_new, obs_map, act_map)
@@ -59,5 +61,16 @@ mask = np.zeros((200, N_ACTIONS), bool)
 mask[:, act_map] = fx["run_mask"]
 before = run_old.predict(fx["run_obs"], action_masks=fx["run_mask"], deterministic=True)[0]
 after = run_new.predict(obs, action_masks=mask, deterministic=True)[0]
+assert (np.array(act_map)[before] == after).all() and len(set(before.tolist())) > 5
+
+c_old = MaskablePPO.load("models/ppo_sts2_sim_boss_b_final.zip", device="cpu")
+obs_map, act_map = combat_maps()
+c_new = grow(c_old, STS2CombatEnv(client=SimClient()), obs_map, act_map)
+assert check(c_old, c_new, obs_map, act_map)
+old_obs = np.array([o for _, o in fx["combat"]])
+mask = np.zeros((len(old_obs), COMBAT_ACTIONS), bool)
+mask[:, act_map] = True  # every old action open: the new ones sit at logit 0, which could beat the old ones
+before = c_old.predict(old_obs, deterministic=True)[0]
+after = c_new.predict(np.array([_encode(c) for c, _ in fx["combat"]]), action_masks=mask, deterministic=True)[0]
 assert (np.array(act_map)[before] == after).all() and len(set(before.tolist())) > 5
 print("grow checks ok")

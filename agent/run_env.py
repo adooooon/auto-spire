@@ -13,7 +13,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from env import CARD_IDS, NEW_CARDS, PART1_POTIONS, STS2CombatEnv
+from env import CARD_IDS, NEW_CARDS, OLD_POTION_IDS, STS2CombatEnv
 from grow import insert_map
 from picker import play_fight
 from sim.act import ALL_BOSSES, SHOP_POTIONS, SHOP_RELICS, SHOP_COLORLESS, SHOP_SLOTS, Run
@@ -399,16 +399,16 @@ class RunPolicyEnv(gym.Env):
 
 
 def run_maps() -> tuple[list[int], list[int]]:
-    """(obs_map, act_map) for grow.py: where a part 1 run policy (boss_run_g1; 326edb2) keeps its inputs and actions.
-    The shop's colorless slots and their actions are new, appended after everything old; nothing maps to them.
+    """(obs_map, act_map) for grow.py: where a part 3 run policy (boss_run_v1_final; 698b7ae) keeps its inputs and actions.
     ponytail: only that layout (see env.combat_maps)."""
     old_ids = [c for c in CARD_IDS if c not in NEW_CARDS]
-    pots = (sorted(PART1_POTIONS), POTION_IDS)  # the 12 potions a part 1 policy knew, among all 48
+    pots = (list(OLD_POTION_IDS), POTION_IDS)
     # up to the relics held: map, potion flag, own slots, the offered potion, the shop's potions, Potion Belt slots
     lead = [2 + LOOKAHEAD * COLS * CELL_FEATURES, 1] + [pots] * (POTION_SLOTS + 1) + [pots, 2] * SHOP_POTIONS \
         + [pots] * (MAX_POTION_SLOTS - POTION_SLOTS)
     tail = 1 + len(MODELED_EVENTS) + EVENT_OPTIONS * 3  # after the shop's relics
     obs = [len(HEAD_DECISIONS) + 5, "cards", len(ALL_BOSSES)] + ["cards", 2] * len(SHOP_SLOTS)
     obs += lead + [len(RELIC_IDS)] + [len(RELIC_IDS), 2] * SHOP_RELICS + [tail, "cards", 1 + 5, "cards", len(SHOP_SLOTS)]  # 1: the act; 5: rest flags
-    act = [REMOVE, "cards", REST - REMOVE - len(CARD_IDS) + len(REST_OPTIONS), "cards"]
+    obs += ["cards", 3] * len(SHOP_COLORLESS)  # the shop's colorless slots: price, affordable, upgraded
+    act = [REMOVE, "cards", REST - REMOVE - len(CARD_IDS) + len(REST_OPTIONS), "cards", len(SHOP_COLORLESS)]
     return insert_map(obs, old_ids, CARD_IDS), insert_map(act, old_ids, CARD_IDS)

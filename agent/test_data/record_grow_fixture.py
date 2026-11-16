@@ -1,4 +1,4 @@
-"""Run from the part 1 checkout (326edb2) agent/: records part 1 layout states for test_data/grow_fixture.pkl.gz."""
+"""Run with the part 3 checkout (698b7ae) agent/ as cwd and on PYTHONPATH: records part 3 layout states for test_data/grow_fixture.pkl.gz."""
 import copy, gzip, pickle, sys
 import numpy as np
 from sb3_contrib import MaskablePPO
@@ -24,9 +24,9 @@ while len(combat) < 40 or sum(bool(c.get('choice')) for c, _ in combat) < 5:
         done = done or trunc
 print("combat", len(combat), "prompts", sum(bool(c.get("choice")) for c, _ in combat), file=sys.stderr)
 
-# Run: the part 1 run policy (stochastic) with the part 1 combat model; every decision's obs and mask, plus a few full states.
-model = MaskablePPO.load("models/ppo_sts2_sim_boss_run_g1.zip", device="cpu")
-renv = RunPolicyEnv(combat_model="models/ppo_sts2_sim_boss_g1.zip")
+# Run: the part 3 run policy (stochastic) with the part 3 combat model; every decision's obs and mask, plus a few full states.
+model = MaskablePPO.load("models/ppo_sts2_sim_boss_run_v1_final.zip", device="cpu")
+renv = RunPolicyEnv(combat_model="models/ppo_sts2_sim_boss_b_final.zip")
 obs_l, mask_l, states, seen = [], [], [], {}
 seed = 0
 while len(obs_l) < 200 or len(seen) < 6:

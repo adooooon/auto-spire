@@ -32,7 +32,7 @@ from gymnasium import spaces
 
 from client import AutoSpireClient
 from grow import insert_map
-from sim.cards import CARDS, CHOICE_CARDS, COLORLESS, COLORLESS_RARES, COLORLESS_UNCOMMONS, COMMONS, NOT_BUYABLE, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck, upgrade
+from sim.cards import CARDS, CHOICE_CARDS, COLORLESS_RARES, COLORLESS_UNCOMMONS, COMMONS, NOT_BUYABLE, RARES, UNCOMMONS, UPGRADABLE, base_id, is_upgraded, starter_deck, upgrade
 from sim.engine import ENEMY_PW, HIVE_ENCOUNTERS, MONSTERS, SimLoopError
 from sim.potions import MAX_POTION_SLOTS, POTION_IDS, POTION_SLOTS, USABLE
 from sim.relics import RELIC_IDS
@@ -133,32 +133,29 @@ def _asks(card: dict) -> bool:
     return b in CHOICE_CARDS + COLORLESS_PROMPT_CARDS or (b == "ARMAMENTS" and not up) or (b == "TRUE_GRIT" and up)
 
 
-NEW_CARDS = set(COLORLESS) | {"BECKON", "BURN", "DEBRIS", "WITHER", "VOID"}  # card ids a part 1 model (boss_g1) lacks (the 5 statuses: plan 2b task 4)
+NEW_CARDS = {"BECKON", "BURN", "DEBRIS", "WITHER", "VOID"}  # card ids a part 3 model (boss_b_final; 698b7ae) lacks: Entropy's statuses
 
 
-# PLAYER_POWERS entries a model trained before colorless cards lacks
-NEW_POWERS = {"RetainHandPower", "AutomationPower", "CalamityPower", "EntropyPower", "FastenPower", "MayhemPower", "NostalgiaPower",
-              "PanachePower", "PrepTimePower", "RollingBoulderPower", "StratagemPower", "TheBombPower", "TheGambitPower", "NoBlockPower",
-              "BlockNextTurnPower", "ClarityPower", "DuplicationPower", "RadiancePower", "RegenPower", "GigantificationPower",
-              "BufferPower", "RitualPower"}  # the last 7: potion powers (plan 2b)
+# PLAYER_POWERS entries a part 3 model lacks: the potion powers (plan 2b)
+NEW_POWERS = {"ClarityPower", "DuplicationPower", "RadiancePower", "RegenPower", "GigantificationPower", "BufferPower", "RitualPower"}
 
 
-PART1_POTIONS = ("BLOCK_POTION", "DEXTERITY_POTION", "SPEED_POTION", "ENERGY_POTION", "STRENGTH_POTION", "FLEX_POTION",
-                 "SWIFT_POTION", "BLOOD_POTION", "FIRE_POTION", "VULNERABLE_POTION", "WEAK_POTION", "EXPLOSIVE_AMPOULE")
+OLD_POTION_IDS = ("BLOCK_POTION", "BLOOD_POTION", "DEXTERITY_POTION", "ENERGY_POTION", "EXPLOSIVE_AMPOULE", "FIRE_POTION",
+                  "FLEX_POTION", "SPEED_POTION", "STRENGTH_POTION", "SWIFT_POTION", "VULNERABLE_POTION", "WEAK_POTION")  # a part 3 model's POTION_IDS
 
 
 def combat_maps() -> tuple[list[int], list[int]]:
-    """(obs_map, act_map) for grow.py: where a part 1 model (boss_g1; 326edb2) keeps its inputs and actions. The prompt block is new.
-    ponytail: only that layout; an older model first grows into it with grow.py at its own commit."""
+    """(obs_map, act_map) for grow.py: where a part 3 model (boss_b_final; 698b7ae) keeps its inputs and actions. The potion
+    prompt block is new. ponytail: only that layout; an older model first grows into it with grow.py at its own commit."""
     old_cards = [c for c in CARD_IDS if c not in NEW_CARDS]
     old_powers = [p for p in PLAYER_POWERS if p not in NEW_POWERS]
-    pots = (sorted(PART1_POTIONS), POTION_IDS)  # the 12 potions a part 1 model knew, among all 48
+    pots = (list(OLD_POTION_IDS), POTION_IDS)
     obs = insert_map([6, "cards"] * MAX_HAND + [14, (old_powers, PLAYER_POWERS)] + ["cards"] * 3
-                     + [ENEMY_FEATURES - 2, ("skip", 2)] * MAX_ENEMIES  # each enemy's last 2 (Shrink, Demise) are new
-                     + [pots] * POTION_SLOTS + [2]
-                     + [pots] * (MAX_POTION_SLOTS - POTION_SLOTS)
-                     + [len(RELIC_IDS), len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES + UPGRADE_FEATURES], old_cards, CARD_IDS)
-    act = list(range(CHOOSE_DISCARD)) + [CHOOSE_DISCARD + CARD_IDS.index(c) for c in old_cards]
+                     + [ENEMY_FEATURES - 2, ("skip", 2)] * MAX_ENEMIES  # each enemy's last 2 ENEMY_PW (Shrink, Demise) are new
+                     + [pots] * POTION_SLOTS + [2] + [pots] * (MAX_POTION_SLOTS - POTION_SLOTS)
+                     + [len(RELIC_IDS) + len(RELIC_COUNTERS) + 2 + len(RELIC_POWERS) + CHOICE_FEATURES + UPGRADE_FEATURES + len(PROMPT_KINDS)]
+                     + ["cards"] * GENERATED_OPTIONS + [len(COLORLESS_PROMPT_CARDS)], old_cards, CARD_IDS)
+    act = insert_map([CHOOSE_DISCARD, "cards", GENERATED_OPTIONS + 1, "cards", 1], old_cards, CARD_IDS)  # discard, generated + skip, draw, done
     return obs, act
 
 

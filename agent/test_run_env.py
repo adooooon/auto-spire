@@ -508,16 +508,17 @@ import pickle
 from env import CHOOSE_DISCARD, CHOOSE_HAND, CHOICE_FEATURES, CARD_IDS, NEW_CARDS, UPGRADE_FEATURES, combat_maps, random_deck
 from sim.cards import CHOICE_CARDS
 from sim.cards import card_to_dict
-fx = pickle.load(gzip.open("test_data/grow_fixture.pkl.gz"))  # recorded at part 1, 326edb2 (test_data/record_grow_fixture.py)
+fx = pickle.load(gzip.open("test_data/grow_fixture.pkl.gz"))  # recorded at part 3, 698b7ae (test_data/record_grow_fixture.py)
 
-# Every old input has the same value at its new index, and new inputs read 0 with no new cards.
+# Every old input has the same value at its new index, and new inputs read 0 with no new cards, but for the potion
+# prompt block, whose picks-left and draw options a part 3 hand_multi or draw prompt fills (the grown model ignores them).
 obs_map, act_map = combat_maps()
 assert len(fx["combat"]) >= 40 and sum(bool(c.get("choice")) for c, _ in fx["combat"]) >= 5
 for c, old in fx["combat"]:
     new_obs = _encode(c)
     assert np.array_equal(new_obs[obs_map], old)
-    assert not np.delete(new_obs, obs_map).any()
-assert len(act_map) == 191 and COMBAT_OBS == len(new_obs)  # the part 1 action count
+    assert not np.delete(new_obs, obs_map)[:-POTION_PROMPT_FEATURES].any()
+assert len(act_map) == 392 and COMBAT_OBS == len(new_obs)  # the part 3 action count
 assert act_map[:CHOOSE_DISCARD] == list(range(CHOOSE_DISCARD)) and not {CHOOSE_DISCARD + CARD_IDS.index(c) for c in NEW_CARDS} & set(act_map)
 
 
@@ -698,17 +699,17 @@ from run_env import SLOT_FEATURES
 from sim.act import ALL_BOSSES
 S0 = len(HEAD_DECISIONS) + 5 + len(CARD_IDS) + len(ALL_BOSSES)  # the offer / shop slots
 not_old = np.isin(np.arange(OBS_DIM), obs_map, invert=True)
-from env import PART1_POTIONS
-for s in fx["run_states"]:  # part 1 states, read by the new env: old inputs and mask carry over, new inputs read 0
-    if getattr(s["run"], "shop", None):  # a shop potion a part 1 model didn't know read as zeros; it's modeled now (plan 2b)
-        s["run"].shop.potions = [p if p in PART1_POTIONS else "UNMODELED" for p in s["run"].shop.potions]
+from env import OLD_POTION_IDS
+for s in fx["run_states"]:  # part 3 states, read by the new env: old inputs and mask carry over, new inputs read 0
+    if getattr(s["run"], "shop", None):  # a shop potion a part 3 model didn't know read as zeros; it's modeled now (plan 2b)
+        s["run"].shop.potions = [p if p in OLD_POTION_IDS else "UNMODELED" for p in s["run"].shop.potions]
     renv.run, renv.decision, renv.offered, renv.back = s["run"], s["decision"], s["offered"], s["back"]
     new_obs, new_mask = renv._obs(), renv.action_masks()
     assert np.array_equal(new_obs[obs_map], s["obs"]), s["decision"]
     assert not new_obs[not_old].any(), s["decision"]
     assert np.array_equal(new_mask[act_map], s["mask"]) and not np.delete(new_mask, act_map).any(), s["decision"]
-assert fx["run_obs"].shape == (200, len(obs_map)) and fx["run_mask"].shape == (200, len(act_map)) == (200, 221)
-old_ids = sorted(set(CARD_IDS) - NEW_CARDS)  # a part 1 model lacks the colorless cards
+assert fx["run_obs"].shape == (200, len(obs_map)) and fx["run_mask"].shape == (200, len(act_map)) == (200, 329)
+old_ids = sorted(set(CARD_IDS) - NEW_CARDS)  # a part 3 model lacks Entropy's statuses
 assert act_map[REMOVE + old_ids.index("TRUE_GRIT")] == REMOVE + CARD_IDS.index("TRUE_GRIT")
 
 # All three cards can be picked.
