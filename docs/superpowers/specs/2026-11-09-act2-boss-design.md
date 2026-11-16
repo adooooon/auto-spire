@@ -245,7 +245,7 @@ Same eval as before (`run.py --model models/ppo_sts2_sim_boss_g3.zip --maps gene
 - The grown models have never trained on the 36 new potions, but they hold and drink them. Potions used rose from 4.21 to 7.04 per run, and every one of the 48 potions was used at least 9 times. Before this plan, the 36 unmodeled potions were dead slots and could not be bought. The Act 1 rise most likely comes from these extra potions. Act 1 boss deaths fell from 47 to 28.
 - Of the runs that reached the Act 2 boss, 39 of 257 won (15%). Part 3 won 44 of 209 (21%). The difference is about 1.7 standard errors, so it is within noise. More runs reach the Act 2 boss (257 vs 209), so more die there (218 vs 165).
 
-Boss analysis (`boss_report.py` on the grown pair, 1,500 runs, 742 boss fights in `.superpowers/sdd/2026-11-15-act2-boss-2b-potions/boss_analysis_g3.jsonl`, git-ignored, exit 0, 2 min):
+Boss analysis (`boss_report.py` on the grown pair, 1,500 runs, 742 boss fights in `~/projects/sts2-rl-bot/auto-spire/.superpowers/queue/boss_analysis_g3.jsonl` (regenerated 2026-11-16 at c1aac2b, same counts), exit 0, 2 min):
 
 | Boss | Reference won | g1 won | g2 won | Part 3 won | Part 2b (g3) won |
 |---|---|---|---|---|---|
