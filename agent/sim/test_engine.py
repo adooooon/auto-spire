@@ -464,6 +464,11 @@ c.strength, c.weak = 3, 1
 assert c.use_potion(0, 1)["ok"] and hp - m.hp == 15 and m.block == 0
 c = potion("FIRE_POTION")
 assert "error" in c.use_potion(0) and c.potions[0] == "FIRE_POTION"  # an enemy potion needs a target
+c = potion("FIRE_POTION")
+c.pw["SurroundedPower"], c.facing = 1, "Right"
+c.enemies[0].pw["BackAttackLeftPower"] = 1
+c.use_potion(0, 1)
+assert c.facing == "Left"  # SurroundedPower.BeforePotionUsed
 c = potion("EXPLOSIVE_AMPOULE", encounter="SLIMES_NORMAL")
 before = [(e.hp, e.block) for e in c.enemies]
 c.use_potion(0)

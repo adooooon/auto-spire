@@ -7,11 +7,11 @@ Action space: Discrete(N_ACTIONS)
   END_TURN     -> end turn
   a > END_TURN -> use potion slot (a - POTION_ACTION) // MAX_ENEMIES at enemy slot % MAX_ENEMIES
                   (live too: /combat sends potionSlots; a prompt potion's prompt names it as source)
-  CHOOSE_HAND + i      -> answer a hand card prompt with hand card i (sim only)
-  CHOOSE_DISCARD + k   -> answer a discard prompt with CARD_IDS[k] (sim only)
-  CHOOSE_GENERATED + i -> take generated option i (Discovery); CHOOSE_SKIP -> take none (sim only)
-  CHOOSE_DRAW + k      -> answer a draw-pile prompt with CARD_IDS[k] (sim only)
-  CHOOSE_DONE          -> end a multi-pick hand prompt (Purity; its picks are CHOOSE_HAND) (sim only)
+  CHOOSE_HAND + i      -> answer a hand card prompt with hand card i
+  CHOOSE_DISCARD + k   -> answer a discard prompt with CARD_IDS[k]
+  CHOOSE_GENERATED + i -> take generated option i (Discovery); CHOOSE_SKIP -> take none
+  CHOOSE_DRAW + k      -> answer a draw-pile prompt with CARD_IDS[k]
+  CHOOSE_DONE          -> end a multi-pick hand prompt (Purity; its picks are CHOOSE_HAND)
 
 Observation space: Box(OBS_DIM,) float32 — see _encode() for the layout.
 

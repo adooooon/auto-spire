@@ -982,6 +982,7 @@ class SimCombat:
             target = self.enemies[target_id - 1] if target_id and 0 < target_id <= len(self.enemies) else None
             if target is None or not target.is_alive:
                 return {"error": "invalid_target", "targetId": target_id}
+            self._face(target)  # SurroundedPower.BeforePotionUsed
         self.potions[slot] = None
         self._effect_depth += 1
         self._pausable = True  # the prompt potions below stop at their prompt; _resume_play finishes them
