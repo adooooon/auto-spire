@@ -225,6 +225,42 @@ Because success 1 is missed, work stops here. Whether to practice the bosses dir
 
 Noise: at 500 runs one standard error on Act 1 at 88.8% is about 1.4 points. The standard error of the difference between 81.0% and 88.8% is about 2.2 points (sqrt(0.81 x 0.19 / 500 + 0.888 x 0.112 / 500)), and the 7.8-point rise is about 3.5 of those. The Act 2 clear (44 runs, against 6 to 11 before) and the boss win rates (119 vs 25 wins, 19% vs 7%) are also far larger than the earlier seed-to-seed movement of a few wins, though one eval and one 1,500-run report are a single seed set each. g2 played the same sim and won 7% of boss fights, so the rise comes from the retrain. The data does not separate its parts: combat training on decks with upgrades and colorless cards, the run policy learning to Smith (19% of deck cards upgraded vs 6 to 7% for g2), or the 46M extra training steps. The 44 of 209 in the 500-run eval is the first-500 subset of the 119 of 635 in the 1,500-run report (see Success 1); quote 119 of 635.
 
+## Part 2b results (2026-11-16)
+
+Part 3's pair, grown into the potion layout (48 potions, the potion powers, Entropy's statuses, the potion prompt block) at d943e51. Grow commands, from `agent/`, both exit 0:
+
+- `grow.py models/ppo_sts2_sim_boss_b_final.zip models/ppo_sts2_sim_boss_g3.zip --env combat --insert-cards` gave "grow self-check ok: 3122->3559 inputs, 392->402 actions".
+- `grow.py models/ppo_sts2_sim_boss_run_v1_final.zip models/ppo_sts2_sim_boss_run_g3.zip --env run --insert-cards` gave "grow self-check ok: 2319->2693 inputs, 329->339 actions".
+
+`test_grow` checks that the grown pair takes the same action as part 3's on states recorded at 698b7ae: 200 run decisions and 43 combat states.
+
+Same eval as before (`run.py --model models/ppo_sts2_sim_boss_g3.zip --maps generated --run-model models/ppo_sts2_sim_boss_run_g3.zip --runs 500 --n 16`, under `caffeinate -i`, exit 0, `stuck=0`, no traceback, 32 min):
+
+| Pair | Act 1 | Act 2 | Avg floor | Gold spent | Potions used | Relics | Died: A1 boss / A2 monster / A2 elite / A2 boss |
+|---|---|---|---|---|---|---|---|
+| Part 3: boss_v1 pair | 88.8% | 8.8% | 11.7 | 335 | 4.21 | 3.30 | 47 / 163 / 72 / 165 |
+| Part 2b: boss_g3 pair | 93.8% | 7.8% | 12.1 | 352 | 7.04 | 3.31 | 28 / 145 / 67 / 218 |
+
+- **Act 1 rule met.** 93.8% is 5.0 points above part 3's 88.8%. The standard error of the difference is about 1.8 points, so the rise is about 2.8 of those. The part 2b row also has 1 Act 1 elite and 2 Act 1 monster deaths.
+- The grown models have never trained on the 36 new potions, but they hold and drink them. Potions used rose from 4.21 to 7.04 per run, and every one of the 48 potions was used at least 9 times. Before this plan, the 36 unmodeled potions were dead slots and could not be bought. The Act 1 rise most likely comes from these extra potions. Act 1 boss deaths fell from 47 to 28.
+- Of the runs that reached the Act 2 boss, 39 of 257 won (15%). Part 3 won 44 of 209 (21%). The difference is about 1.7 standard errors, so it is within noise. More runs reach the Act 2 boss (257 vs 209), so more die there (218 vs 165).
+
+Boss analysis (`boss_report.py` on the grown pair, 1,500 runs, 742 boss fights in `.superpowers/sdd/2026-11-15-act2-boss-2b-potions/boss_analysis_g3.jsonl`, git-ignored, exit 0, 2 min):
+
+| Boss | Reference won | g1 won | g2 won | Part 3 won | Part 2b (g3) won |
+|---|---|---|---|---|---|
+| Kaiser Crab | 0 / 104 (0%) | 3 / 116 (3%) | 4 / 114 (4%) | 21 / 221 (10%) | 21 / 264 (8%) |
+| Knowledge Demon | 10 / 103 (10%) | 7 / 117 (6%) | 6 / 127 (5%) | 40 / 204 (20%) | 49 / 241 (20%) |
+| The Insatiable | 11 / 124 (9%) | 15 / 104 (14%) | 15 / 131 (11%) | 58 / 210 (28%) | 72 / 237 (30%) |
+| All | 21 / 331 (6%) | 25 / 337 (7%) | 25 / 372 (7%) | 119 / 635 (19%) | 142 / 742 (19%) |
+
+- The boss win rate is unchanged at 19%: 142 of 742 fights, against part 3's 119 of 635.
+- Arrival HP is 66.5 to 67.0 of about 82.5, decks are 23.8 to 23.9 cards, and 18 to 19% of deck cards are upgraded. These are all part 3's values.
+- Players arrive at the boss holding 1.27 to 1.45 potions and use 1.20 to 1.34 of them in the fight.
+- Median death turn is still 5 for Kaiser Crab and 6 for the other two bosses.
+
+The models have not trained on any of the new content yet. Plan 2c starts after the merge, and the retrain on all new content comes after 2c.
+
 ## Not in scope
 
 - Act 3, Ascension, other characters.
