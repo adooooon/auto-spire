@@ -42,7 +42,8 @@ RANDOM_EXHAUST = {"CINDER", "TRUE_GRIT", "HAVOC", "THRASH", "INFERNAL_BLADE", "S
 # Cards that autoplay random cards: which ones, and at what, is random (nothing compared).
 RANDOM_PLAYS = {"BEAT_DOWN", "CATASTROPHE"}
 # Potions with random results: Snecko Oil's costs and Orobic Acid's cards (piles), Bottled Potential's shuffle, Entropic
-# Brew's potions. Distilled Chaos autoplays the top 3 at random targets, and the sim can't pause their prompts.
+# Brew's potions. Distilled Chaos autoplays the top 3 at random targets; their prompts (which the sim can't pause) name
+# the autoplayed card, so they pass as an autoplay's one-sided prompt.
 RANDOM_PILE_POTIONS = {"SNECKO_OIL", "OROBIC_ACID", "BOTTLED_POTENTIAL", "DISTILLED_CHAOS"}
 # Calamity adds a random Attack, Entropy transforms at random, Stratagem's pick is random in the sim.
 RANDOM_PILE_POWERS = {"AggressionPower", "StampedePower", "CalamityPower", "EntropyPower", "StratagemPower"}
@@ -284,7 +285,7 @@ def answer_prompts(sim: SimCombat, client, after: dict, played: str, powers: set
             said += f" {cmd}"
         else:
             one_sided = True
-            if mine or not ("StratagemPower" in powers or live.get("source") != played or played == "DISTILLED_CHAOS"):
+            if mine or not ("StratagemPower" in powers or live.get("source") != played):
                 problems.append(f"prompt: sim={mine or None} live={live or None}")
             if mine:
                 cmd = _answer(mine["kind"], len(sim.hand), mine.get("options") or list(dict.fromkeys(sim.discard_pile)), mine.get("slots"))
@@ -391,6 +392,11 @@ def main():
                     skip = {"enemies"} if (played in RANDOM_TARGETS or powers & RANDOM_TARGET_POWERS) and \
                         len(living) > 1 else set()
                     skip |= {"piles"} if played in RANDOM_EXHAUST or powers & RANDOM_PILE_POWERS else set()
+                    # Personal Hive puts each hit's Dazed at random places in the draw pile before the card's own draws
+                    # (Pillage, Pommel Strike): which cards they draw is random.
+                    if idx is not None and hand[idx]["type"] == "Attack" and (CARDS[played].draw or played == "PILLAGE") and \
+                            any(_power(e, "PersonalHivePower") for e in living):
+                        skip |= {"piles"}
                     if pslot is not None:
                         skip |= {"piles"} if played in RANDOM_PILE_POTIONS else set()
                         skip |= {"potions"} if played == "ENTROPIC_BREW" else set()

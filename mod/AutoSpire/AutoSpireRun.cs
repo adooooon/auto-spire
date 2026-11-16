@@ -212,8 +212,11 @@ internal static class RunBridge
             : In(pcs?.DiscardPile) ? "discard" : In(pcs?.DrawPile) ? "draw" : pcs != null && generated ? "generated" : "deck";
         // The last card play started is this fight's, so it's the prompt's source only while it's still running.
         bool playing = history.CardPlaysStarted.Count() > history.CardPlaysFinished.Count();
-        // A potion drunk through `potion <slot>` that hasn't finished is the source (no card plays while one runs).
-        if (PotionInUse is { HasBeenRemovedFromState: true } potion) source = potion.Id.Entry;
+        // A potion drunk through `potion <slot>` whose UsePotionAction is still running is the source, unless a card it
+        // played asked (Distilled Chaos autoplays: that card is the source). Requiring the running action keeps a use
+        // whose OnUse threw (no ExecutionFinished) from labelling later prompts.
+        if (!playing && PotionInUse is { HasBeenRemovedFromState: true } potion
+            && RunManager.Instance.ActionExecutor.CurrentlyRunningAction is UsePotionAction) source = potion.Id.Entry;
         // No card play in progress: a turn-start prompt, and Entropy is the only modeled one.
         else if (kind == "hand" && !playing && player.Creature.Powers.Any(p => p is EntropyPower)) source = "ENTROPY";
         // ponytail: Armaments is the only modeled card asking FromHandForUpgrade; a Harmony tag on it if more do.
@@ -234,7 +237,7 @@ internal static class RunBridge
     }
 
     // The potion `potion <slot>` drank, until its OnUse finishes (ExecutionFinished); HasBeenRemovedFromState is set
-    // once its use starts, so a queued or cancelled one is never a source.
+    // once its use starts, so a queued or cancelled one is never a source. Choice() also needs its action running.
     internal static PotionModel? PotionInUse;
 
     internal static void Drinking(PotionModel potion)

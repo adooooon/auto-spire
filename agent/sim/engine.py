@@ -798,9 +798,9 @@ class SimCombat:
     def cost(self, card_id: str) -> int:
         """Energy cost with this turn's modifiers (X-cost cards show 0)."""
         c = CARDS[card_id]
-        if c.x_cost or getattr(card_id, "free_combat", False):
+        if c.x_cost:
             return 0
-        ov = getattr(card_id, "cost_override", None)  # a local modifier: before the global ones below
+        ov = self._local_cost(card_id)  # a local modifier: before the global ones below
         if card_id == "FRANTIC_ESCAPE":
             return c.cost + getattr(card_id, "extra", 0) if ov is None else ov
         if c.type != "Attack":
@@ -817,9 +817,17 @@ class SimCombat:
         c = CARDS[card_id]
         if c.x_cost or c.cost < 0:
             return False
-        ov = getattr(card_id, "cost_override", None)
-        own = 0 if getattr(card_id, "free_combat", False) else c.cost if ov is None else ov
+        ov = self._local_cost(card_id)
+        own = c.cost if ov is None else ov
         return own > 0 or self.cost(card_id) > 0
+
+    @staticmethod
+    def _local_cost(card_id: str) -> int | None:
+        """The copy's absolute local cost modifier, or None. CardEnergyCost applies its _localModifiers in order and the
+        last absolute one wins: Snecko Oil's or a free-this-turn cost (cost_override) set after Touch of Insanity's
+        SetThisCombat(0) (free_combat) takes over until it expires; Touch of Insanity clears an earlier one."""
+        ov = getattr(card_id, "cost_override", None)
+        return 0 if ov is None and getattr(card_id, "free_combat", False) else ov
 
     def _free_this_turn(self, card: str) -> str:
         """CardModel.SetToFreeThisTurn: SetThisTurnOrUntilPlayed(0) on this copy only. Returns the copy to put back."""
@@ -1679,6 +1687,7 @@ class SimCombat:
             if type(picked) is str:  # its own object, so an equal id elsewhere isn't free too
                 picked = pile[i] = CardCopy(picked)
             picked.free_combat = True
+            picked.cost_override = None  # the later absolute modifier wins
         else:
             del pile[i]
         return picked

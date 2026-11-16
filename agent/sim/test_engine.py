@@ -2688,6 +2688,22 @@ for pid, hand, draw, discard in (("GAMBLERS_BREW", [], [S], [D]), ("ASHWATER", [
     assert (c.hand, c.draw_pile, c.discard_pile, c.exhaust_pile) == (hand, draw, discard, []), pid
     assert not getattr(c.hand[1] if pid == "TOUCH_OF_INSANITY" else None, "free_combat", False)
 print("potion prompt checks ok")
+# Pillage vs Personal Hive (live validate, 2026-11-15): the hit's Dazed go into the draw pile first
+# (AfterDamageReceived, inside DamageCmd), then Pillage draws, so a Dazed it draws stops it. Empty piles: it draws a Dazed.
+c = solo(["PILLAGE"], "ENTOMANCER_ELITE"); c.draw_pile = []; c.enemies[0].pw["PersonalHivePower"] = 3
+assert c.play_card(0, 1)["ok"] and c.hand == ["DAZED"] and c.draw_pile == ["DAZED", "DAZED"], (c.hand, c.draw_pile)
+print("pillage vs personal hive ok")
+# Touch of Insanity's SetThisCombat(0) is a local absolute modifier like the others (CardEnergyCost._localModifiers):
+# Tangled still adds afterwards, and the last absolute modifier wins (LocalCostModifier.Modify).
+c = tpot("TOUCH_OF_INSANITY", [S, "ANGER"]); c.use_potion(0); assert getattr(c.hand[0], "free_combat", False)
+c.tangled = 1; assert c.cost(c.hand[0]) == 1 and c.cost("ANGER") == 1  # Touch + Tangled on an Attack: 1
+c.tangled = 0; c.hand[0].cost_override = 3; c.rt["snecko"] = 1  # then Snecko Oil's cost: Snecko's
+assert c.cost(c.hand[0]) == 3
+card = c.hand[0]; c.player_block = 999; c.end_turn(); assert c.cost(card) == 0  # Snecko's expires, Touch's stays
+from .engine import CardCopy  # noqa: E402
+c = tpot("TOUCH_OF_INSANITY", ["ANGER", B]); c.hand[1] = CardCopy(B); c.hand[1].cost_override = 3; c.rt["snecko"] = 1
+assert "choice" not in c.use_potion(0) and c.cost(c.hand[1]) == 0  # Snecko first, then Touch: Touch's 0 wins
+print("touch of insanity local cost ok")
 # --- plan 2b task 4: Entropy's missing statuses ----------------------------------------------------------------------
 from sim.engine import STATUS_TRANSFORMS
 assert STATUS_TRANSFORMS == ("BECKON", "BURN", "DAZED", "DEBRIS", "INFECTION", "WITHER", "SLIMED", "TOXIC", "VOID", "WOUND")
